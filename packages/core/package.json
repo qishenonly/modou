@@ -10,5 +10,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     }
+  },
+  "dependencies": {
+    "ai": "^7.0.55"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^4.0.6"
   }
 }
