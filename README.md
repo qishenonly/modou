@@ -6,7 +6,7 @@
 
 **modou** is a coding agent that lives in your terminal. It reads your project, plans changes with you, edits files, runs commands, and verifies its own work — all from the comfort of your terminal.
 
-modou is named after the carpenter's ink line — *墨斗*, a marking tool attributed to the ancient Chinese craftsman Lu Ban. A carpenter snaps a taut, ink-soaked string to leave a straight guideline on the timber, then cuts along it. modou works the same way: **you snap the line — intent, project instructions, permission boundaries — and the agent cuts along it, never silently crossing the bounds you set.**
+modou is named after the carpenter's ink line — _墨斗_, a marking tool attributed to the ancient Chinese craftsman Lu Ban. A carpenter snaps a taut, ink-soaked string to leave a straight guideline on the timber, then cuts along it. modou works the same way: **you snap the line — intent, project instructions, permission boundaries — and the agent cuts along it, never silently crossing the bounds you set.**
 
 ## Table of Contents
 
@@ -48,13 +48,13 @@ modou "how does authentication flow through this codebase?"
 
 Then keep the conversation going with slash commands:
 
-| Command | Description |
-| --- | --- |
-| `/help` | List all available slash commands |
-| `/model` | Switch models mid-session |
-| `/context` | Inspect token usage by section |
-| `/compact` | Compact the session history |
-| `/resume` | Resume a previous session |
+| Command    | Description                       |
+| ---------- | --------------------------------- |
+| `/help`    | List all available slash commands |
+| `/model`   | Switch models mid-session         |
+| `/context` | Inspect token usage by section    |
+| `/compact` | Compact the session history       |
+| `/resume`  | Resume a previous session         |
 
 ## How It Works
 
@@ -64,7 +64,7 @@ Three packages, one contract:
 - **`tui`** — an Ink-based terminal interface. A pure consumer of the core event stream.
 - **`cli`** — the executable entry point (`modou`, alias `mo`).
 
-Everything the interface shows is an *event*; everything you do is a *command*. This single, narrow contract keeps the core UI-agnostic — headless mode, an SDK, and editor integration are all just different consumers of the same stream.
+Everything the interface shows is an _event_; everything you do is a _command_. This single, narrow contract keeps the core UI-agnostic — headless mode, an SDK, and editor integration are all just different consumers of the same stream.
 
 All side effects flow through a single tool pipeline — the one choke point where permissions, hooks, and audit attach. There is deliberately no second path.
 
