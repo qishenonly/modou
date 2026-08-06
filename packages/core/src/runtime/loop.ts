@@ -10,6 +10,8 @@ import type {
   TokenUsage,
 } from '../provider/types';
 import { extractInterruptReason, isInterruptError } from './interrupt';
+import { withRetry } from './retry';
+import type { RetryOptions } from './retry';
 import {
   canTransition,
   stopReasonToTransition,
@@ -27,6 +29,11 @@ export interface TurnOptions {
   readonly maxTokens?: number;
   /** 中断信号：透传给 provider；触发后本轮终止为 interrupted */
   readonly abortSignal?: AbortSignal;
+  /**
+   * 供应商错误的指数退避重试参数（T-014）。缺省用默认值（最多 3 次尝试）。
+   * 重试发生在 provider 流内（单轮内），详见 retry.ts。
+   */
+  readonly retry?: RetryOptions;
 }
 
 export interface RunAgentTurnInput {
@@ -233,11 +240,17 @@ export async function runAgentTurn(
     let aborted = false;
 
     try {
-      for await (const event of provider.streamChat({
-        system,
-        messages: thread,
-        abortSignal,
-      })) {
+      // 供应商错误（429 / 5xx / 超时）由 withRetry 按指数退避重试：
+      // 只有尚未产出事件的失败才整体重试，已产出部分内容则直接按错误
+      // 终止（保留已产文本）；退避期间 abort 也能立刻停下（干净中断）。
+      const stream = withRetry(
+        () => provider.streamChat({ system, messages: thread, abortSignal }),
+        {
+          ...options.retry,
+          abortSignal: abortSignal ?? options.retry?.abortSignal,
+        },
+      );
+      for await (const event of stream) {
         switch (event.type) {
           case 'text_delta':
             roundText += event.delta;

@@ -299,12 +299,14 @@ describe('runAgentTurn（0.1.0 裸循环）', () => {
     ]);
   });
 
-  test('provider 抛错 → error 终止，归一错误保留', async () => {
-    const serverError = new ProviderError({
-      kind: 'server_error',
-      message: '上游 500',
+  test('provider 抛错 → error 终止，归一错误保留（非 retryable 不重试）', async () => {
+    // 用不可重试的 not_found 验证「错误原样上抛、对象身份保留」；
+    // 可重试错误（429/5xx）的退避重试行为由 retry.test.ts 覆盖。
+    const notFound = new ProviderError({
+      kind: 'not_found',
+      message: '模型不存在',
     });
-    const stub = new StubProvider([{ throw: serverError }]);
+    const stub = new StubProvider([{ throw: notFound }]);
     const events: RuntimeEvent[] = [];
     const result = await runAgentTurn(
       { provider: stub, messages: [userMsg], options: { maxTurns: 5 } },
@@ -314,9 +316,9 @@ describe('runAgentTurn（0.1.0 裸循环）', () => {
     expect(result.termination).toBe('error');
     expect(result.state).toBe('halted');
     expect(result.turns).toBe(1);
-    expect(result.error).toBe(serverError);
+    expect(result.error).toBe(notFound);
     expect(result.text).toBe('');
-    expect(events).toContainEqual({ type: 'error', error: serverError });
+    expect(events).toContainEqual({ type: 'error', error: notFound });
   });
 
   test('provider 抛非归一错误 → 归一为 ProviderError(unknown)', async () => {

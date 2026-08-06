@@ -103,10 +103,13 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
     expect(stderr).toContain('token');
   });
 
-  test('provider 抛错：stderr 报错，termination = error', async () => {
+  test('provider 抛非重试错误：stderr 含分类与建议，termination = error', async () => {
     const stub = new StubProvider([
       {
-        throw: new ProviderError({ kind: 'server_error', message: '上游 500' }),
+        throw: new ProviderError({
+          kind: 'invalid_api_key',
+          message: 'API Key 无效或缺失（401）',
+        }),
       },
     ]);
 
@@ -125,7 +128,54 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
 
     expect(result.termination).toBe('error');
     expect(stdout).toBe('');
+    // 错误信息可诊断：分类 + 不可重试 + 建议
+    expect(stderr).toContain('invalid_api_key');
+    expect(stderr).toContain('不可重试');
+    expect(stderr).toContain('检查 API Key 配置');
+  });
+
+  test('可重试错误重试耗尽：stderr 带「重试 N 次仍失败」说明（0 延迟注入）', async () => {
+    const stub = new StubProvider([
+      {
+        throw: new ProviderError({ kind: 'server_error', message: '上游 500' }),
+      },
+    ]);
+
+    let stderr = '';
+    const { result } = await runHeadless({
+      provider: stub,
+      prompt: 'hi',
+      retry: { maxAttempts: 3, sleep: async () => {}, random: () => 0 },
+      write: () => {},
+      writeError: (chunk) => {
+        stderr += chunk;
+      },
+    });
+
+    expect(result.termination).toBe('error');
+    expect(stderr).toContain('server_error');
+    expect(stderr).toContain('可重试');
+    expect(stderr).toContain('重试 2 次仍失败');
     expect(stderr).toContain('上游 500');
+  });
+
+  test('内部错误（非 ProviderError 未知异常）：stderr 标记内部错误，不回喂模型', async () => {
+    const stub = new StubProvider([{ throw: new Error('适配器 bug') }]);
+
+    let stderr = '';
+    const { result } = await runHeadless({
+      provider: stub,
+      prompt: 'hi',
+      write: () => {},
+      writeError: (chunk) => {
+        stderr += chunk;
+      },
+    });
+
+    expect(result.termination).toBe('error');
+    expect(result.error?.category).toBe('internal');
+    expect(stderr).toContain('内部错误');
+    expect(stderr).toContain('适配器 bug');
   });
 
   test('max_turns 上限：halted 终止并在 stderr 提示', async () => {

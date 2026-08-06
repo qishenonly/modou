@@ -36,8 +36,13 @@ export function createInterruptHandle(): InterruptHandle {
   };
 }
 
-/** 类型守卫：错误是否为「中断」类（aborted）错误。 */
-export function isInterruptError(error: unknown): error is ProviderError {
+/**
+ * 类型守卫：错误是否为「中断」类（aborted）错误。
+ * 判定精确到 kind === 'aborted'，窄化后类型保留中断语义（供上层区分分支）。
+ */
+export function isInterruptError(
+  error: unknown,
+): error is ProviderError & { readonly kind: 'aborted' } {
   return isProviderError(error) && error.kind === 'aborted';
 }
 

@@ -76,7 +76,7 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
 /** ProviderError → 协议 ErrorData（002 5.3：错误即数据，五类归一）。 */
 function toErrorData(error: ProviderError): ErrorData {
   return {
-    category: 'provider',
+    category: error.category,
     kind: error.kind,
     recoverable: error.retryable,
     message: error.message,

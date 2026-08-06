@@ -268,11 +268,13 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
   });
 
   test('provider 抛错 → error 信封，TurnResult 终止为 error', async () => {
-    const serverError = new ProviderError({
-      kind: 'server_error',
-      message: '上游 500',
+    // 用不可重试的 not_found 保证单次请求即失败（可重试错误会先退避重试，
+    // 其行为由 retry.test.ts 覆盖，此处聚焦信封序列）。
+    const notFound = new ProviderError({
+      kind: 'not_found',
+      message: '模型不存在',
     });
-    const stub = new StubProvider([{ throw: serverError }]);
+    const stub = new StubProvider([{ throw: notFound }]);
     const { envelopes, result } = await runTurnWithProtocol({
       provider: stub,
       messages: [userMsg],
@@ -280,7 +282,7 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
     });
 
     expect(result.termination).toBe('error');
-    expect(result.error).toBe(serverError);
+    expect(result.error).toBe(notFound);
     expect(envelopes.map((e) => e.type)).toEqual([
       'turn_start',
       'error',

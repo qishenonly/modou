@@ -20,3 +20,6 @@ export {
   extractInterruptReason,
   isInterruptError,
 } from './interrupt';
+
+export type { RetryOptions } from './retry';
+export { computeBackoffDelay, withRetry } from './retry';

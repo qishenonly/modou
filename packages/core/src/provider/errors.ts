@@ -25,7 +25,17 @@ const RETRYABLE_KINDS: ReadonlySet<ProviderErrorKind> = new Set([
 ]);
 
 /**
- * 统一的供应商错误。`kind` 可判定、`retryable` 可决策、`cause` 保留原始错误。
+ * 错误归属类别（design 002 5.3 五类错误中的后两类）：
+ * - `provider`：可判定的供应商错误（429 / 5xx / 超时 / 鉴权…），
+ *   按 kind 分类处置；
+ * - `internal`：无法归一的内部错误（适配器 bug、非供应商未知异常），
+ *   不回喂模型，直接报用户并记日志。
+ */
+export type ProviderErrorCategory = 'provider' | 'internal';
+
+/**
+ * 统一的供应商错误。`kind` 可判定、`retryable` 可决策、`category` 区分
+ * 供应商错误与内部错误、`cause` 保留原始错误。
  */
 export class ProviderError extends Error {
   readonly kind: ProviderErrorKind;
@@ -33,6 +43,8 @@ export class ProviderError extends Error {
   readonly statusCode?: number;
   /** 是否可重试（T-014 据此做指数退避） */
   readonly retryable: boolean;
+  /** 归属类别：供应商错误 / 内部错误（默认 provider） */
+  readonly category: ProviderErrorCategory;
   readonly cause?: unknown;
 
   constructor(options: {
@@ -40,6 +52,7 @@ export class ProviderError extends Error {
     message: string;
     statusCode?: number;
     retryable?: boolean;
+    category?: ProviderErrorCategory;
     cause?: unknown;
   }) {
     super(options.message);
@@ -47,6 +60,7 @@ export class ProviderError extends Error {
     this.kind = options.kind;
     this.statusCode = options.statusCode;
     this.retryable = options.retryable ?? RETRYABLE_KINDS.has(options.kind);
+    this.category = options.category ?? 'provider';
     this.cause = options.cause;
   }
 }
@@ -184,5 +198,13 @@ export function normalizeProviderError(error: unknown): ProviderError {
     });
   }
 
-  return new ProviderError({ kind: 'unknown', message, cause: error });
+  // 走到这里说明既不是 API 错误也不是 SDK 分类错误：视为内部错误
+  // （适配器 bug / 未知异常），category 置 internal —— 不回喂模型，
+  // 直接报用户（design 002 5.3）。
+  return new ProviderError({
+    kind: 'unknown',
+    message,
+    cause: error,
+    category: 'internal',
+  });
 }
