@@ -1,0 +1,22 @@
+{
+  "name": "modou",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "modou": "./src/main.ts",
+    "mo": "./src/main.ts"
+  },
+  "main": "./src/main.ts",
+  "types": "./src/main.ts",
+  "exports": {
+    ".": {
+      "types": "./src/main.ts",
+      "default": "./src/main.ts"
+    }
+  },
+  "dependencies": {
+    "@modou/core": "workspace:*",
+    "@modou/tui": "workspace:*"
+  }
+}

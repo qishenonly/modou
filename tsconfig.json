@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/tui" },
+    { "path": "./packages/cli" }
+  ],
+  "compilerOptions": {
+    "strict": true,
+    "composite": true,
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "target": "esnext",
+    "declaration": true,
+    "skipLibCheck": true
+  }
+}

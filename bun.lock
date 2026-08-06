@@ -1,0 +1,39 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "modou",
+    },
+    "packages/cli": {
+      "name": "modou",
+      "version": "0.1.0",
+      "bin": {
+        "modou": "./src/main.ts",
+        "mo": "./src/main.ts",
+      },
+      "dependencies": {
+        "@modou/core": "workspace:*",
+        "@modou/tui": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@modou/core",
+      "version": "0.1.0",
+    },
+    "packages/tui": {
+      "name": "@modou/tui",
+      "version": "0.1.0",
+      "dependencies": {
+        "@modou/core": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@modou/core": ["@modou/core@workspace:packages/core"],
+
+    "@modou/tui": ["@modou/tui@workspace:packages/tui"],
+
+    "modou": ["modou@workspace:packages/cli"],
+  }
+}
