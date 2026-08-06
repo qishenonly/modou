@@ -16,5 +16,6 @@ build/
 # 设计与开发文档（不对外公开）
 docs/
 AGENTS.md
+CLAUDE.md
 *.plan
 .history/
