@@ -23,7 +23,8 @@ export interface BuildSystemPromptOptions {
   /** 工具注册表：工具定义的单一来源（name / description / schema → JSON Schema）。 */
   readonly tools: ToolRegistry;
   /**
-   * 可选追加段（拼在提示词末尾；后续版本用于项目指令 AGENTS.md 等稳定前缀段）。
+   * 可选追加段（拼在提示词末尾；T-081 起由 runTui 注入项目指令段——AGENTS.md
+   * 三级指令「全局 → 项目根 → 子目录」的渲染结果，作为稳定前缀的一部分）。
    */
   readonly extra?: string;
 }

@@ -9,6 +9,7 @@ import {
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   listSessionsForResume,
+  loadInstructions,
   projectHash,
   projectMessages,
   rebuildReadFiles,
@@ -88,10 +89,17 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const startup = assembleTuiStartup(options);
   const provider = startup.provider;
   const tools = options.tools ?? defaultReadonlyTools();
-  const system = options.system ?? buildSystemPrompt({ tools });
-  const readFiles = new Set(options.readFiles ?? []);
   const cwd = startup.projectRoot;
   const homeDir = startup.homeDir;
+  // T-081 指令文件加载：AGENTS.md 三级指令（全局 → 项目根 → 子目录，002 九节），
+  // 渲染结果拼进系统提示词 extra（options.system 显式提供时视为用户接管提示词，
+  // 不注入）；超限截断的告警文本留待 pushNotice 就绪后发出——不静默，用户要能
+  // 看到自己哪份指令文件没生效。
+  const instructions =
+    options.system === undefined ? loadInstructions({ homeDir, cwd }) : null;
+  const system =
+    options.system ?? buildSystemPrompt({ tools, extra: instructions?.text });
+  const readFiles = new Set(options.readFiles ?? []);
   const channel = createEventChannel();
   const emitter = options.signalEmitter ?? process;
   // T-050：权限组合来自配置装配（内置默认 workspace-write + on-request，与
@@ -161,6 +169,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       data: { level, text },
     });
   };
+
+  // T-081：指令超限截断告警（不静默）。App 从 channel 消费信封，启动期 push
+  // 的信封先入队、App 挂载后按 FIFO 展示，与 core 发出的 notice 同构。
+  if (instructions?.notice !== undefined) {
+    pushNotice('warn', instructions.notice);
+  }
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
