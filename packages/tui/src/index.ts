@@ -189,8 +189,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         // Ctrl+C 由 App 的 useInput 接管（发 Command 中断 + 干净退出），
         // 不用 Ink 内建的 exitOnCtrlC（那会直接 unmount，跳过我们的收尾）。
         exitOnCtrlC: false,
-        stdout: options.stdout,
-        stdin: options.stdin,
+        // 显式默认回落 process 流：缺省传 undefined 会覆盖 Ink 内建默认
+        // （Ink 对 undefined stdout 直接崩「options.stdout.on is not a function」）
+        stdout: options.stdout ?? process.stdout,
+        stdin: options.stdin ?? process.stdin,
       },
     );
 
