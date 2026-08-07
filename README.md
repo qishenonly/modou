@@ -43,8 +43,10 @@ npm install -g modou
 
 ```bash
 cd your-project
-modou "how does authentication flow through this codebase?"
+modou
 ```
+
+This launches the interactive terminal UI — type your question or instruction, and modou reads your project, plans changes with you, edits files, and runs commands. Write and execute actions go through an approval prompt; dangerous commands always require confirmation.
 
 Then keep the conversation going with slash commands:
 
@@ -58,13 +60,12 @@ Then keep the conversation going with slash commands:
 
 ## How It Works
 
-Three packages, one contract:
+Two packages, one contract — plus the UI that consumes it:
 
 - **`core`** — the agent loop, the tool pipeline, permissions, and context management. Zero UI dependencies; it only emits events.
-- **`tui`** — an Ink-based terminal interface. A pure consumer of the core event stream.
-- **`cli`** — the executable entry point (`modou`, alias `mo`).
+- **`tui`** — the Ink-based terminal interface (`modou` / `mo`). A pure consumer of the core event stream.
 
-Everything the interface shows is an _event_; everything you do is a _command_. This single, narrow contract keeps the core UI-agnostic — headless mode, an SDK, and editor integration are all just different consumers of the same stream.
+Everything the interface shows is an _event_; everything you do is a _command_. This single, narrow contract keeps the core UI-agnostic — an SDK and editor integration would be different consumers of the same stream.
 
 All side effects flow through a single tool pipeline — the one choke point where permissions, hooks, and audit attach. There is deliberately no second path.
 

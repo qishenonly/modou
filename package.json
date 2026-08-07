@@ -7,7 +7,12 @@
     "packages/*"
   ],
   "packageManager": "bun@1.3.14",
+  "bin": {
+    "modou": "./packages/tui/src/main.ts",
+    "mo": "./packages/tui/src/main.ts"
+  },
   "scripts": {
+    "start": "bun packages/tui/src/main.ts",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "bun test",
