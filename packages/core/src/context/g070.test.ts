@@ -21,7 +21,8 @@ function factState(rev: number, facts: string[]): SummaryState {
     rev,
     goal: '修复支付模块并补全测试',
     constraints: [],
-    decisions: facts.map((text, i) => ({ id: `d${i}`, text, ts: i })),
+    // id 用 rev 派生保证唯一：同 id 才替换（merge 语义），不同 id 追加
+    decisions: facts.map((text, i) => ({ id: `d${rev}-${i}`, text, ts: rev })),
     done: [],
     todo: [],
     filesTouched: [{ path: '/repo/payment.ts', note: '支付模块' }],
