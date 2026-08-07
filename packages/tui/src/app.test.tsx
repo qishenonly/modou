@@ -20,10 +20,15 @@ function env(event: ProtocolEvent): Envelope {
   return { v: 1, seq: counter, ts: 0, agent: 'main', turn, ...event };
 }
 
-/** 等 React / Ink 把状态变化渲染进帧（事件流消费是异步的，需要若干 tick）。 */
+/**
+ * 等 React / Ink 把状态变化渲染进帧（事件流消费是异步的，需要若干 tick）。
+ * 自 T-042 起输出区走帧节流（默认 50ms 合并一次提交），等待时间要超过
+ * 一个帧窗口 + 一个渲染周期，确保节流合并后的帧已落地。
+ */
 async function flush(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await new Promise((resolve) => setTimeout(resolve, 40));
 }
 
 describe('App（T-040 Ink 应用骨架）', () => {

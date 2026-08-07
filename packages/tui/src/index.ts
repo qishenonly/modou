@@ -184,5 +184,7 @@ export { App } from './app';
 export type { AppProps } from './app';
 export { Input } from './input';
 export type { InputProps } from './input';
+export { Markdown } from './markdown';
+export type { MarkdownProps } from './markdown';
 export { createEventChannel } from './stream';
 export type { EventChannel } from './stream';

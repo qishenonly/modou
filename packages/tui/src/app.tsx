@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { Command, Envelope, UsageData } from '@modou/core';
 import { Input } from './input';
+import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 
 /** App 组件属性（T-040 骨架 + T-041 输入框）。 */
 export interface AppProps {
@@ -23,7 +24,7 @@ export interface AppProps {
  * App：Ink 主应用（T-040 骨架）。
  *
  * 结构对齐 002 第十二节目录布局：
- * - 消息/输出区（本版流式纯文本；T-042 换成 markdown.tsx 并做帧节流）；
+ * - 消息/输出区（markdown.tsx 流式渲染：语法高亮 + 帧节流，T-042）；
  * - 底部输入行（input.tsx：多行/粘贴/历史上翻/斜杠补全，T-041）；
  * - 状态栏位（本版内联一行占位，T-045 换成 status.tsx：模型名/token/权限模式）；
  * - tools.tsx / approval.tsx 分别由 T-043 / T-044 接入工具展示与审批弹窗。
@@ -40,8 +41,12 @@ export interface AppProps {
 export function App(props: AppProps): ReactElement {
   const { stream, send, onExit } = props;
 
-  // 输出区：流式文本累计（T-042 换 markdown 渲染 + 帧节流）
-  const [assistantText, setAssistantText] = useState('');
+  // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
+  const {
+    text: assistantText,
+    append: appendDelta,
+    flush: flushDelta,
+  } = useFrameThrottledText(DEFAULT_FRAME_MS);
   // 运行状态：由 turn_start / turn_end 推导（T-045 状态栏完善）
   const [running, setRunning] = useState(false);
   const [lastTurn, setLastTurn] = useState(0);
@@ -62,13 +67,18 @@ export function App(props: AppProps): ReactElement {
     const apply = (envelope: Envelope): void => {
       switch (envelope.type) {
         case 'turn_start':
+          // 防御：前一轮若有残留缓冲立即落盘（正常情况 turn_end 已 flush）
+          flushDelta();
           setRunning(true);
           setLastTurn(envelope.data.turn);
           break;
         case 'text_delta':
-          setAssistantText((prev) => prev + envelope.data.delta);
+          // 帧节流：只累积不渲染，frameMs 后合并提交一次 setState
+          appendDelta(envelope.data.delta);
           break;
         case 'turn_end':
+          // 帧尾立即提交，保证最终文本完整可见
+          flushDelta();
           setRunning(false);
           break;
         case 'usage':
@@ -78,6 +88,7 @@ export function App(props: AppProps): ReactElement {
           setNotices((prev) => [...prev, envelope.data.text]);
           break;
         case 'error':
+          flushDelta();
           setRunning(false);
           setError(envelope.data.message);
           break;
@@ -129,9 +140,9 @@ export function App(props: AppProps): ReactElement {
 
   return (
     <Box flexDirection="column" minHeight={5}>
-      {/* 消息/输出区（流式文本；T-042 换 markdown.tsx 渲染） */}
+      {/* 消息/输出区（markdown.tsx 渲染 + 帧节流，T-042） */}
       <Box flexGrow={1} flexDirection="column">
-        {assistantText.length > 0 && <Text>{assistantText}</Text>}
+        {assistantText.length > 0 && <Markdown text={assistantText} />}
         {notices.map((notice, index) => (
           <Text key={index} color="yellow">
             {notice}
