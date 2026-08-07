@@ -15,6 +15,7 @@ import type {
   ToolRegistry,
 } from '@modou/core';
 import { App } from './app';
+import { createApprovalBridge } from './approval';
 import { createEventChannel } from './stream';
 
 export const version = '0.1.0';
@@ -37,8 +38,10 @@ export interface TuiOptions {
   readonly system?: string;
   /**
    * 工具注册表（缺省 defaultReadonlyTools()——只读安全默认）。
-   * 写/执行工具与审批弹窗由 T-043 / T-044 接线；在那之前注入写工具会让
-   * approval_request 无人处理而挂起，所以本版不默认开。
+   * 注入写 / 执行工具后，write / exec 调用会经 ApprovalGate 发 approval_request，
+   * 由审批弹窗（T-044）裁决——用户选 allow_once / allow_always / deny 后经
+   * `approve` Command 回传；无人裁决时按默认拒绝（deny，与 headless 同款安全
+   * 默认）。危险命令（rm -rf 等黑名单）仍由 core 强制逐次确认。
    */
   readonly tools?: ToolRegistry;
   /** 轮次上限（默认 10）。 */
@@ -77,9 +80,11 @@ export interface TuiResult {
  *   AsyncIterable；多轮 turn 复用同一事件流，退出时 end() 让 App 干净收尾；
  * - Command：submit 触发一轮新 turn（运行中忽略，T-041 完善排队/并入）；
  *   interrupt 打断当前轮（每轮独立 AbortController，Esc 不会污染后续 turn）；
- *   approve / steer / slash 由 T-044 与后续任务接线；
+ *   approve 由审批桥裁决（用户从弹窗选择 → resolve decider，T-044）；
+ *   steer / slash 由后续任务接线；
  * - 退出：Ctrl+C 经 App.onExit 走 finish(0)；SIGINT 信号走 finish(130)。
- *   两者都先打断在跑的轮次、移除信号监听、结束事件流、卸载 Ink，保证状态干净无悬挂。
+ *   两者都先打断在跑的轮次、以 deny 清空未裁决的审批请求、移除信号监听、
+ *   结束事件流、卸载 Ink，保证状态干净无悬挂。
  */
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const provider = options.provider ?? createProviderFromEnv('openai-compat');
@@ -89,6 +94,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const cwd = options.cwd ?? process.cwd();
   const channel = createEventChannel();
   const emitter = options.signalEmitter ?? process;
+  // 审批桥（T-044）：TUI 的 `approve` Command → ApprovalGate decider 的裁决。
+  // decider 对每个请求挂起等待用户从弹窗选择；退出时 denyAll 清空未裁决请求，
+  // 防止 pending 审批悬挂导致轮次永不结束。
+  const approval = createApprovalBridge();
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
@@ -106,6 +115,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         tools,
         readFiles,
         cwd,
+        // 审批闸门（T-044）：write / exec 工具经审批弹窗裁决；read 不拦。
+        // 默认 deny——无人裁决时一律拒绝（与 headless 同款安全默认）。
+        approval: approval.gate,
         options: {
           maxTurns: options.maxTurns ?? 10,
           abortSignal: controller.signal,
@@ -132,8 +144,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       case 'interrupt':
         currentController?.abort('用户中断');
         break;
+      case 'approve':
+        // T-044 审批裁决：弹窗用户选择 → resolve 对应 pending 请求（decider 继续）
+        approval.resolve(command.requestId, command.decision);
+        break;
       default:
-        // approve / steer / slash：T-044（审批弹窗）与后续任务接线
+        // steer / slash：后续任务接线
         break;
     }
   };
@@ -145,6 +161,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       if (settled) return;
       settled = true;
       currentController?.abort(); // 退出时打断可能仍在跑的轮次
+      approval.denyAll(); // 退出收尾：未裁决的审批请求一律拒绝，防悬挂
       emitter.off('SIGINT', onSigint);
       channel.end(); // 结束事件流，App 的 for-await 得到 done
       void app.waitUntilExit(); // 先占住 Ink 的退出 promise（unmount 会同步 resolve 它）
@@ -186,6 +203,8 @@ export { Input } from './input';
 export type { InputProps } from './input';
 export { Markdown } from './markdown';
 export type { MarkdownProps } from './markdown';
+export { ApprovalModal, createApprovalBridge } from './approval';
+export type { ApprovalModalProps, ApprovalBridge } from './approval';
 export {
   ToolCallList,
   DiffView,

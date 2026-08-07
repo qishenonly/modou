@@ -1,6 +1,12 @@
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Box, Text, useInput } from 'ink';
-import type { Command, Envelope, UsageData } from '@modou/core';
+import type {
+  ApprovalRequestData,
+  Command,
+  Envelope,
+  UsageData,
+} from '@modou/core';
+import { ApprovalModal } from './approval';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import type { ToolCallEntry } from './tools';
@@ -33,9 +39,11 @@ export interface AppProps {
  *
  * 键盘（T-041 分工）：
  * - App 层只管「全局键」：Esc 发 interrupt Command 打断当前轮、Ctrl+C 触发 onExit
- *   干净退出（headless 无键盘路径，不受影响）；
+ *   干净退出（headless 无键盘路径，不受影响）；审批弹窗打开时 Esc 让给弹窗
+ *   （拒绝），Ctrl+C 仍可退出（T-044）；
  * - 输入编辑（字符/换行/光标移动/历史上翻/斜杠补全）全部由 input.tsx 处理；
- * - 输入框提交：普通文本 → submit，以 `/` 开头 → slash（002 3.3 表）。
+ * - 输入框提交：普通文本 → submit，以 `/` 开头 → slash（002 3.3 表）；
+ * - 审批弹窗（approval.tsx）：数字键 / ↑↓+Enter / Esc 裁决，期间输入行隐藏。
  *
  * 消费模型：事件流经 for-await 逐条应用（useEffect 内），卸载时置 disposed 停止。
  * 状态更新用函数式 setState，事件按 seq 到达即天然有序。
@@ -61,6 +69,13 @@ export function App(props: AppProps): ReactElement {
   // 工具调用条目（T-043：按 callId 组织 tool_call / tool_progress / tool_result，
   // 由 tools.tsx 的纯函数规约；跨轮次累计展示，与输出区文本同生命周期）
   const [tools, setTools] = useState<ToolCallEntry[]>([]);
+  // 审批弹窗（T-044）：approval_request 打开 / approval_resolved 关闭。
+  // 弹窗打开期间输入行被隐藏（阻塞输入提交），全局 Esc 让给弹窗（拒绝）。
+  const [pendingApproval, setPendingApproval] =
+    useState<ApprovalRequestData | null>(null);
+  // 键盘回调读到的是旧闭包：用 ref 镜像弹窗是否打开，供 App 层全局键判断
+  const approvalOpenRef = useRef(false);
+  approvalOpenRef.current = pendingApproval !== null;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -103,9 +118,19 @@ export function App(props: AppProps): ReactElement {
           // T-043 工具调用展示：三个工具事件统一进规约函数，按 callId 组织条目
           setTools((prev) => reduceToolEvent(prev, envelope));
           break;
+        case 'approval_request':
+          // T-044 审批弹窗：core ③ Authorize 发来请求 → 打开弹窗等用户裁决
+          setPendingApproval(envelope.data);
+          break;
+        case 'approval_resolved':
+          // 裁决收尾（用户 / 规则 / 策略）：关闭对应弹窗（id 不匹配则忽略，
+          // 防御迟到的旧请求收尾事件误关当前弹窗）
+          setPendingApproval((prev) =>
+            prev !== null && prev.id === envelope.data.id ? null : prev,
+          );
+          break;
         default:
-          // thinking_delta / approval_request / approval_resolved / context_state /
-          // compaction 由 T-042（markdown 折叠）/ T-044（approval.tsx）后续处理。
+          // thinking_delta / context_state / compaction 由后续任务处理。
           break;
       }
     };
@@ -124,7 +149,15 @@ export function App(props: AppProps): ReactElement {
 
   // 键盘处理：App 层只管「全局键」——Esc 打断、Ctrl+C 干净退出。
   // 输入编辑（字符/换行/光标/历史/补全）全部由 input.tsx 的 useInput 处理。
+  // 弹窗打开时：Esc 让给弹窗（拒绝），App 不再发 interrupt；Ctrl+C 仍可退出
+  // （runTui 收尾会以 deny 清空未裁决的审批请求，不会悬挂轮次）。
   useInput((_text, key) => {
+    if (approvalOpenRef.current) {
+      if (key.ctrl && _text === 'c') {
+        onExit?.();
+      }
+      return;
+    }
     if (key.escape) {
       send({ type: 'interrupt' });
       return;
@@ -171,13 +204,28 @@ export function App(props: AppProps): ReactElement {
         </Text>
       </Box>
 
-      {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全） */}
-      <Box>
-        <Text color="cyan">&gt; </Text>
-        <Box flexGrow={1}>
-          <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+      {/* 审批弹窗（T-044）：approval_request 打开，approval_resolved 关闭；
+          弹窗期间输入行隐藏（阻塞输入提交），裁决后恢复 */}
+      {pendingApproval !== null && (
+        <ApprovalModal
+          key={pendingApproval.id}
+          request={pendingApproval}
+          onApprove={(requestId, decision) =>
+            send({ type: 'approve', requestId, decision })
+          }
+        />
+      )}
+
+      {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
+          审批弹窗打开时隐藏——模态期间不接受新的输入提交 */}
+      {pendingApproval === null && (
+        <Box>
+          <Text color="cyan">&gt; </Text>
+          <Box flexGrow={1}>
+            <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+          </Box>
         </Box>
-      </Box>
+      )}
     </Box>
   );
 }
