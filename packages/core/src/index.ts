@@ -8,4 +8,5 @@ export * from './permission';
 export * from './prompt';
 export * from './context';
 export * from './session';
+export * from './config';
 export * from './eval';

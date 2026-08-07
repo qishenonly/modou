@@ -91,19 +91,35 @@ export function requireApiKey(
 /**
  * 从环境变量直接装配一个可用的 Provider（CLI 装配的入口）。
  *
- * - openai-compat：优先读 MODOU_OPENCODE_*（测试端点），
- *   否则回落 OPENAI_BASE_URL / OPENAI_API_KEY；
- * - anthropic：读 ANTHROPIC_MODEL / ANTHROPIC_API_KEY。
- *
- * 缺失 API Key 时抛 LoadAPIKeyError（可归一为 invalid_api_key）。
+ * 等价 `createProviderFromConfig({ type }, env)`：类型之外的字段（model /
+ * baseURL）全部回落环境变量，保持既有行为不变。
  */
 export function createProviderFromEnv(
   type: ProviderType,
   env: NodeJS.ProcessEnv = process.env,
 ): ModelProvider {
-  if (type === 'openai-compat') {
+  return createProviderFromConfig({ type }, env);
+}
+
+/**
+ * 配置驱动的 Provider 装配（T-080 配置系统接入）：
+ * 按「供应商类型 + 可选 model / baseURL」装配，API Key 与缺失项回落环境变量。
+ *
+ * - openai-compat：model 未配置时优先用 opencode 测试端点（MODOU_OPENCODE_*，
+ *   G-0.1.0 验收语义），否则回落 MODOU_OPENCODE_MODEL / OPENAI_MODEL / 'gpt-4o'，
+ *   baseURL 回落 OPENAI_BASE_URL，apiKey 取 OPENAI_API_KEY；
+ * - anthropic：model 回落 ANTHROPIC_MODEL / 'claude-sonnet-4-5'，
+ *   baseURL（走代理时）由配置显式给出，apiKey 取 ANTHROPIC_API_KEY。
+ *
+ * 缺失 API Key 时抛 LoadAPIKeyError（可归一为 invalid_api_key）。
+ */
+export function createProviderFromConfig(
+  config: ProviderFromConfigInput,
+  env: NodeJS.ProcessEnv = process.env,
+): ModelProvider {
+  if (config.type === 'openai-compat') {
     const opencode = readOpencodeEnv(env);
-    if (opencode !== null) {
+    if (opencode !== null && config.model === undefined) {
       return createProvider({
         type: 'openai-compat',
         modelId: opencode.deepseekModel,
@@ -113,14 +129,29 @@ export function createProviderFromEnv(
     }
     return createProvider({
       type: 'openai-compat',
-      modelId: env.MODOU_OPENCODE_MODEL ?? env.OPENAI_MODEL ?? 'gpt-4o',
-      baseURL: env.OPENAI_BASE_URL,
+      modelId:
+        config.model ??
+        env.MODOU_OPENCODE_MODEL ??
+        env.OPENAI_MODEL ??
+        'gpt-4o',
+      baseURL: config.baseURL ?? env.OPENAI_BASE_URL,
       apiKey: requireApiKey('OPENAI_API_KEY', env),
     });
   }
   return createProvider({
     type: 'anthropic',
-    modelId: env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5',
+    modelId: config.model ?? env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5',
+    ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {}),
     apiKey: requireApiKey('ANTHROPIC_API_KEY', env),
   });
+}
+
+/** createProviderFromConfig 的入参：配置解析产出的供应商面（type + 可选 model/baseURL）。 */
+export interface ProviderFromConfigInput {
+  /** 供应商类型（ResolvedConfig.provider 直接传入）。 */
+  readonly type: ProviderType;
+  /** 模型 ID（缺省回落环境变量）。 */
+  readonly model?: string;
+  /** 端点前缀（缺省回落环境变量）。 */
+  readonly baseURL?: string;
 }

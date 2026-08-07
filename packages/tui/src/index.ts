@@ -1,5 +1,3 @@
-import { EventEmitter } from 'node:events';
-import { homedir } from 'node:os';
 import { createElement, type ReactElement } from 'react';
 import { render, type Instance } from 'ink';
 import {
@@ -8,10 +6,7 @@ import {
   BudgetLedger,
   countUserMessages,
   createModelDeltaGenerator,
-  createProviderFromEnv,
-  defaultPermissionConfig,
   defaultReadonlyTools,
-  DEFAULT_KEEP_TURNS,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   listSessionsForResume,
   projectHash,
@@ -32,79 +27,17 @@ import type {
   ModelMessage,
   ModelProvider,
   NoticeLevel,
-  PermissionConfig,
   ResumeCandidate,
-  RetryOptions,
   SummaryState,
-  ToolRegistry,
 } from '@modou/core';
 import { App } from './app';
 import { createApprovalBridge } from './approval';
 import { performCompact } from './compact';
 import { derivePermissionMode, type TokenTotals } from './status';
 import { createEventChannel } from './stream';
+import { assembleTuiStartup, type TuiOptions } from './startup';
 
 export const version = '0.1.0';
-
-/**
- * runTui 选项（T-040 骨架）。
- *
- * provider / system / tools / maxTurns / cwd / readFiles / retry 与 headless 同形，
- * 由 cli 装配或测试注入；缺省值尽量对齐 headless 的安全默认。
- */
-export interface TuiOptions {
-  /** 装配好的模型供应商（测试注入 stub；缺省 createProviderFromEnv('openai-compat')）。 */
-  readonly provider?: ModelProvider;
-  /**
-   * 首个提示词：提供时自动提交（等价 `modou "任务"`，但走 TUI 渲染）。
-   * 缺省则进入交互模式，等用户在输入行敲回车。
-   */
-  readonly prompt?: string;
-  /** 系统指令（缺省 buildSystemPrompt({ tools })）。 */
-  readonly system?: string;
-  /**
-   * 工具注册表（缺省 defaultReadonlyTools()——只读安全默认）。
-   * 注入写 / 执行工具后，write / exec 调用会经 ApprovalGate 发 approval_request，
-   * 由审批弹窗（T-044）裁决——用户选 allow_once / allow_always / deny 后经
-   * `approve` Command 回传；无人裁决时按默认拒绝（deny，与 headless 同款安全
-   * 默认）。危险命令（rm -rf 等黑名单）仍由 core 强制逐次确认。
-   */
-  readonly tools?: ToolRegistry;
-  /** 轮次上限（默认 10）。 */
-  readonly maxTurns?: number;
-  /** 会话级已读文件集合（Write/Edit 防盲写的种子，透传给 core）。 */
-  readonly readFiles?: ReadonlySet<string>;
-  /** 工作目录（缺省 process.cwd()，相对路径以此解析）。 */
-  readonly cwd?: string;
-  /**
-   * 用户主目录：会话日志根为 `<homeDir>/.modou/sessions/<project-hash>`
-   * （T-060/T-061；缺省 os.homedir()）。测试注入临时目录隔离。
-   */
-  readonly homeDir?: string;
-  /** 供应商错误的退避重试参数（缺省用 core 默认值）。 */
-  readonly retry?: RetryOptions;
-  /**
-   * 压缩配置（T-070 /compact）：覆盖 runTui 的压缩缺省（阈值 / 保留轮数 /
-   * 迟滞窗口）。`generateDelta` 缺省 = `createModelDeltaGenerator(provider)`
-   * （生产由模型生成增量）；测试注入 stub 以离线覆盖。`thresholdTokens` 缺省
-   * = `maxContext × 0.7`（约 70% 上下文窗口触发）。缺省 = 启用压缩（自动触发
-   * + `/compact` 手动命令）。
-   */
-  readonly compact?: CompactOptions;
-  /**
-   * T-050 正交权限配置（沙箱范围 × 审批策略）。缺省 = workspace-write +
-   * on-request（defaultPermissionConfig，projectRoot 取 cwd）——由 on-request
-   * 的保守近似等价 0.3.0「写死 write/exec 全问」；弹窗只裁决 ask 之后的请求，
-   * 矩阵中的 allow / deny 由 gate 内部直接裁决（弹窗不出现）。
-   */
-  readonly permission?: PermissionConfig;
-  /** Ink 输出流（测试注入；缺省 process.stdout）。 */
-  readonly stdout?: NodeJS.WriteStream;
-  /** Ink 输入流（测试注入；缺省 process.stdin）。 */
-  readonly stdin?: NodeJS.ReadStream;
-  /** 信号源（测试注入 EventEmitter；缺省 process）。 */
-  readonly signalEmitter?: EventEmitter;
-}
 
 /** runTui 的产出。 */
 export interface TuiResult {
@@ -149,17 +82,22 @@ function defaultCompactionThreshold(provider: ModelProvider): number {
  *   结束事件流、卸载 Ink，保证状态干净无悬挂。
  */
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
-  const provider = options.provider ?? createProviderFromEnv('openai-compat');
+  // T-080 配置装配：内置默认 → ~/.modou/settings.json → <project>/.modou/settings.json
+  // → MODOU_* 环境变量 → 显式选项（最高优先）；provider / permission / maxTurns /
+  // keepTurns / homeDir 全部来自装配结果。
+  const startup = assembleTuiStartup(options);
+  const provider = startup.provider;
   const tools = options.tools ?? defaultReadonlyTools();
   const system = options.system ?? buildSystemPrompt({ tools });
   const readFiles = new Set(options.readFiles ?? []);
-  const cwd = options.cwd ?? process.cwd();
-  const homeDir = options.homeDir ?? homedir();
+  const cwd = startup.projectRoot;
+  const homeDir = startup.homeDir;
   const channel = createEventChannel();
   const emitter = options.signalEmitter ?? process;
-  // T-050：缺省权限组合 workspace-write + on-request（与 headless 一致），
-  // projectRoot 取 cwd；矩阵 allow/deny 由 gate 内部裁决，ask 才轮到弹窗。
-  const permission = options.permission ?? defaultPermissionConfig(cwd);
+  // T-050：权限组合来自配置装配（内置默认 workspace-write + on-request，与
+  // headless 一致）；projectRoot 取 cwd；矩阵 allow/deny 由 gate 内部裁决，
+  // ask 才轮到弹窗。
+  const permission = startup.permission;
   // 审批桥（T-044）：TUI 的 `approve` Command → ApprovalGate decider 的裁决。
   // decider 对每个请求挂起等待用户从弹窗选择；退出时 denyAll 清空未裁决请求，
   // 防止 pending 审批悬挂导致轮次永不结束。
@@ -195,7 +133,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 内不重复自动触发，避免跨阈值后每轮压缩）。测试可经 TuiOptions.compact 注入
   // stub generateDelta，实现离线覆盖。
   const compactConfig: CompactOptions = {
-    keepTurns: options.compact?.keepTurns ?? DEFAULT_KEEP_TURNS,
+    keepTurns: startup.keepTurns,
     thresholdTokens:
       options.compact?.thresholdTokens ?? defaultCompactionThreshold(provider),
     minTurnsBetweenCompactions:
@@ -310,7 +248,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           summaryState,
           compact: compactConfig,
           options: {
-            maxTurns: options.maxTurns ?? 10,
+            maxTurns: startup.maxTurns,
             abortSignal: controller.signal,
             retry: options.retry,
           },
@@ -676,3 +614,5 @@ export type {
 } from './tools';
 export { createEventChannel } from './stream';
 export type { EventChannel } from './stream';
+export { assembleTuiStartup } from './startup';
+export type { TuiOptions, TuiStartupConfig } from './startup';

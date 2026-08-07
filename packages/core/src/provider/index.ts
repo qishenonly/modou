@@ -40,6 +40,7 @@ export {
 export {
   createProvider,
   createProviderFromEnv,
+  createProviderFromConfig,
   readOpencodeEnv,
   requireApiKey,
 } from './providers';
@@ -47,6 +48,7 @@ export type {
   OpencodeEnvConfig,
   ProviderConfig,
   ProviderType,
+  ProviderFromConfigInput,
 } from './providers';
 
 export { runContractTests } from './contract/contract.test';

@@ -9,7 +9,15 @@ import { defaultWriteTools } from '@modou/core';
 import { runTui } from './index';
 
 if (import.meta.main) {
-  process.exitCode = await runTui({ tools: defaultWriteTools() }).then(
-    (result) => result.exitCode,
-  );
+  try {
+    process.exitCode = await runTui({ tools: defaultWriteTools() }).then(
+      (result) => result.exitCode,
+    );
+  } catch (error) {
+    // T-080：启动期配置校验失败等以可读消息打到 stderr，退出码 1。
+    // SettingsValidationError 的 message 已带字段 / 期望 / 文件行号。
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[modou] ${message}`);
+    process.exitCode = 1;
+  }
 }
