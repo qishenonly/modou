@@ -161,6 +161,12 @@ export interface ResumedSession {
    * edit/write 不被防盲写拒绝（同一会话内 Read 过即可覆盖）。
    */
   readonly readFiles: ReadonlySet<string>;
+  /**
+   * 会话原始记录（resume 重放的数据源）：调用方据此重建任何可推导状态而不必
+   * 再次读日志文件——如 T-070 用 `rebuildSummaryState` 从 compaction 条目恢复
+   * 持久摘要状态（/resume 后继续增量压缩）。
+   */
+  readonly records: readonly SessionRecord[];
   /** 累计 token 用量（usage 条目逐项求和；供状态栏种子等 UI 展示）。 */
   readonly usage: UsageData;
 }
@@ -194,6 +200,7 @@ export async function resumeSession(
     entryCount: read.records.length,
     messages,
     readFiles,
+    records: read.records,
     usage,
   };
 }

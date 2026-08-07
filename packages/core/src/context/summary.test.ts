@@ -22,6 +22,7 @@ import type { ModelMessage } from 'ai';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import type { ProviderCapabilities } from '../provider/capabilities';
 import type {
   ModelProvider,
@@ -32,6 +33,8 @@ import type {
 import type { CompactionData } from '../protocol/events';
 import { SessionLog, type SessionRecord } from '../session/log';
 import { runAgentTurn, type RuntimeEvent } from '../runtime/loop';
+import { ToolRegistry } from '../tools/registry';
+import type { Tool } from '../tools/types';
 import {
   buildSummaryBlock,
   compactProjection,
@@ -41,7 +44,11 @@ import {
   serializeSummary,
   splitThreadIntoTurns,
 } from './compact';
-import type { SummaryDelta, SummaryDeltaGenerator } from './compact';
+import type {
+  CompactOptions,
+  SummaryDelta,
+  SummaryDeltaGenerator,
+} from './compact';
 import {
   createSummaryState,
   isEmptySummary,
@@ -757,6 +764,183 @@ describe('runAgentTurn 接入（summaryState + compact 配置）', () => {
     const seen = provider.seenMessages[0];
     expect(seen[0].role).toBe('system');
     expect(texts(seen)).not.toContain('任务开始');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 迟滞（T-070）：压缩后 K 轮内不重复触发；compaction 事件与日志只在该触发
+// ---------------------------------------------------------------------------
+
+describe('压缩迟滞（minTurnsBetweenCompactions）', () => {
+  const echoTool: Tool = {
+    name: 'echo',
+    description: '原样返回输入（测试用）',
+    risk: 'read',
+    schema: z.object({ text: z.string().min(1) }),
+    execute: async (args: { text: string }) => ({
+      ok: true,
+      forModel: `echo:${args.text}`,
+    }),
+  };
+
+  /** 构造 N 轮工具调用 + 1 轮文本收尾的 stub 轮次（多轮驱动 loop 的 tool 循环）。 */
+  function toolRounds(count: number, finalText = '完成'): StreamEvent[][] {
+    const rounds: StreamEvent[][] = [];
+    for (let i = 1; i <= count; i += 1) {
+      rounds.push([
+        {
+          type: 'tool_use',
+          id: `c${i}`,
+          name: 'echo',
+          input: { text: `x${i}` },
+        },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ]);
+    }
+    rounds.push([textEvent(finalText), usageEvent(1, 1), finishEvent('stop')]);
+    return rounds;
+  }
+
+  /** 超阈值且轮数超 keepTurns 的线程（4 轮）。 */
+  function overThresholdThread(): ModelMessage[] {
+    return [
+      user('任务开始'),
+      assistant('开始'),
+      user('读文件'),
+      assistant('读到'),
+      user('改代码'),
+      assistant('已改'),
+      user('当前输入'),
+    ];
+  }
+
+  /** 迟滞压缩配置：stub 生成函数 + 指定迟滞窗口。 */
+  function compactConfig(minTurnsBetweenCompactions: number): CompactOptions {
+    return {
+      keepTurns: 1,
+      thresholdTokens: 1,
+      minTurnsBetweenCompactions,
+      generateDelta: async () => ({ findings: [{ id: 'f', text: '已折叠' }] }),
+    };
+  }
+
+  test('单次调用内：压缩后 K 轮内不重复触发，K 轮后再触发（minTurns=2 → 第 1、3 轮）', async () => {
+    const registry = new ToolRegistry().register(echoTool);
+    const provider = new StubProvider(toolRounds(3)); // 3 工具轮 + 1 文本轮
+    const state = merge(createSummaryState(), { goal: '长任务' });
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: overThresholdThread(),
+        tools: registry,
+        summaryState: state,
+        compact: compactConfig(2),
+        options: { maxTurns: 4 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 只第 1、3 轮触发（turnCount 1/3）；第 2、4 轮被迟滞拦下
+    const compEvents = events.filter((event) => event.type === 'compaction');
+    expect(compEvents).toHaveLength(2);
+    expect(compEvents[0].data.coveredTurns).toEqual([1, 3]);
+    // 状态演进：rev = 初始 1 + 2 次压缩；turnCount 到 4，lastCompactedTurn 停在 3
+    expect(result.summaryState).toBeDefined();
+    expect(result.summaryState!.rev).toBe(state.rev + 2);
+    expect(result.summaryState!.turnCount).toBe(4);
+    expect(result.summaryState!.lastCompactedTurn).toBe(3);
+  });
+
+  test('compaction 事件与日志只在该触发时产生（迟滞轮次无事件、无日志条目）', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'modou-hysteresis-'));
+    try {
+      const session = new SessionLog({ homeDir, cwd: homeDir });
+      const registry = new ToolRegistry().register(echoTool);
+      const provider = new StubProvider(toolRounds(3));
+      const state = merge(createSummaryState(), { goal: '长任务' });
+      const events: RuntimeEvent[] = [];
+      await runAgentTurn(
+        {
+          provider,
+          messages: overThresholdThread(),
+          tools: registry,
+          session,
+          summaryState: state,
+          compact: compactConfig(2),
+          options: { maxTurns: 4 },
+        },
+        (event) => {
+          events.push(event);
+        },
+      );
+
+      expect(
+        events.filter((event) => event.type === 'compaction'),
+      ).toHaveLength(2);
+      const lines = readFileSync(session.path, 'utf8')
+        .trim()
+        .split('\n')
+        .filter((line) => line.length > 0);
+      const records = lines.map((line) => JSON.parse(line) as SessionRecord);
+      expect(
+        records.filter((record) => record.kind === 'compaction'),
+      ).toHaveLength(2);
+      // 日志里的状态快照含迟滞记账（/resume 后不立即重复压缩）：
+      // 最后一条 compaction 条目记录的是触发时的记账（turnCount=3），
+      // resume 后从 3 继续接续，lastCompactedTurn=3 使下次触发 ≥ 3+2。
+      const rebuilt = rebuildSummaryState(records);
+      expect(rebuilt?.turnCount).toBe(3);
+      expect(rebuilt?.lastCompactedTurn).toBe(3);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('迟滞跨 runAgentTurn 接续：第二次调用首轮不再重复触发（TUI 每提交一轮的形态）', async () => {
+    const state = merge(createSummaryState(), { goal: '长任务' });
+    const events1: RuntimeEvent[] = [];
+    const result1 = await runAgentTurn(
+      {
+        provider: new StubProvider([
+          [textEvent('第一段'), usageEvent(1, 1), finishEvent('stop')],
+        ]),
+        messages: overThresholdThread(),
+        summaryState: state,
+        compact: compactConfig(5),
+        options: { maxTurns: 1 },
+      },
+      (event) => {
+        events1.push(event);
+      },
+    );
+    // 第一次调用：首轮触发，记账 lastCompactedTurn = 1
+    expect(events1.some((event) => event.type === 'compaction')).toBe(true);
+    expect(result1.summaryState!.turnCount).toBe(1);
+    expect(result1.summaryState!.lastCompactedTurn).toBe(1);
+
+    // 第二次调用：传回演进状态（turnCount 接续），距上次压缩仅 1 轮 < 5 → 不触发
+    const events2: RuntimeEvent[] = [];
+    const result2 = await runAgentTurn(
+      {
+        provider: new StubProvider([
+          [textEvent('第二段'), usageEvent(1, 1), finishEvent('stop')],
+        ]),
+        messages: overThresholdThread(),
+        summaryState: result1.summaryState,
+        compact: compactConfig(5),
+        options: { maxTurns: 1 },
+      },
+      (event) => {
+        events2.push(event);
+      },
+    );
+    expect(events2.some((event) => event.type === 'compaction')).toBe(false);
+    expect(result2.summaryState!.turnCount).toBe(2);
+    expect(result2.summaryState!.lastCompactedTurn).toBe(1); // 未被改写
   });
 });
 

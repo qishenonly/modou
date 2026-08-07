@@ -13,9 +13,10 @@ import type { StreamFinishReason } from '../provider/types';
  * - `interrupted`：被 AbortSignal 打断，机器停在可恢复稳定点；
  * - `halted`：上限终止（max_turns / 预算），不可再迁移。
  *
- * COMPACTING（0.6.0 引入，见 002 4.3）：EXECUTING --结果入日志后超阈值-->
- * COMPACTING --摘要状态已更新--> ASSEMBLE。本版只留接口注释，不实现：
- * 0.1.0 在 EXECUTING 后直接回 ASSEMBLE，或经 `limits_exceeded` 到 HALTED。
+ * 压缩（T-070 /compact，002 4.1「压缩只是投影时用摘要代替某段原文」）不占
+ * 状态机状态：loop 在 ASSEMBLE 阶段（发起请求前）做「触发 → 压缩 → 投影」，
+ * 早期轮次被摘要块代替、近 N 轮原文保留，日志原文仍在。EXECUTING 后直接回
+ * ASSEMBLE（tool_result_logged），或经 `limits_exceeded` 到 HALTED。
  */
 export type LoopState =
   'idle' | 'assemble' | 'streaming' | 'executing' | 'interrupted' | 'halted';

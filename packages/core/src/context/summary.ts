@@ -91,6 +91,19 @@ export interface SummaryState {
   readonly findings: readonly SummaryItem[];
   /** 未决问题。 */
   readonly openQuestions: readonly SummaryItem[];
+  /**
+   * 压缩迟滞记账（T-070）：会话内累计的模型请求轮次数（跨 runAgentTurn
+   * 接续，loop 每发起一轮请求 +1；仅启用压缩时推进）。不参与摘要语义
+   * （serializeSummary 忽略、isEmptySummary 不判定），只供「压缩后 K 轮内
+   * 不再触发」判定，随状态持久化（/resume 后不立即重复压缩）。
+   */
+  readonly turnCount?: number;
+  /**
+   * 压缩迟滞记账（T-070）：最近一次压缩发生时的 turnCount。
+   * loop 据此做迟滞判定（`turnCount - lastCompactedTurn >= K` 才再次触发）；
+   * merge 只保留不修改，由 loop / /compact 路径在压缩发生后回写。
+   */
+  readonly lastCompactedTurn?: number;
 }
 
 /** 一次压缩的增量（合并进既有状态；由摘要生成函数产出，测试注入 stub）。 */
@@ -165,6 +178,21 @@ export function isSummaryState(value: unknown): value is SummaryState {
   if (!Array.isArray(candidate.filesTouched)) return false;
   if (!Array.isArray(candidate.findings)) return false;
   if (!Array.isArray(candidate.openQuestions)) return false;
+  // 迟滞记账字段（可选）：存在时必须是有限数字（坏日志防御）
+  if (
+    candidate.turnCount !== undefined &&
+    (typeof candidate.turnCount !== 'number' ||
+      !Number.isFinite(candidate.turnCount))
+  ) {
+    return false;
+  }
+  if (
+    candidate.lastCompactedTurn !== undefined &&
+    (typeof candidate.lastCompactedTurn !== 'number' ||
+      !Number.isFinite(candidate.lastCompactedTurn))
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -256,6 +284,9 @@ export function merge(
       existing.openQuestions,
       delta.openQuestions ?? [],
     ),
+    // 迟滞记账（T-070）：只保留不修改——由 loop / /compact 路径在压缩发生后回写
+    lastCompactedTurn: existing.lastCompactedTurn,
+    turnCount: existing.turnCount,
   };
 
   for (const removal of delta.removed ?? []) {

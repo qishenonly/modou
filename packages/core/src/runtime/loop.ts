@@ -39,6 +39,7 @@ import {
   runCompaction,
   splitThreadIntoTurns,
   DEFAULT_KEEP_TURNS,
+  DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
 } from '../context/compact';
 import type { CompactOptions } from '../context/compact';
 import type { SummaryState } from '../context/summary';
@@ -119,17 +120,20 @@ export interface RunAgentTurnInput {
   /**
    * 持久摘要状态（T-070 /compact）：提供时，loop 把压缩后的状态随
    * `TurnResult.summaryState` 返回（调用方 / TUI 每轮传入同一演进状态即可
-   * 跨轮次增量压缩）；/resume 可先用 `rebuildSummaryState` 从会话日志的
-   * compaction 条目重建后传入。缺省 = 本轮不进行任何压缩 / 折叠。
+   * 跨轮次增量压缩；迟滞记账 turnCount / lastCompactedTurn 也随它接续）；
+   * /resume 可先用 `rebuildSummaryState` 从会话日志的 compaction 条目重建后
+   * 传入。缺省 = 本轮不进行任何压缩 / 折叠。
    */
   readonly summaryState?: SummaryState;
   /**
    * 压缩配置（T-070 /compact）：提供时，loop 在每轮请求前做「触发 → 压缩 →
-   * 投影」：上下文估算超 `thresholdTokens` 且轮数超 `keepTurns` 时调用
-   * `generateDelta`（可注入；生产由模型生成增量，测试注入 stub）产出 delta、
-   * 增量合并进摘要状态、发出协议 `compaction` 事件并把压缩后的状态记入会话
-   * 日志（提供 session 时）；随后把发给模型的请求投影为「摘要块 + 近 N 轮
-   * 原文」（早期轮次用摘要占位，日志原文仍在）。缺省 = 不压缩不折叠。
+   * 投影」：上下文估算超 `thresholdTokens`、轮数超 `keepTurns` 且迟滞窗口已过
+   * （`minTurnsBetweenCompactions`，缺省 5 轮）时调用 `generateDelta`（可注入；
+   * 生产由模型生成增量，测试注入 stub）产出 delta、增量合并进摘要状态、
+   * 发出协议 `compaction` 事件并把压缩后的状态记入会话日志（提供 session 时）；
+   * 随后把发给模型的请求投影为「摘要块 + 近 N 轮原文」（早期轮次用摘要占位，
+   * 日志原文仍在）。迟滞记账随摘要状态持久化（turnCount / lastCompactedTurn），
+   * 跨 runAgentTurn 接续，避免跨阈值后每轮重复压缩。缺省 = 不压缩不折叠。
    */
   readonly compact?: CompactOptions;
   readonly options: TurnOptions;
@@ -647,6 +651,16 @@ export async function runAgentTurn(
     roundText = '';
     roundLogged = false;
 
+    // —— 压缩迟滞记账（T-070）：会话内轮次计数单调递增（跨 runAgentTurn 接续，
+    // 随 summaryState 持久化），供「压缩后 K 轮内不再触发」判定。只启用压缩时
+    // 记账；summaryState 从入参复制为内部可变实例，此处用展开产生新对象。
+    if (compactConfig !== undefined && summaryState !== undefined) {
+      summaryState = {
+        ...summaryState,
+        turnCount: (summaryState.turnCount ?? 0) + 1,
+      };
+    }
+
     // assemble --request_started--> streaming
     move('request_started');
 
@@ -655,18 +669,26 @@ export async function runAgentTurn(
     let aborted = false;
 
     // —— 压缩触发 + 投影（T-070 /compact）——
-    // 触发：上下文估算超阈值且轮数超 keepTurns → 调注入的摘要生成函数产出
-    // delta、增量合并进持久摘要（merge，rev+1）、发协议 compaction 事件、把
-    // 压缩后的状态快照记入会话日志（/resume 重建依据）。日志原文仍在——
-    // 压缩只影响投影，不删日志（002 4.1）。
+    // 触发条件（全部满足才压缩）：上下文估算超阈值、轮数超 keepTurns、且
+    // 迟滞窗口已过（turnCount - lastCompactedTurn >= minTurnsBetweenCompactions，
+    // 缺省 5 轮——避免跨阈值后每轮重复压缩）。触发时调注入的摘要生成函数产出
+    // delta、增量合并进持久摘要（merge，rev+1）、回写 lastCompactedTurn、
+    // 发协议 compaction 事件、把压缩后的状态快照记入会话日志（/resume 重建
+    // 依据）。日志原文仍在——压缩只影响投影，不删日志（002 4.1）。
     // 投影：早期轮次 → 摘要块，近 N 轮原文保留（含当前输入轮）；只影响发给
     // 模型的请求，内部 thread 与日志不动。
     let requestMessages: ModelMessage[] = thread;
     if (compactConfig !== undefined && summaryState !== undefined) {
       const keepTurns = compactConfig.keepTurns ?? DEFAULT_KEEP_TURNS;
+      const minBetween =
+        compactConfig.minTurnsBetweenCompactions ??
+        DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS;
+      const lastCompacted = summaryState.lastCompactedTurn ?? -Infinity;
+      const sinceLast = (summaryState.turnCount ?? 0) - lastCompacted;
       if (
         isCompactionNeeded(thread, compactConfig.thresholdTokens) &&
-        splitThreadIntoTurns(thread).length > keepTurns
+        splitThreadIntoTurns(thread).length > keepTurns &&
+        sinceLast >= minBetween
       ) {
         if (compactConfig.generateDelta === undefined) {
           emit({
@@ -681,12 +703,15 @@ export async function runAgentTurn(
               summaryState,
               compactConfig,
             );
-            summaryState = outcome.state;
+            summaryState = {
+              ...outcome.state,
+              lastCompactedTurn: summaryState.turnCount ?? 0,
+            };
             emit({ type: 'compaction', data: outcome.event });
             await session?.appendCompaction({
               covers: outcome.event.coveredTurns,
               summaryRev: outcome.state.rev,
-              state: outcome.state,
+              state: summaryState,
             });
           } catch (caught) {
             emit({

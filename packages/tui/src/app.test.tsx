@@ -360,3 +360,48 @@ describe('App /context（T-063）', () => {
     unmount();
   });
 });
+
+// ---------------------------------------------------------------------------
+// /compact（T-070）：斜杠命令触发 + compaction 事件展示
+// ---------------------------------------------------------------------------
+
+describe('App /compact（T-070）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  test('输入 /compact 提交：发 slash Command（name=compact，触发 runTui 手动压缩）', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    const send = (command: Command): void => {
+      calls.push(command);
+    };
+    const { stdin, unmount } = render(<App stream={stream} send={send} />);
+    await flush();
+
+    stdin.write('/compact'); // 斜杠补全候选命中 /compact
+    stdin.write('\r');
+    expect(calls).toEqual([{ type: 'slash', name: 'compact' }]);
+    unmount();
+  });
+
+  test('compaction 事件：提示「已压缩」（折叠轮次范围 + 压缩前后 token）', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    push(
+      env({
+        type: 'compaction',
+        data: { beforeTokens: 1200, afterTokens: 300, coveredTurns: [1, 3] },
+      }),
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('已压缩');
+    expect(frame).toContain('折叠 1..3 轮');
+    expect(frame).toContain('1200 → 300');
+    unmount();
+  });
+});

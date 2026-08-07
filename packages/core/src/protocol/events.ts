@@ -163,7 +163,7 @@ export interface ContextStateData {
   readonly drift: ContextDrift;
 }
 
-/** compaction：压缩前后 token、被折叠的轮次范围。0.6.0 才产出。 */
+/** compaction：压缩前后 token、被折叠的轮次范围。0.7.0（T-070 /compact）才产出。 */
 export interface CompactionData {
   readonly beforeTokens: number;
   readonly afterTokens: number;

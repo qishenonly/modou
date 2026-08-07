@@ -6,10 +6,11 @@
  * 协议类型（protocol/events），不感知 provider / runtime 内部。
  *
  * 0.6.0 落地 budget（T-062）与 project 分项估算（T-063 /context）；
- * 0.7.0 落地 summary（T-070：增量压缩的持久摘要状态）与 compact
- * （压缩决策 / 投影 / /compact 驱动）。
+ * 0.7.0 落地 summary（T-070：增量压缩的持久摘要状态）、compact
+ * （压缩决策 / 投影 / /compact 驱动）与 delta（生产摘要增量生成）。
  */
 export * from './budget';
 export * from './project';
 export * from './summary';
 export * from './compact';
+export * from './delta';

@@ -18,6 +18,11 @@ import type {
   TokenUsage,
 } from '../provider/types';
 import { runAgentTurn } from '../runtime/loop';
+import {
+  createSummaryState,
+  merge,
+  rebuildSummaryState,
+} from '../context/summary';
 import { editTool } from '../tools/impl/edit';
 import { readTool } from '../tools/impl/read';
 import { ToolRegistry } from '../tools/registry';
@@ -292,6 +297,61 @@ describe('resumeSession（T-061 恢复）', () => {
       expect(
         await resumeSession(store, projectHash(cwd), 'no-such-session'),
       ).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('resume 摘要恢复：从日志 compaction 条目重建 summaryState（T-070 接续增量压缩）', async () => {
+    const home = tempHome();
+    try {
+      const cwd = join(home, 'proj');
+      mkdirSync(cwd, { recursive: true });
+      const registry = new ToolRegistry().register(echoTool);
+      const stub = new StubProvider([textEvents('完成。')]);
+      const log = new SessionLog({ homeDir: home, cwd });
+      const state = merge(createSummaryState(), { goal: '长任务' });
+      await runAgentTurn({
+        provider: stub,
+        messages: [
+          { role: 'user', content: '任务开始' },
+          { role: 'assistant', content: '回复1' },
+          { role: 'user', content: '读文件' },
+          { role: 'assistant', content: '回复2' },
+          { role: 'user', content: '改代码' },
+          { role: 'assistant', content: '回复3' },
+          { role: 'user', content: '当前输入' },
+        ],
+        tools: registry,
+        session: log,
+        summaryState: state,
+        compact: {
+          keepTurns: 1,
+          thresholdTokens: 1,
+          generateDelta: async () => ({
+            findings: [{ id: 'f', text: '已折叠早期轮次' }],
+          }),
+        },
+        options: { maxTurns: 1 },
+      });
+
+      const store = new SessionStore({ homeDir: home });
+      const resumed = await resumeSession(
+        store,
+        projectHash(cwd),
+        log.sessionId,
+      );
+      expect(resumed).not.toBeNull();
+      if (resumed === null) throw new Error('resume 不应为 null');
+
+      // TUI 接线形态：从 resumeSession 带出的 records 重建摘要状态（无需二次读日志）
+      const rebuilt = rebuildSummaryState(resumed.records);
+      expect(rebuilt).toBeDefined();
+      expect(rebuilt!.goal).toBe('长任务');
+      expect(rebuilt!.findings.map((item) => item.text)).toContain(
+        '已折叠早期轮次',
+      );
+      expect(rebuilt!.rev).toBe(state.rev + 1);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

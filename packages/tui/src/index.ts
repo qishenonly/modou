@@ -7,13 +7,17 @@ import {
   buildSystemPrompt,
   BudgetLedger,
   countUserMessages,
+  createModelDeltaGenerator,
   createProviderFromEnv,
   defaultPermissionConfig,
   defaultReadonlyTools,
+  DEFAULT_KEEP_TURNS,
+  DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   listSessionsForResume,
   projectHash,
   projectMessages,
   rebuildReadFiles,
+  rebuildSummaryState,
   resumeSession,
   runAgentTurnStreaming,
   SessionLog,
@@ -21,6 +25,8 @@ import {
 } from '@modou/core';
 import type {
   Command,
+  CompactOptions,
+  CompactionData,
   ContextStateData,
   Envelope,
   ModelMessage,
@@ -29,10 +35,12 @@ import type {
   PermissionConfig,
   ResumeCandidate,
   RetryOptions,
+  SummaryState,
   ToolRegistry,
 } from '@modou/core';
 import { App } from './app';
 import { createApprovalBridge } from './approval';
+import { performCompact } from './compact';
 import { derivePermissionMode, type TokenTotals } from './status';
 import { createEventChannel } from './stream';
 
@@ -76,6 +84,14 @@ export interface TuiOptions {
   /** 供应商错误的退避重试参数（缺省用 core 默认值）。 */
   readonly retry?: RetryOptions;
   /**
+   * 压缩配置（T-070 /compact）：覆盖 runTui 的压缩缺省（阈值 / 保留轮数 /
+   * 迟滞窗口）。`generateDelta` 缺省 = `createModelDeltaGenerator(provider)`
+   * （生产由模型生成增量）；测试注入 stub 以离线覆盖。`thresholdTokens` 缺省
+   * = `maxContext × 0.7`（约 70% 上下文窗口触发）。缺省 = 启用压缩（自动触发
+   * + `/compact` 手动命令）。
+   */
+  readonly compact?: CompactOptions;
+  /**
    * T-050 正交权限配置（沙箱范围 × 审批策略）。缺省 = workspace-write +
    * on-request（defaultPermissionConfig，projectRoot 取 cwd）——由 on-request
    * 的保守近似等价 0.3.0「写死 write/exec 全问」；弹窗只裁决 ask 之后的请求，
@@ -97,6 +113,19 @@ export interface TuiResult {
    * 收到 SIGINT 外部信号退出为 130（POSIX 128+2，与 headless 一致）。
    */
   readonly exitCode: number;
+}
+
+/** 缺省压缩触发阈值：上下文窗口的 70% 折（002 7.1 触发点；maxContext 缺失时 60_000）。 */
+function defaultCompactionThreshold(provider: ModelProvider): number {
+  const maxContext = provider.capabilities.maxContext;
+  if (
+    typeof maxContext === 'number' &&
+    Number.isFinite(maxContext) &&
+    maxContext > 0
+  ) {
+    return Math.floor(maxContext * 0.7);
+  }
+  return 60_000;
 }
 
 /**
@@ -159,6 +188,25 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 「系统提示 + 工具注册表 + 投影历史 + 账本」实时组装 context_state 负载注入
   // App（模态面板），Esc 经 onContextDismiss 清空关闭。
   let contextSnapshot: ContextStateData | null = null;
+
+  // —— 压缩（T-070 /compact）——
+  // 有效压缩配置：generateDelta 缺省 = 生产模型生成器（createModelDeltaGenerator
+  // 捕获 provider）；阈值缺省 = 上下文窗口的 70% 折；迟滞缺省 5 轮（压缩后 5 轮
+  // 内不重复自动触发，避免跨阈值后每轮压缩）。测试可经 TuiOptions.compact 注入
+  // stub generateDelta，实现离线覆盖。
+  const compactConfig: CompactOptions = {
+    keepTurns: options.compact?.keepTurns ?? DEFAULT_KEEP_TURNS,
+    thresholdTokens:
+      options.compact?.thresholdTokens ?? defaultCompactionThreshold(provider),
+    minTurnsBetweenCompactions:
+      options.compact?.minTurnsBetweenCompactions ??
+      DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+    generateDelta:
+      options.compact?.generateDelta ?? createModelDeltaGenerator(provider),
+  };
+  // 持久摘要状态（跨轮传回演进 / /resume 重建）：loop 把压缩后的状态随
+  // TurnResult.summaryState 返回，此处接续为下一轮的种子。
+  let summaryState: SummaryState | undefined = undefined;
 
   // 合成 notice 信封（runTui 侧提示：/resume 结果等；App 是事件流纯消费者，
   // 直接经 channel 推信封即可展示——与 core 发出的 notice 同构）。
@@ -257,6 +305,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           loggedUserCount,
           // 预算账本（T-062）：会话级累计，每轮沿用同一实例。
           budget,
+          // T-070 /compact：跨轮传回演进状态 + 压缩配置（loop 每轮请求前做
+          // 「触发 → 压缩 → 投影」；压缩事件/日志由 loop 发出）。
+          summaryState,
+          compact: compactConfig,
           options: {
             maxTurns: options.maxTurns ?? 10,
             abortSignal: controller.signal,
@@ -265,6 +317,13 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         },
         (envelope: Envelope) => channel.push(envelope),
       )
+        .then((result) => {
+          // T-070：压缩后的摘要状态随 TurnResult 演进，接续为下一轮的种子
+          // （含迟滞记账 turnCount / lastCompactedTurn）。
+          if (result.summaryState !== undefined) {
+            summaryState = result.summaryState;
+          }
+        })
         .catch(() => {
           // 错误以协议 error 事件呈现（core 归一为 ErrorData），App 负责展示；
           // 这里只保证不悬挂，不做二次处理。
@@ -306,7 +365,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     return snapshot;
   };
 
-  /** 斜杠命令分发：0.6.0 实现 /resume 与 /context（T-063；002 3.3 slash）。 */
+  /** 斜杠命令分发：0.6.0 实现 /resume 与 /context（T-063）；0.7.0 增加 /compact（T-070）。 */
   const handleSlash = (name: string, args?: string): void => {
     if (name === 'resume') {
       void handleSlashResume(args);
@@ -316,9 +375,13 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       handleSlashContext(args);
       return;
     }
+    if (name === 'compact') {
+      handleSlashCompact();
+      return;
+    }
     pushNotice(
       'info',
-      `斜杠命令 /${name} 尚未实现（0.6.0 支持 /resume 与 /context）`,
+      `斜杠命令 /${name} 尚未实现（0.7.0 支持 /compact、/resume 与 /context）`,
     );
   };
 
@@ -337,6 +400,55 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     }
     contextSnapshot = snapshot;
     rerender();
+  };
+
+  /**
+   * 把压缩事件以协议 compaction 信封推入事件流（App 据此告知用户「刚压缩过」，
+   * 与 loop 自动压缩发出的 compaction 事件同构）。seq 接续 syntheticSeq。
+   */
+  const pushCompaction = (data: CompactionData): void => {
+    syntheticSeq += 1;
+    channel.push({
+      v: 1 as const,
+      seq: syntheticSeq,
+      ts: Date.now(),
+      agent: 'main',
+      turn: 0,
+      type: 'compaction',
+      data,
+    });
+  };
+
+  /**
+   * /compact（T-070）：手动触发一次压缩——把当前投影历史里除近 keepTurns 轮外
+   * 的早期轮次折叠进摘要（增量合并，rev+1），随后 K 轮内 loop 自动压缩不再重复
+   * 触发。轮次运行中拒绝（loop 持有控制权）；历史为空 / 轮次不足时提示。
+   */
+  const handleSlashCompact = (): void => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /compact（等当前轮次结束后再试）');
+      return;
+    }
+    void handleCompact();
+  };
+
+  /** 执行一次手动压缩（/compact 的异步体，串行化在历史投影之后）。 */
+  const handleCompact = async (): Promise<void> => {
+    // 等上一轮历史投影收尾（与 /resume 同款串行化），保证折叠口径与日志一致
+    await historyRefresh;
+    if (sessionLog === null) openSession();
+    const result = await performCompact({
+      historyMessages,
+      summaryState,
+      compact: compactConfig,
+      session: sessionLog,
+    });
+    if (result.ok) {
+      summaryState = result.summaryState;
+      pushCompaction(result.outcome.event); // App 展示「已压缩」
+    } else {
+      pushNotice(result.reason === 'error' ? 'warn' : 'info', result.message);
+    }
   };
 
   /**
@@ -393,6 +505,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     loggedUserCount = countUserMessages(historyMessages);
     readFiles.clear();
     for (const path of resumed.readFiles) readFiles.add(path);
+    // T-070：/resume 重建持久摘要状态（从会话日志 compaction 条目；迟滞记账
+    // turnCount / lastCompactedTurn 一并恢复）——resume 后继续增量压缩，且
+    // 不因阈值仍超而立即重复压缩。
+    summaryState = rebuildSummaryState(resumed.records);
     initialTotals = {
       inputTokens: resumed.usage.inputTokens ?? 0,
       outputTokens: resumed.usage.outputTokens ?? 0,
@@ -515,6 +631,8 @@ export { App } from './app';
 export type { AppProps } from './app';
 export { Input } from './input';
 export type { InputProps } from './input';
+export { performCompact } from './compact';
+export type { PerformCompactInput, PerformCompactResult } from './compact';
 export { Markdown } from './markdown';
 export type { MarkdownProps } from './markdown';
 export { ApprovalModal, createApprovalBridge } from './approval';

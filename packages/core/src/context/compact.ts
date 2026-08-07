@@ -65,6 +65,12 @@ export interface CompactOptions {
   readonly keepTurns?: number;
   /** 上下文估算的压缩触发阈值（token；缺省 = 不按阈值触发）。 */
   readonly thresholdTokens?: number;
+  /**
+   * 迟滞窗口（T-070）：压缩后 K 轮内不再触发自动压缩（缺省 5；0 = 关闭迟滞）。
+   * 判定以摘要状态的 turnCount / lastCompactedTurn 记账为准（跨 runAgentTurn
+   * 接续），避免跨阈值后每轮重复压缩；compaction 事件与日志只在该触发时产生。
+   */
+  readonly minTurnsBetweenCompactions?: number;
   /** 摘要块占位消息的构造（缺省 buildSummaryBlock：system 角色）。 */
   readonly buildSummaryBlock?: SummaryBlockBuilder;
   /** 摘要生成函数（缺省 = 未注入；runCompaction 需要它才可运行）。 */
@@ -83,6 +89,9 @@ export interface CompactionOutcome {
 
 /** 默认保留的原文轮数（002 7.1 易变区「近 N 轮原文」的 N）。 */
 export const DEFAULT_KEEP_TURNS = 6;
+
+/** 默认迟滞窗口：压缩后 5 轮内不再触发自动压缩（T-070）。 */
+export const DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS = 5;
 
 // ---------------------------------------------------------------------------
 // 摘要块渲染

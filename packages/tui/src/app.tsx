@@ -175,6 +175,15 @@ export function App(props: AppProps): ReactElement {
           // T-045 状态栏：累进会话总量（函数式 setState 防丢事件；缺省字段按 0 计）
           setTotals((prev) => applyUsage(prev, envelope.data));
           break;
+        case 'compaction':
+          // T-070 /compact：告知用户「刚压缩过」——折叠轮次范围 + 压缩前后 token
+          // （loop 自动压缩与 /compact 手动命令都会发此事件）
+          setNotices((prev) => [
+            ...prev,
+            `已压缩：折叠 ${envelope.data.coveredTurns[0]}..${envelope.data.coveredTurns[1]} 轮，` +
+              `${envelope.data.beforeTokens} → ${envelope.data.afterTokens} tokens`,
+          ]);
+          break;
         case 'notice':
           setNotices((prev) => [...prev, envelope.data.text]);
           break;
@@ -201,7 +210,7 @@ export function App(props: AppProps): ReactElement {
           );
           break;
         default:
-          // thinking_delta / context_state / compaction 由后续任务处理。
+          // thinking_delta / context_state 由后续任务处理。
           break;
       }
     };
