@@ -8,8 +8,8 @@ import type { StreamFinishReason } from '../provider/types';
  * - `assemble`：上下文组装中。0.1.0 的 Context 层尚未落地，本状态近似为
  *   「发起请求前的准备态」，轮次上限检查在此进行；
  * - `streaming`：模型流式输出中；
- * - `executing`：工具执行中。0.1.0 无工具注册表，本状态只承载
- *   「未知工具」错误回喂路径；
+ * - `executing`：工具执行中（0.2.0 有工具注册表，tool_use 经 runToolPipeline
+ *   执行并回喂；未提供注册表时本状态承载「未知工具」错误回喂路径）；
  * - `interrupted`：被 AbortSignal 打断，机器停在可恢复稳定点；
  * - `halted`：上限终止（max_turns / 预算），不可再迁移。
  *

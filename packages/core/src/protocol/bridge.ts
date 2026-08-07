@@ -19,13 +19,19 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  * | text_delta       | text_delta                          |
  * | thinking_delta   | thinking_delta                      |
  * | tool_use         | tool_call                           |
+ * | tool_result      | tool_result（工具管线执行结果）     |
  * | usage            | usage                               |
  * | error            | error（ProviderError → ErrorData）  |
  * | turn_end         | turn_end（带终止原因）              |
  * | tool_feedback    | notice（warn）：模型调用了未知工具   |
  *
- * TODO（0.1.0 不产生，不映射）：
- * - `tool_result` / `tool_progress`：等工具管线（T-051）落地；
+ * `tool_result` 何时产生（T-051）：loop 在 tool_use 分支调用 runToolPipeline，
+ * 管线 ⑧ Record 发出的 tool_result 协议事件由 loop 转成同形 RuntimeEvent，
+ * 此处再映射回协议 tool_result —— 前端拿到的是「工具执行结果」协议事件；
+ * 流式阶段的 tool_use 事件（→ tool_call）负责「模型正在请求调用」的即时展示。
+ *
+ * TODO（本版不产生，不映射）：
+ * - `tool_progress`：等长命令实时输出（bash 工具落地时）；
  * - `approval_request` / `approval_resolved`：等审批（0.3.0）落地；
  * - `context_state` / `compaction`：等上下文核算与压缩（0.6.0）落地。
  */
@@ -53,6 +59,22 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
       ];
     case 'usage':
       return [{ type: 'usage', data: { ...event.usage } }];
+    case 'tool_result':
+      // 工具执行结果：与人看的 tool_result 协议事件同形，直接映射
+      return [
+        {
+          type: 'tool_result',
+          data: {
+            id: event.id,
+            ok: event.ok,
+            summary: event.summary,
+            ...(event.forModel !== undefined
+              ? { forModel: event.forModel }
+              : {}),
+            ...(event.payload !== undefined ? { payload: event.payload } : {}),
+          },
+        },
+      ];
     case 'error':
       return [{ type: 'error', data: toErrorData(event.error) }];
     case 'tool_feedback':

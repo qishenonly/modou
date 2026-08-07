@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
+import { z } from 'zod';
 import type { ProviderCapabilities } from '../provider/capabilities';
 import { ProviderError } from '../provider/errors';
 import type { ModelProvider, StreamEvent } from '../provider/types';
+import { ToolRegistry } from '../tools/registry';
 import { mapRuntimeEvent, runTurnWithProtocol } from './bridge';
 import { EnvelopeEmitter } from './envelope';
 import type { Envelope, EventType, ProtocolEvent } from './events';
@@ -177,6 +179,45 @@ describe('bridge 映射', () => {
       },
     ]);
   });
+
+  test('tool_result → 协议 tool_result（id/ok/summary/forModel/payload）', () => {
+    expect(
+      mapRuntimeEvent({
+        type: 'tool_result',
+        id: 'call-1',
+        ok: true,
+        summary: '第一行',
+        forModel: '第一行\n第二行',
+        payload: { path: '/repo/src/a.ts' },
+      }),
+    ).toEqual([
+      {
+        type: 'tool_result',
+        data: {
+          id: 'call-1',
+          ok: true,
+          summary: '第一行',
+          forModel: '第一行\n第二行',
+          payload: { path: '/repo/src/a.ts' },
+        },
+      },
+    ]);
+
+    // 可选字段（forModel / payload）缺省时不出现
+    expect(
+      mapRuntimeEvent({
+        type: 'tool_result',
+        id: 'call-2',
+        ok: false,
+        summary: '失败',
+      }),
+    ).toEqual([
+      {
+        type: 'tool_result',
+        data: { id: 'call-2', ok: false, summary: '失败' },
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +306,117 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
       'usage',
       'turn_end',
     ]);
+  });
+
+  test('注册工具执行：tool_call + tool_result 信封，第二轮正常收尾', async () => {
+    const registry = new ToolRegistry().register({
+      name: 'echo',
+      description: '回显（测试用）',
+      risk: 'read',
+      schema: z.object({ text: z.string().min(1) }),
+      execute: async (args: { text: string }) => ({
+        ok: true,
+        forModel: `echo:${args.text}`,
+      }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use' as const,
+          id: 'call-1',
+          name: 'echo',
+          input: { text: '你好' },
+        },
+        { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish' as const, reason: 'tool_use' as const },
+      ],
+      textRound('好的'),
+    ]);
+    const { envelopes, result } = await runTurnWithProtocol({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+    expect(result.turns).toBe(2);
+
+    // 流式 tool_use → tool_call 信封；管线结果 → tool_result 信封
+    const toolCall = envelopes.find((e) => e.type === 'tool_call');
+    expect(toolCall).toBeDefined();
+    if (toolCall?.type === 'tool_call') {
+      expect(toolCall.data).toEqual({
+        id: 'call-1',
+        name: 'echo',
+        input: { text: '你好' },
+      });
+    }
+    const toolResult = envelopes.find((e) => e.type === 'tool_result');
+    expect(toolResult).toBeDefined();
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data).toEqual({
+        id: 'call-1',
+        ok: true,
+        summary: 'echo:你好',
+        forModel: 'echo:你好',
+      });
+    }
+    // 已注册工具不产生未知工具 notice
+    expect(envelopes.some((e) => e.type === 'notice')).toBe(false);
+
+    // 跨轮次信封：turn 1 含 tool_call + tool_result；turn 2 收尾
+    expect(envelopes.filter((e) => e.turn === 1).map((e) => e.type)).toEqual([
+      'turn_start',
+      'tool_call',
+      'usage',
+      'tool_result',
+    ]);
+  });
+
+  test('tool_use 入参含密钥：协议 tool_call 信封里被脱敏', async () => {
+    const registry = new ToolRegistry().register({
+      name: 'echo',
+      description: '回显（测试用）',
+      risk: 'read',
+      schema: z.object({ text: z.string() }),
+      execute: async (args: { text: string }) => ({
+        ok: true,
+        forModel: args.text,
+      }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use' as const,
+          id: 'call-1',
+          name: 'echo',
+          input: { token: 'sk-abcdefghijklmnopqrstuvwxyz' },
+        },
+        { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish' as const, reason: 'tool_use' as const },
+      ],
+      textRound('好的'),
+    ]);
+    const { envelopes, result } = await runTurnWithProtocol({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+    expect(result.turns).toBe(2);
+
+    // 流式 tool_use → tool_call 信封：入参先经 redactValue（与管线 Record 语义一致）
+    const toolCall = envelopes.find((e) => e.type === 'tool_call');
+    expect(toolCall).toBeDefined();
+    if (toolCall?.type === 'tool_call') {
+      expect(toolCall.data.input).toEqual({ token: 'sk-[REDACTED]' });
+    }
+    expect(JSON.stringify(envelopes)).not.toContain(
+      'sk-abcdefghijklmnopqrstuvwxyz',
+    );
   });
 
   test('provider 抛错 → error 信封，TurnResult 终止为 error', async () => {

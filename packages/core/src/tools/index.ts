@@ -6,6 +6,7 @@
 export * from './rg';
 export * from './types';
 export * from './registry';
+export * from './toolset';
 export * from './truncate';
 export * from './redact';
 export * from './pipeline';

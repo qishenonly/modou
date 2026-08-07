@@ -7,6 +7,7 @@ import {
   type ProviderError,
   type ProviderErrorKind,
   type RetryOptions,
+  type ToolRegistry,
   type TurnResult,
 } from '@modou/core';
 
@@ -40,6 +41,11 @@ export interface HeadlessOptions {
    * 触发后本轮终止为 interrupted，已产文本照常输出。
    */
   readonly abortSignal?: AbortSignal;
+  /**
+   * 工具注册表（可注入覆盖）。缺省用 defaultReadonlyTools()（read / grep /
+   * glob，与缺省系统提示词声明的工具集一致）；测试可注入 stub 注册表。
+   */
+  readonly tools?: ToolRegistry;
   /** 供应商错误的退避重试参数（缺省用默认值；测试注入 0 延迟）。 */
   readonly retry?: RetryOptions;
   /** stdout 写入器（默认 process.stdout.write；测试注入收集器）。 */
@@ -124,18 +130,19 @@ export async function runHeadless(
   const writeError =
     options.writeError ?? ((chunk: string) => process.stderr.write(chunk));
   const envelopes: Envelope[] = [];
+  const tools = options.tools ?? defaultReadonlyTools();
 
   const result = await runAgentTurnStreaming(
     {
       provider: options.provider,
-      system:
-        options.system ?? buildSystemPrompt({ tools: defaultReadonlyTools() }),
+      system: options.system ?? buildSystemPrompt({ tools }),
       messages: [{ role: 'user', content: options.prompt }],
       options: {
         maxTurns: options.maxTurns ?? 10,
         abortSignal: options.abortSignal,
         retry: options.retry,
       },
+      tools,
     },
     (envelope) => {
       envelopes.push(envelope);

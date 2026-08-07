@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ProviderError } from '@modou/core';
 import type {
   ModelProvider,
@@ -251,5 +254,58 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
     });
 
     expect(stub.lastSystem).toBe(custom);
+  });
+
+  test('缺省只读工具集执行：read 工具结果以 tool_result 信封产出，第二轮正常收尾', async () => {
+    // 真实 read 工具跑在临时 fixture 文件上：验证 headless 把 defaultReadonlyTools()
+    // 传给了 runAgentTurn，管线执行结果回喂并映射为协议 tool_result。
+    const dir = mkdtempSync(join(tmpdir(), 'modou-headless-'));
+    const filePath = join(dir, 'answer.txt');
+    writeFileSync(filePath, '答案是 42\n', 'utf8');
+    try {
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'c1',
+            name: 'read',
+            input: { path: filePath },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'text_delta', delta: '读取完成' },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'stop' },
+        ],
+      ]);
+
+      let stdout = '';
+      const { envelopes, result } = await runHeadless({
+        provider: stub,
+        prompt: '读文件',
+        write: (chunk) => {
+          stdout += chunk;
+        },
+        writeError: () => {},
+      });
+
+      expect(result.termination).toBe('end_turn');
+      expect(result.turns).toBe(2);
+      expect(stdout).toBe('读取完成');
+
+      const toolResult = envelopes.find((e) => e.type === 'tool_result');
+      expect(toolResult).toBeDefined();
+      if (toolResult?.type === 'tool_result') {
+        expect(toolResult.data.id).toBe('c1');
+        expect(toolResult.data.ok).toBe(true);
+        expect(toolResult.data.summary).toContain('Read');
+      }
+      // 已注册工具不产生未知工具 notice
+      expect(envelopes.some((e) => e.type === 'notice')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

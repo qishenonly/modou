@@ -6,8 +6,9 @@ import type { Tool } from '../tools/types';
  *
  * 设计依据（docs/design/002-architecture.md 7.1、docs/plan/kickoff/0.2.0-kickoff.md 3.5）：
  * - 系统提示词位于上下文投影的「稳定前缀」（002 7.1），全会话只付一次缓存全价；
- *   0.2.0 尚未把 tools 传给 provider（见 runtime/loop.ts），工具定义以文本内嵌在
- *   提示词里；
+ *   工具定义有两条通道：原生 ToolSet 经 `toToolSet` 传给 provider（保证模型能
+ *   发出 tool_use、可执行），这里同时以文本内嵌 JSON Schema（让模型读到用法要点
+ *   与参数约束）——双通道冗余但有意为之，改动时需联动；
  * - 工具说明与注册表**单一来源**：每个工具的 name / description / JSON Schema
  *   （z.toJSONSchema，注册表缓存）直接取自 ToolRegistry。注册新工具即自动出现在
  *   提示词里，不会出现「提示词与工具定义失配」；

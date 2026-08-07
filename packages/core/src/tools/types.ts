@@ -2,7 +2,9 @@ import { z } from 'zod';
 
 /**
  * 工具子系统领域类型（design 002 5.2 / 5.3 / 5.4）。
- * 目录边界：tools/ 只依赖 zod 与 ../protocol/events，禁止依赖 runtime / provider。
+ * 目录边界：tools/ 只依赖 zod 与 ../protocol/events，禁止依赖 runtime / provider；
+ * 例外是 toolset.ts 的 AI SDK v7 类型互操作（tool()/jsonSchema()，只声明不执行，
+ * 是工具定义发给模型的唯一通道）。
  */
 
 /** 工具风险分类（002 5.2）：给 Permission 裁决用的分类维度，不是自由文本。 */

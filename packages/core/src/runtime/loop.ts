@@ -1,4 +1,10 @@
-import type { ModelMessage, TextPart, ToolCallPart } from 'ai';
+import type {
+  ModelMessage,
+  TextPart,
+  ToolCallPart,
+  ToolResultPart,
+  ToolSet,
+} from 'ai';
 import {
   isProviderError,
   normalizeProviderError,
@@ -9,6 +15,10 @@ import type {
   StreamFinishReason,
   TokenUsage,
 } from '../provider/types';
+import { runToolPipeline } from '../tools/pipeline';
+import { redactValue } from '../tools/redact';
+import type { ToolRegistry } from '../tools/registry';
+import { toToolSet } from '../tools/toolset';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
@@ -41,6 +51,13 @@ export interface RunAgentTurnInput {
   readonly system?: string;
   /** 对话消息（AI SDK ModelMessage 规范格式）。loop 只追加自己的副本，不改入参。 */
   readonly messages: ModelMessage[];
+  /**
+   * 工具注册表：提供时，streamChat 把注册表转成 AI SDK ToolSet 传给模型
+   * （模型能看到工具定义、能发出 tool_use），tool_use 一律走执行管线
+   * （runToolPipeline——管线对未注册工具产出 ok:false 且列出可用工具名）；
+   * 未提供时模型看不到任何工具，仍收到 tool_use 则按「未知工具」回喂。
+   */
+  readonly tools?: ToolRegistry;
   readonly options: TurnOptions;
 }
 
@@ -66,9 +83,13 @@ export interface TurnResult {
 }
 
 /**
- * Runtime 内部事件流。T-013 会把这里的每个事件映射为协议层信封
+ * Runtime 内部事件流。T-013 把这里的每个事件映射为协议层信封
  * （turn_start / turn_end / text_delta / thinking_delta / tool_call / usage /
- * error）。`tool_feedback` 是 runtime 层事件：标识「未知工具」错误已回喂模型。
+ * error / notice）。`tool_feedback` 是 runtime 层事件：仅在「未提供工具
+ * 注册表」时标识「未知工具」错误已回喂模型（提供注册表时未知工具由管线
+ * 产出 tool_result，见下）。`tool_result` 由工具管线（⑧ Record）的执行结果
+ * 转换而来，携带与人看的 tool_result 协议事件一致的负载（id / ok / summary /
+ * forModel / payload），bridge 直接映射为协议 tool_result。
  */
 export type RuntimeEvent =
   | { readonly type: 'turn_start'; readonly turn: number }
@@ -86,6 +107,14 @@ export type RuntimeEvent =
       readonly name: string;
       readonly error: string;
     }
+  | {
+      readonly type: 'tool_result';
+      readonly id: string;
+      readonly ok: boolean;
+      readonly summary: string;
+      readonly forModel?: string;
+      readonly payload?: unknown;
+    }
   | { readonly type: 'usage'; readonly usage: TokenUsage }
   | { readonly type: 'error'; readonly error: ProviderError }
   | {
@@ -94,9 +123,9 @@ export type RuntimeEvent =
       readonly termination: TurnTermination;
     };
 
-/** 0.1.0 无工具注册表：任何 tool_use 都走「未知工具」错误回喂。 */
+/** 未提供工具注册表时的回喂文案：模型看不到任何工具定义却发了工具调用。 */
 const UNKNOWN_TOOL_MESSAGE = (name: string): string =>
-  `未知工具 "${name}"：0.1.0 尚未接入工具注册表。请勿调用任何工具，直接用文本回答用户。`;
+  `未知工具 "${name}"：当前会话未提供工具注册表，无法执行任何工具调用。请勿调用工具，直接用文本回答用户。`;
 
 /** 归一任意错误为 ProviderError（provider 适配层本应已归一，此处兜底）。 */
 function toProviderError(error: unknown): ProviderError {
@@ -111,8 +140,9 @@ function toProviderError(error: unknown): ProviderError {
  * 2. 流中事件直接透出（text / thinking / tool_use / usage），
  *    文本累计进结果、usage 累计进账本；
  * 3. `stop_reason` 驱动流转（stopReasonToTransition）：
- *    - `tool_use` → executing：0.1.0 无工具注册表，把「未知工具」错误
- *      以 assistant tool-call + tool 错误结果回喂，继续下一轮；
+ *    - `tool_use` → executing：tools 提供时（注册与否）一律经 runToolPipeline
+ *      执行并回喂，未注册工具由管线产出 ok:false + 可用工具列表；tools 未提供
+ *      才保留「未知工具」错误回喂（见 feedBackToolRound）；
  *    - 其余 → end_turn 收尾回 idle；
  *    - `error` → 终止为 error。
  * 4. 上限兜底：轮次在 ASSEMBLE 检查、预算在每轮 usage 后检查，超限 → halted；
@@ -125,7 +155,7 @@ export async function runAgentTurn(
   input: RunAgentTurnInput,
   onEvent?: (event: RuntimeEvent) => void,
 ): Promise<TurnResult> {
-  const { provider, system, messages, options } = input;
+  const { provider, system, messages, tools, options } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
 
@@ -171,11 +201,19 @@ export async function runAgentTurn(
     return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) > maxTokens;
   };
 
-  /** 把本轮产出（文本 + tool_use）与「未知工具」错误回喂给模型。 */
-  const feedBackUnknownTool = (
+  /**
+   * 回喂一轮的工具结果（assistant tool-call → tool 结果，AI SDK ModelMessage
+   * 规范格式，与 0.1.0 验证过的构造方式一致）：提供工具注册表时，tool_use
+   * 一律经 runToolPipeline 执行（注册与否都由管线归一——未注册工具产出
+   * ok:false 且列出可用工具名）；未提供注册表才按「未知工具」错误回喂。
+   * 管线发出的协议事件在此转成 RuntimeEvent 透出（tool_call 跳过，见
+   * executeToolCall 内注释）。
+   */
+  const feedBackToolRound = async (
     roundText: string,
-    toolUses: Array<{ id: string; name: string; input: unknown }>,
-  ): void => {
+    toolUses: ReadonlyArray<{ id: string; name: string; input: unknown }>,
+    tools: ToolRegistry | undefined,
+  ): Promise<void> => {
     const assistantContent: Array<TextPart | ToolCallPart> = [];
     if (roundText.length > 0) {
       assistantContent.push({ type: 'text', text: roundText });
@@ -189,15 +227,83 @@ export async function runAgentTurn(
       });
     }
     thread.push({ role: 'assistant', content: assistantContent });
-    thread.push({
-      role: 'tool',
-      content: toolUses.map((call) => ({
-        type: 'tool-result',
-        toolCallId: call.id,
-        toolName: call.name,
-        output: { type: 'error-text', value: UNKNOWN_TOOL_MESSAGE(call.name) },
-      })),
-    });
+
+    const results: ToolResultPart[] = [];
+    for (const call of toolUses) {
+      if (tools === undefined) {
+        // 未提供注册表：模型看不到任何工具定义却发了 tool_use，
+        // 保留「未知工具」错误回喂（含 tool_feedback 事件）
+        emit({
+          type: 'tool_feedback',
+          id: call.id,
+          name: call.name,
+          error: UNKNOWN_TOOL_MESSAGE(call.name),
+        });
+        results.push({
+          type: 'tool-result',
+          toolCallId: call.id,
+          toolName: call.name,
+          output: {
+            type: 'error-text',
+            value: UNKNOWN_TOOL_MESSAGE(call.name),
+          },
+        });
+      } else {
+        // 提供注册表（无论该工具是否注册）：一律走管线。未注册工具由
+        // 管线产出 ok:false + 可用工具列表，比 loop 自己的弱诊断更可诊断。
+        results.push(await executeToolCall(call, tools));
+      }
+    }
+    thread.push({ role: 'tool', content: results });
+  };
+
+  /**
+   * 通过工具管线执行一次工具调用，返回 AI SDK 的 tool-result 消息片段。
+   *
+   * 管线 ⑧ Record 的协议事件在此转成 RuntimeEvent：
+   * - `tool_call` 跳过——流式阶段已由 `tool_use` 事件经 bridge 映射为协议
+   *   tool_call（入参已在透出时脱敏，见上方 tool_use 分支），再转发会同一
+   *   调用出现两条 tool_call；
+   * - `tool_result` 转成 RuntimeEvent，由 bridge 映射为协议 tool_result
+   *   （summarizer / 双表示字段原样保留）。
+   *
+   * 管线不抛 ProviderError：中断 / 超时 / 执行错误一律归一为 `ok:false`
+   * 的 ToolOutcome 回喂模型自纠；turn 级中断语义由 abortSignal 透传保证——
+   * 中止信号已置位时，管线中断工具、下一轮 provider 请求立即以 aborted
+   * 失败，loop 照常转 interrupted。
+   */
+  const executeToolCall = async (
+    call: { id: string; name: string; input: unknown },
+    tools: ToolRegistry,
+  ): Promise<ToolResultPart> => {
+    const outcome = await runToolPipeline(
+      { id: call.id, name: call.name, input: call.input },
+      {
+        registry: tools,
+        abortSignal,
+        emit: (pipelineEvent) => {
+          if (pipelineEvent.type === 'tool_result') {
+            const { id, ok, summary, forModel, payload } = pipelineEvent.data;
+            emit({
+              type: 'tool_result',
+              id,
+              ok,
+              summary,
+              ...(forModel !== undefined ? { forModel } : {}),
+              ...(payload !== undefined ? { payload } : {}),
+            });
+          }
+        },
+      },
+    );
+    return {
+      type: 'tool-result',
+      toolCallId: call.id,
+      toolName: call.name,
+      output: outcome.ok
+        ? { type: 'text', value: outcome.forModel }
+        : { type: 'error-text', value: outcome.forModel },
+    };
   };
 
   const finalize = (): TurnResult => {
@@ -216,6 +322,11 @@ export async function runAgentTurn(
     emit({ type: 'turn_end', turn, termination });
     return result;
   };
+
+  // 工具注册表 → AI SDK v7 ToolSet：模型能看到工具定义、能发出 tool_use 的
+  // 关键一环（G-0.2.0）。注册表缺失时不传（模型没有工具可用）。
+  const toolSet: ToolSet | undefined =
+    tools === undefined ? undefined : toToolSet(tools);
 
   // —— 状态机入口：idle --submit--> assemble ——
   move('submit');
@@ -244,7 +355,15 @@ export async function runAgentTurn(
       // 只有尚未产出事件的失败才整体重试，已产出部分内容则直接按错误
       // 终止（保留已产文本）；退避期间 abort 也能立刻停下（干净中断）。
       const stream = withRetry(
-        () => provider.streamChat({ system, messages: thread, abortSignal }),
+        () =>
+          provider.streamChat({
+            system,
+            messages: thread,
+            // 工具定义随请求发给模型：真实模型据此发出 tool_use（G-0.2.0）。
+            // 注册表缺失时不传（模型没有工具可用）。
+            ...(toolSet === undefined ? {} : { tools: toolSet }),
+            abortSignal,
+          }),
         {
           ...options.retry,
           abortSignal: abortSignal ?? options.retry?.abortSignal,
@@ -266,11 +385,13 @@ export async function runAgentTurn(
               name: event.name,
               input: event.input,
             });
+            // 转发为协议 tool_call 前先脱敏入参（与管线 ⑧ Record 的脱敏语义
+            // 一致），避免模型入参里的密钥原样透出到事件流 / 会话日志。
             emit({
               type: 'tool_use',
               id: event.id,
               name: event.name,
-              input: event.input,
+              input: redactValue(event.input),
             });
             break;
           case 'usage':
@@ -326,17 +447,11 @@ export async function runAgentTurn(
           move('end_turn'); // streaming → idle
           break;
         }
-        // streaming --tool_use--> executing：0.1.0 无工具注册表，走未知工具回喂
+        // streaming --tool_use--> executing：tools 提供时一律走执行管线
+        // （未注册工具由管线产出 ok:false + 可用工具列表）；未提供注册表
+        // 保留「未知工具」回喂（见 feedBackToolRound）
         move('tool_use');
-        for (const call of toolUses) {
-          emit({
-            type: 'tool_feedback',
-            id: call.id,
-            name: call.name,
-            error: UNKNOWN_TOOL_MESSAGE(call.name),
-          });
-        }
-        feedBackUnknownTool(roundText, toolUses);
+        await feedBackToolRound(roundText, toolUses, tools);
         move('tool_result_logged'); // executing → assemble
         continue;
       }
