@@ -12,6 +12,7 @@
     "module": "esnext",
     "target": "esnext",
     "declaration": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["node", "bun"]
   }
 }
