@@ -186,5 +186,21 @@ export { Input } from './input';
 export type { InputProps } from './input';
 export { Markdown } from './markdown';
 export type { MarkdownProps } from './markdown';
+export {
+  ToolCallList,
+  DiffView,
+  reduceToolEvent,
+  buildDiffLines,
+  diffFromPayload,
+  summarizeInput,
+  summarizeEntry,
+} from './tools';
+export type {
+  ToolCallEntry,
+  ToolCallStatus,
+  ToolEvent,
+  DiffLine,
+  DiffLineKind,
+} from './tools';
 export { createEventChannel } from './stream';
 export type { EventChannel } from './stream';

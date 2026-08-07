@@ -3,6 +3,8 @@ import { Box, Text, useInput } from 'ink';
 import type { Command, Envelope, UsageData } from '@modou/core';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
+import type { ToolCallEntry } from './tools';
+import { reduceToolEvent, ToolCallList } from './tools';
 
 /** App 组件属性（T-040 骨架 + T-041 输入框）。 */
 export interface AppProps {
@@ -56,6 +58,9 @@ export function App(props: AppProps): ReactElement {
   const [notices, setNotices] = useState<string[]>([]);
   // 错误（002 5.3：错误即数据）
   const [error, setError] = useState<string | null>(null);
+  // 工具调用条目（T-043：按 callId 组织 tool_call / tool_progress / tool_result，
+  // 由 tools.tsx 的纯函数规约；跨轮次累计展示，与输出区文本同生命周期）
+  const [tools, setTools] = useState<ToolCallEntry[]>([]);
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -92,11 +97,15 @@ export function App(props: AppProps): ReactElement {
           setRunning(false);
           setError(envelope.data.message);
           break;
+        case 'tool_call':
+        case 'tool_progress':
+        case 'tool_result':
+          // T-043 工具调用展示：三个工具事件统一进规约函数，按 callId 组织条目
+          setTools((prev) => reduceToolEvent(prev, envelope));
+          break;
         default:
-          // thinking_delta / tool_call / tool_progress / tool_result /
-          // approval_request / approval_resolved / context_state / compaction
-          // 由 T-042（markdown 折叠）/ T-043（tools.tsx）/ T-044（approval.tsx）
-          // 后续处理；T-040 骨架先忽略。
+          // thinking_delta / approval_request / approval_resolved / context_state /
+          // compaction 由 T-042（markdown 折叠）/ T-044（approval.tsx）后续处理。
           break;
       }
     };
@@ -142,6 +151,8 @@ export function App(props: AppProps): ReactElement {
     <Box flexDirection="column" minHeight={5}>
       {/* 消息/输出区（markdown.tsx 渲染 + 帧节流，T-042） */}
       <Box flexGrow={1} flexDirection="column">
+        {/* 工具调用展示（T-043）：工具区在上、输出区在下；折叠/展开 + diff 高亮 */}
+        {tools.length > 0 && <ToolCallList entries={tools} />}
         {assistantText.length > 0 && <Markdown text={assistantText} />}
         {notices.map((notice, index) => (
           <Text key={index} color="yellow">

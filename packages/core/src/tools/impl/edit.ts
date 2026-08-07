@@ -35,6 +35,12 @@ import { writeFileAtomically } from './write';
 
 /** Edit 大文件保护：需整读文件做精确匹配与替换，超过即拒绝（建议 Grep 定位 / 分块处理）。 */
 export const EDIT_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * payload 里 diff 展示字段（old_string / new_string）的单侧字符上限：
+ * 超出即截断头部，防止超长编辑把事件流撑爆。截断发生在 payload 侧——前端拿到的
+ * diff 只是给人看的，截断只影响展示粒度，不影响回喂模型的 forModel 与真实文件。
+ */
+export const EDIT_PAYLOAD_DIFF_MAX = 2000;
 /** 多匹配时最多列出的位置数（超出只声明剩余数量，不穷举）。 */
 export const EDIT_AMBIGUOUS_LIST_MAX = 5;
 /** 相似片段粗筛：每行 n-gram 命中数封顶（防超长行把 score 撑爆）。 */
@@ -95,6 +101,10 @@ export interface EditPayload {
     readonly snippet: string;
     readonly difference: string;
   };
+  /** 被替换的原文（diff 展示用，成功替换时存在；超长按字符截断，见 EDIT_PAYLOAD_DIFF_MAX）。 */
+  readonly old_string?: string;
+  /** 替换后的新文（diff 展示用，成功替换时存在）。 */
+  readonly new_string?: string;
 }
 
 /** 工具选项：允许测试与特化场景覆盖默认阈值。 */
@@ -437,6 +447,13 @@ function displaySnippet(text: string): string {
   return JSON.stringify(clipped);
 }
 
+/** 截断到 EDIT_PAYLOAD_DIFF_MAX（超长保留头部；编辑差异通常集中在头部，展示粒度足够）。 */
+function capDiffText(text: string): string {
+  return text.length > EDIT_PAYLOAD_DIFF_MAX
+    ? text.slice(0, EDIT_PAYLOAD_DIFF_MAX)
+    : text;
+}
+
 /**
  * 相似片段搜索（old_string 0 次匹配时调用）：粗筛 + 精评两阶段。
  * 返回 null 表示「文件中没有相近片段」（空文件 / 共享字符太少 / 相似度低于阈值）。
@@ -776,6 +793,8 @@ async function executeEdit(
       replaced: true,
       occurrenceCount,
       newBytes,
+      old_string: capDiffText(oldString),
+      new_string: capDiffText(newString),
     },
   };
 }

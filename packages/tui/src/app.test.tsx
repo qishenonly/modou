@@ -75,6 +75,47 @@ describe('App（T-040 Ink 应用骨架）', () => {
     unmount();
   });
 
+  test('tool_call / tool_result 事件流：工具调用列表创建并填充（T-043）', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    push(
+      env({
+        type: 'tool_call',
+        data: { id: 'c1', name: 'edit', input: { path: '/a.ts' } },
+      }),
+    );
+    await flush();
+    // 折叠行：进行中标记 + 工具名 + 关键参数摘要
+    expect(lastFrame() ?? '').toContain('… edit /a.ts');
+
+    push(
+      env({
+        type: 'tool_result',
+        data: {
+          id: 'c1',
+          ok: true,
+          summary: 'Edit /a.ts：替换 1 处',
+          forModel: '已替换 /a.ts',
+          payload: {
+            path: '/a.ts',
+            replaced: true,
+            occurrenceCount: 1,
+            old_string: 'x',
+            new_string: 'y',
+          },
+        },
+      }),
+    );
+    await flush();
+    // 结果填充：成功标记 + 摘要进入折叠行
+    expect(lastFrame() ?? '').toContain('✓ edit Edit /a.ts：替换 1 处');
+
+    unmount();
+  });
+
   test('回车提交：输入非空触发 submit Command（空输入不提交）', async () => {
     const { stream } = createEventChannel();
     const calls: Command[] = [];

@@ -47,6 +47,8 @@ interface EditPayload {
   readonly newBytes?: number;
   readonly error?: string;
   readonly suggestion?: { line: number; snippet: string; difference: string };
+  readonly old_string?: string;
+  readonly new_string?: string;
 }
 
 function payloadOf(outcome: { readonly payload?: unknown }): EditPayload {
@@ -486,6 +488,8 @@ describe('payload 结构', () => {
       replaced: true,
       occurrenceCount: 1,
       newBytes: Buffer.byteLength('const v = 2;', 'utf8'),
+      old_string: 'const v = 1;',
+      new_string: 'const v = 2;',
     });
   });
 
