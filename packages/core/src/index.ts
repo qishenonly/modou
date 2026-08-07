@@ -6,3 +6,4 @@ export * from './protocol';
 export * from './tools';
 export * from './permission';
 export * from './prompt';
+export * from './eval';

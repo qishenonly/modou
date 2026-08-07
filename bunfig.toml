@@ -2,4 +2,7 @@
 linker = "hoisted"
 
 [test]
-pathIgnorePatterns = ["**/dist/**"]
+# dist 与评测 fixture 不参与仓库内测试发现：
+# fixture 里的 *.test.ts 是「故意有一个失败」的种子测试，只应在评测时
+# 复制到临时目录后由 judge 运行，不能进入仓库级 bun test。
+pathIgnorePatterns = ["**/dist/**", "**/eval/fixtures/**"]
