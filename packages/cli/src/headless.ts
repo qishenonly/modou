@@ -46,6 +46,14 @@ export interface HeadlessOptions {
    * glob，与缺省系统提示词声明的工具集一致）；测试可注入 stub 注册表。
    */
   readonly tools?: ToolRegistry;
+  /**
+   * 会话级已读文件集合（绝对路径，Write/Edit 防盲写的种子）：调用方传入
+   * 会话既有的已读状态或缺省新建空集合。loop 内部复制并跨轮次维护——
+   * Read 工具成功读到的文件会实时入集，使后续 Write/Edit 放行。
+   */
+  readonly readFiles?: ReadonlySet<string>;
+  /** 工作目录：传给工具 ctx.cwd（相对路径以此解析）。缺省 process.cwd()。 */
+  readonly cwd?: string;
   /** 供应商错误的退避重试参数（缺省用默认值；测试注入 0 延迟）。 */
   readonly retry?: RetryOptions;
   /** stdout 写入器（默认 process.stdout.write；测试注入收集器）。 */
@@ -143,6 +151,10 @@ export async function runHeadless(
         retry: options.retry,
       },
       tools,
+      // 会话级已读集合：缺省新建空集合；loop 内部复制并跨轮次维护。
+      // cwd 缺省 process.cwd()：相对路径在工具里相对它解析。
+      readFiles: options.readFiles ?? new Set<string>(),
+      cwd: options.cwd ?? process.cwd(),
     },
     (envelope) => {
       envelopes.push(envelope);

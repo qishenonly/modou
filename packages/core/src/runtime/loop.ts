@@ -58,6 +58,16 @@ export interface RunAgentTurnInput {
    * 未提供时模型看不到任何工具，仍收到 tool_use 则按「未知工具」回喂。
    */
   readonly tools?: ToolRegistry;
+  /**
+   * 会话级已读文件集合（绝对路径，Write/Edit 防盲写的生产者种子）：
+   * 调用方/headless 传入会话既有的已读状态，或缺省新建（空集合）。
+   * loop 会把它复制成内部可变集合并持续维护——Read 工具成功读到的文件
+   * 经 ctx.onFileRead 回调实时入集，集合跨轮次持续（同一会话内 Read 过
+   * 即可 Edit/Write 覆盖）；tools 拿到的始终是当前累计的只读快照。
+   */
+  readonly readFiles?: ReadonlySet<string>;
+  /** 工作目录：传给工具 ctx.cwd（相对路径以此解析）。缺省 process.cwd()。 */
+  readonly cwd?: string;
   readonly options: TurnOptions;
 }
 
@@ -155,9 +165,26 @@ export async function runAgentTurn(
   input: RunAgentTurnInput,
   onEvent?: (event: RuntimeEvent) => void,
 ): Promise<TurnResult> {
-  const { provider, system, messages, tools, options } = input;
+  const {
+    provider,
+    system,
+    messages,
+    tools,
+    options,
+    readFiles: initialReadFiles,
+    cwd: inputCwd,
+  } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
+
+  /**
+   * 会话级已读文件集合（Write/Edit 防盲写的生产者）：
+   * 从入参复制（或缺省新建），Read 工具成功读到的文件路径经 onFileRead
+   * 回调实时加入；集合跨轮次持续——同一会话内 Read 过即可 Edit/Write 覆盖。
+   */
+  const readFiles = new Set<string>(initialReadFiles ?? []);
+  /** 工作目录：入参提供或缺省 process.cwd()，传给工具 ctx.cwd。 */
+  const cwd = inputCwd ?? process.cwd();
 
   let state: LoopState = 'idle';
   let termination: TurnTermination = 'end_turn';
@@ -281,6 +308,17 @@ export async function runAgentTurn(
       {
         registry: tools,
         abortSignal,
+        // 执行上下文：cwd 供相对路径解析；readFiles 供 Write/Edit 防盲写检查；
+        // onFileRead 是已读集合的唯一生产者——read 工具成功读到一个文件后
+        // 回调，loop 据此把该文件（realpath 已由 read 工具解析）加入会话集合，
+        // 使同轮或后续轮次的 Write/Edit 放行。集合跨轮次持续。
+        context: {
+          cwd,
+          readFiles,
+          onFileRead: (path) => {
+            readFiles.add(path);
+          },
+        },
         emit: (pipelineEvent) => {
           if (pipelineEvent.type === 'tool_result') {
             const { id, ok, summary, forModel, payload } = pipelineEvent.data;

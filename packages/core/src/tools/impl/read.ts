@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
@@ -317,6 +317,19 @@ function renderPage(
   };
 }
 
+/**
+ * 上报一次成功读取（维护会话已读集合）：把该文件的 realpath 解析结果传给
+ * ctx.onFileRead（若提供了回调）。realpath 归一化让「符号链接路径读、真实
+ * 路径写」也能被 Write/Edit 的防盲写检查命中（它们用 absPath 或 realpath
+ * 任一命中即可）。realpath 失败时回退到解析后的绝对路径——文件刚被成功
+ * 读取过，此时 realpath 几乎必然成功，回退只是兜底。
+ */
+async function reportRead(ctx: ToolContext, absPath: string): Promise<void> {
+  if (ctx.onFileRead === undefined) return;
+  const real = await realpath(absPath).catch(() => absPath);
+  ctx.onFileRead(real);
+}
+
 /** 执行一次 Read（由 createReadTool 闭包注入运行时选项）。 */
 async function executeRead(
   args: ReadArgs,
@@ -384,6 +397,7 @@ async function executeRead(
 
   // 空文件：不报越界，给出友好提示
   if (result.totalLines === 0) {
+    await reportRead(ctx, absPath);
     const rendered = renderPage(
       absPath,
       result,
@@ -422,6 +436,7 @@ async function executeRead(
     );
   }
 
+  await reportRead(ctx, absPath);
   const rendered = renderPage(
     absPath,
     result,

@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage, ToolSet } from 'ai';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -12,9 +18,15 @@ import type {
   StreamEvent,
   TokenUsage,
 } from '../provider/types';
-import { defaultReadonlyTools, globTool, grepTool, readTool } from '../tools';
+import {
+  defaultReadonlyTools,
+  defaultWriteTools,
+  globTool,
+  grepTool,
+  readTool,
+} from '../tools';
 import { ToolRegistry } from '../tools/registry';
-import type { Tool } from '../tools/types';
+import type { Tool, ToolContext } from '../tools/types';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
 
@@ -743,5 +755,245 @@ describe('G-0.2.0 雏形：glob → read 工具调用链（离线端到端）', 
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 防盲写（T-030/T-031）的运行时生产者：loop 维护会话级已读集合，read 工具
+// 经 ctx.onFileRead 上报成功读取；Write/Edit 据此放行。这里端到端验证
+// read→edit 链路、跨轮次持续、入参种子与 cwd 下发。
+// ---------------------------------------------------------------------------
+
+describe('防盲写 readFiles 运行时生产者（loop 维护会话已读集合）', () => {
+  /** 从事件流里取指定 id 的 tool_result（ok 与 forModel）。 */
+  function toolResultById(
+    events: RuntimeEvent[],
+    id: string,
+  ): { ok: boolean; forModel: string } | undefined {
+    const event = events.find((e) => e.type === 'tool_result' && e.id === id);
+    if (event === undefined || event.type !== 'tool_result') return undefined;
+    return { ok: event.ok, forModel: event.forModel ?? '' };
+  }
+
+  /** 临时 fixture：一个目录 + 一个内容固定的目标文件。 */
+  function makeFixture(content: string): { dir: string; file: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-readfiles-'));
+    const file = join(dir, 'target.ts');
+    writeFileSync(file, content, 'utf8');
+    return { dir, file };
+  }
+
+  /** 构造 edit 工具入参（目标文件 + 唯一替换）。 */
+  function editInput(
+    file: string,
+    oldString: string,
+    newString: string,
+  ): Record<string, unknown> {
+    return { path: file, old_string: oldString, new_string: newString };
+  }
+
+  test('同一轮次先 read 后 edit：readFiles 实时入集，edit 放行并执行', async () => {
+    const { dir, file } = makeFixture('const value = 1;\n');
+    try {
+      const tools = defaultWriteTools();
+      const stub = new StubProvider([
+        [
+          { type: 'tool_use', id: 'r1', name: 'read', input: { path: file } },
+          {
+            type: 'tool_use',
+            id: 'e1',
+            name: 'edit',
+            input: editInput(file, 'const value = 1;', 'const value = 2;'),
+          },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('完成。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      const result = await runAgentTurn(
+        {
+          provider: stub,
+          messages: [userMsg],
+          tools,
+          options: { maxTurns: 5 },
+        },
+        (event) => events.push(event),
+      );
+
+      expect(result.termination).toBe('end_turn');
+      expect(toolResultById(events, 'r1')?.ok).toBe(true);
+      const edit = toolResultById(events, 'e1');
+      expect(edit?.ok).toBe(true);
+      expect(edit?.forModel).toContain('已替换');
+      expect(readFileSync(file, 'utf8')).toBe('const value = 2;\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('同一轮次先 edit 后 read：edit 被拒（未读过），文件不被改动', async () => {
+    const { dir, file } = makeFixture('const value = 1;\n');
+    try {
+      const tools = defaultWriteTools();
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'e1',
+            name: 'edit',
+            input: editInput(file, 'const value = 1;', 'const value = 2;'),
+          },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'tool_use', id: 'r1', name: 'read', input: { path: file } },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('完成。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      const result = await runAgentTurn(
+        {
+          provider: stub,
+          messages: [userMsg],
+          tools,
+          options: { maxTurns: 5 },
+        },
+        (event) => events.push(event),
+      );
+
+      expect(result.termination).toBe('end_turn');
+      const edit = toolResultById(events, 'e1');
+      expect(edit?.ok).toBe(false);
+      expect(edit?.forModel).toContain('未读取过');
+      expect(toolResultById(events, 'r1')?.ok).toBe(true);
+      expect(readFileSync(file, 'utf8')).toBe('const value = 1;\n'); // 未被改动
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('跨轮次：turn 1 read，turn 2 edit 仍放行（集合跨轮次持续）', async () => {
+    const { dir, file } = makeFixture('const value = 1;\n');
+    try {
+      const tools = defaultWriteTools();
+      const stub = new StubProvider([
+        [
+          { type: 'tool_use', id: 'r1', name: 'read', input: { path: file } },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          {
+            type: 'tool_use',
+            id: 'e1',
+            name: 'edit',
+            input: editInput(file, 'const value = 1;', 'const value = 3;'),
+          },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('完成。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      const result = await runAgentTurn(
+        {
+          provider: stub,
+          messages: [userMsg],
+          tools,
+          options: { maxTurns: 5 },
+        },
+        (event) => events.push(event),
+      );
+
+      expect(result.termination).toBe('end_turn');
+      expect(result.turns).toBe(3);
+      const edit = toolResultById(events, 'e1');
+      expect(edit?.ok).toBe(true);
+      expect(edit?.forModel).toContain('已替换');
+      expect(readFileSync(file, 'utf8')).toBe('const value = 3;\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('入参 readFiles 作种子：无需先读，edit 直接放行', async () => {
+    const { dir, file } = makeFixture('const value = 1;\n');
+    try {
+      const tools = defaultWriteTools();
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'e1',
+            name: 'edit',
+            input: editInput(file, 'const value = 1;', 'const value = 4;'),
+          },
+          { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('完成。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      const result = await runAgentTurn(
+        {
+          provider: stub,
+          messages: [userMsg],
+          tools,
+          readFiles: new Set([file]),
+          options: { maxTurns: 5 },
+        },
+        (event) => events.push(event),
+      );
+
+      expect(result.termination).toBe('end_turn');
+      const edit = toolResultById(events, 'e1');
+      expect(edit?.ok).toBe(true);
+      expect(readFileSync(file, 'utf8')).toBe('const value = 4;\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('cwd 下发正确：工具 ctx.cwd 等于传入值', async () => {
+    const cwdProbe: Tool = {
+      name: 'cwd-probe',
+      description: '返回当前工作目录（测试用）',
+      risk: 'read',
+      schema: z.object({}),
+      execute: async (_args: unknown, ctx: ToolContext) => ({
+        ok: true,
+        forModel: `cwd=${ctx.cwd ?? '<undefined>'}`,
+      }),
+    };
+    const tools = new ToolRegistry().register(cwdProbe);
+    const expectedCwd = join(tmpdir(), 'modou-cwd-target');
+    const stub = new StubProvider([
+      [
+        { type: 'tool_use', id: 'c1', name: 'cwd-probe', input: {} },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools,
+        cwd: expectedCwd,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    const probe = toolResultById(events, 'c1');
+    expect(probe?.ok).toBe(true);
+    expect(probe?.forModel).toBe(`cwd=${expectedCwd}`);
   });
 });

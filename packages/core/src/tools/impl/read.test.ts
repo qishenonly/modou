@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -379,5 +380,44 @@ describe('经管线集成', () => {
     expect(out.ok).toBe(false);
     expect(out.forModel).toContain('参数校验失败');
     expect(out.forModel).toContain('offset');
+  });
+});
+
+describe('onFileRead 上报（会话已读集合的生产者）', () => {
+  test('成功读取：回调收到 realpath 解析后的绝对路径', async () => {
+    const p = writeFixture('report.txt', '内容');
+    const reported: string[] = [];
+    const out = await readTool.execute(
+      { path: p },
+      {
+        signal: new AbortController().signal,
+        cwd: tmpDir,
+        onFileRead: (path) => reported.push(path),
+      },
+    );
+    expect(out.ok).toBe(true);
+    // 入集合的是 realpath 解析后的真实路径（符号链接 / /var→/private/var 归一化），
+    // 使后续 Write/Edit 的 realpath 归一化检查能命中。
+    expect(reported).toEqual([realpathSync(p)]);
+  });
+
+  test('失败（文件不存在）：回调不被调用', async () => {
+    const reported: string[] = [];
+    const out = await readTool.execute(
+      { path: fixturePath('missing.txt') },
+      {
+        signal: new AbortController().signal,
+        cwd: tmpDir,
+        onFileRead: (path) => reported.push(path),
+      },
+    );
+    expect(out.ok).toBe(false);
+    expect(reported).toEqual([]);
+  });
+
+  test('未注入 onFileRead：静默不调用（可选回调）', async () => {
+    const p = writeFixture('quiet.txt', '内容');
+    const out = await readTool.execute({ path: p }, makeCtx());
+    expect(out.ok).toBe(true);
   });
 });

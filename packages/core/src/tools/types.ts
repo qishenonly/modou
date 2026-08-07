@@ -28,6 +28,15 @@ export interface ToolContext {
    * 在集合内（防盲写覆盖）；新文件不受此限。测试可注入该集合。
    */
   readonly readFiles?: ReadonlySet<string>;
+  /**
+   * 已读文件上报回调（维护会话已读集合的唯一入口）：Read 工具成功读到
+   * 一个文件后调用，入参是该文件 realpath 解析后的绝对路径；运行时（loop）
+   * 据此把路径加入会话级已读集合，使后续 Write/Edit 的防盲写检查放行。
+   * 回调是同步的（read 工具只上报、不等待）；缺省时不调用。选此方案而非
+   * 「loop 事后解析 read 的 payload.path」：读方自报成功读到哪个文件，
+   * 不把 loop 与 read 工具的 payload 结构耦合在一起。
+   */
+  readonly onFileRead?: (path: string) => void;
 }
 
 /**

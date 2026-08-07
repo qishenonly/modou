@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProviderError } from '@modou/core';
+import { defaultWriteTools, ProviderError } from '@modou/core';
 import type {
   ModelProvider,
   ProviderCapabilities,
@@ -304,6 +304,70 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
       }
       // 已注册工具不产生未知工具 notice
       expect(envelopes.some((e) => e.type === 'notice')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('read → edit 跨轮次放行：headless 把 readFiles/cwd 传入，edit 成功执行', async () => {
+    // 防盲写的运行时链路端到端：read 工具成功读到的文件经 loop 维护的
+    // 已读集合放行后续 edit。headless 只负责把 readFiles（跨轮次）与 cwd
+    // 透传给 runAgentTurnStreaming。
+    const dir = mkdtempSync(join(tmpdir(), 'modou-headless-edit-'));
+    const filePath = join(dir, 'target.ts');
+    writeFileSync(filePath, 'const value = 1;\n', 'utf8');
+    try {
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'r1',
+            name: 'read',
+            input: { path: filePath },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          {
+            type: 'tool_use',
+            id: 'e1',
+            name: 'edit',
+            input: {
+              path: filePath,
+              old_string: 'const value = 1;',
+              new_string: 'const value = 2;',
+            },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'text_delta', delta: '完成' },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'stop' },
+        ],
+      ]);
+
+      const { result, envelopes } = await runHeadless({
+        provider: stub,
+        prompt: '读文件并修改',
+        tools: defaultWriteTools(),
+        write: () => {},
+        writeError: () => {},
+      });
+
+      expect(result.termination).toBe('end_turn');
+      expect(result.turns).toBe(3);
+      const editResult = envelopes.find(
+        (e) => e.type === 'tool_result' && e.data.id === 'e1',
+      );
+      expect(editResult?.type).toBe('tool_result');
+      if (editResult?.type === 'tool_result') {
+        expect(editResult.data.ok).toBe(true);
+        expect(editResult.data.summary).toContain('Edit');
+      }
+      expect(readFileSync(filePath, 'utf8')).toBe('const value = 2;\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
