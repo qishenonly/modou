@@ -31,6 +31,7 @@ import type {
   ApprovalResolvedData,
   ApprovalVerdict,
   PendingApprovalRequest,
+  PermissionConfig,
   RiskLevel,
 } from '@modou/core';
 import { ApprovalGate } from '@modou/core';
@@ -168,11 +169,17 @@ export interface ApprovalBridge {
  * 创建审批桥。decider 对每个请求返回一个挂起的 Promise，等弹窗裁决后经
  * `resolve` 落地（source 记 user）；`denyAll` 供退出收尾时清空未裁决请求。
  *
+ * `permission`（T-050）：正交权限配置，缺省 undefined = 0.3.0 行为（write/exec
+ * 全问、read 不拦）。注入时 gate 先按矩阵裁决——allow 直通（弹窗根本不出现）、
+ * deny 拒绝、ask 才轮到本桥的 decider（弹窗等用户）。
+ *
  * 注意：未注入 decider 时 ApprovalGate 缺省一律拒绝（deny，source: policy），
  * 这里显式注入 decider 使裁决权交给 TUI 弹窗——与 headless 的 `approve`
  * 回调等价（headless 的 buildApprovalGate 见 cli/src/headless.ts）。
  */
-export function createApprovalBridge(): ApprovalBridge {
+export function createApprovalBridge(
+  permission?: PermissionConfig,
+): ApprovalBridge {
   const pending = new Map<string, (verdict: ApprovalVerdict) => void>();
   let closed = false;
 
@@ -189,6 +196,7 @@ export function createApprovalBridge(): ApprovalBridge {
         // 本条 pending 已登记，可被后续 arrive 的 approve Command 命中。
         pending.set(request.id, resolve);
       }),
+    permission,
   });
 
   return {

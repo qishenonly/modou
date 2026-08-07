@@ -7,23 +7,26 @@ import type {
   RiskLevel,
 } from '../protocol/events';
 import { isDangerousCommand } from './danger';
+import { decidePermission } from './policy';
+import type { PermissionConfig } from './policy';
 
 /**
- * 最小审批闸门（T-033，design 002 5.1 ③ Authorize 的裁决引擎）。
+ * 最小审批闸门（T-033，design 002 5.1 ③ Authorize 的裁决引擎；T-050 接入正交权限内核）。
  *
- * 0.3.0 定位（kickoff 3.2）：本版是「**能审批**」，不是「权限系统」——写死
- * 「写入 / 执行都问一遍」，可配置正交模型（untrusted / on-request / never）与
- * allow/deny 规则表留 0.4.0（002 6.1）。read 不拦。
+ * 0.3.0 定位是「能审批」：写死「写入 / 执行都问一遍」。T-050 把这一层替换为
+ * 按 PermissionConfig 裁决（002 6.1 矩阵，ADR 0007）：
  *
- * 行为：
- * 1. 管线 ③ Authorize 对 `risk: 'write' | 'exec'` 的工具调用本闸门；
- * 2. 发 `approval_request` 协议事件（id / description / risk / options），然后
- *    **阻塞等待**裁决——裁决来源可注入（前端回调 / headless 策略 / 测试），
- *    0.1.0 定义的 `approve` Command 通道在此真正消费（由前端把 Command 转成
- *    decider 的 resolve）；
- * 3. 收到裁决后发 `approval_resolved` 收尾，返回裁决给管线；
- * 4. `allow_always` 记住「工具名 + 参数前缀」，本会话内同前缀不再问；
- * 5. **危险命令黑名单**（danger.ts）命中时跳过 allow_always 记忆，强制逐次确认，
+ * - 注入 `permission` 时，gate 先跑 decidePermission：**allow 直通**（不发事件）、
+ *   **deny 拒绝**（不发事件，管线回策略性拒绝）、**ask 才发 approval_request**；
+ * - 缺省（未注入 permission）保持 0.3.0 行为：read / network 不拦、write/exec 全问，
+ *   供既有调用方 / 测试保持兼容。
+ *
+ * 审批流程本身（ask 之后）：
+ * 1. 发 `approval_request` 协议事件（id / description / risk / options），然后
+ *    **阻塞等待**裁决——裁决来源可注入（前端回调 / headless 策略 / 测试）；
+ * 2. 收到裁决后发 `approval_resolved` 收尾，返回裁决给管线；
+ * 3. `allow_always` 记住「工具名 + 参数前缀」，本会话内同前缀不再问；
+ * 4. **危险命令黑名单**（danger.ts）命中时跳过 allow_always 记忆，强制逐次确认，
  *    且审批选项不含「始终允许此前缀」——防「信任一次就永远放行危险命令」。
  *
  * 安全默认：未注入 decider 时一律拒绝（deny）——无人值守时宁可全部拦下。
@@ -32,7 +35,7 @@ import { isDangerousCommand } from './danger';
 /** 审批请求的输入（管线 ③ Authorize 构造后传入）。 */
 export interface ApprovalRequestInput {
   readonly toolName: string;
-  /** 风险级别：0.3.0 只对 write / exec 调用本闸门（read 不拦）。 */
+  /** 风险级别：0.3.0 只对 write / exec 调用本闸门（read 不拦）；T-050 起 read/network 也可按矩阵裁决。 */
   readonly risk: RiskLevel;
   /** 给人看 / 回喂的操作描述（如「执行命令：npm run test」）。 */
   readonly description: string;
@@ -43,6 +46,11 @@ export interface ApprovalRequestInput {
    * 写 / 编辑工具用目标路径；缺省 ''（= 该工具全局放行）。
    */
   readonly prefix?: string;
+  /**
+   * 已校验的工具参数（T-050）：decidePermission 据 args.command 判危险、
+   * 据 args.path 做工作区边界近似（T-051 硬化）。缺省则不参与参数级裁决。
+   */
+  readonly args?: Readonly<Record<string, unknown>>;
 }
 
 /** 待裁决的审批请求（decider 收到的完整信息，含可选项）。 */
@@ -90,6 +98,12 @@ export const DANGEROUS_APPROVAL_OPTIONS: readonly ApprovalOption[] = [
 export interface ApprovalGateOptions {
   /** 裁决来源。缺省 = 一律拒绝（deny，source: policy）。 */
   readonly decider?: ApprovalDecider;
+  /**
+   * T-050 正交权限配置：提供时 gate 先跑 decidePermission（allow 直通 / deny
+   * 拒绝 / ask 才发 approval_request）；缺省 = 0.3.0 行为（read/network 不拦、
+   * write/exec 全问），供既有调用方兼容。
+   */
+  readonly permission?: PermissionConfig;
 }
 
 /**
@@ -98,17 +112,28 @@ export interface ApprovalGateOptions {
  */
 export class ApprovalGate {
   private readonly decider: ApprovalDecider;
+  /** T-050 正交权限配置（缺省 = 0.3.0 行为，见 requestApproval 注释）。 */
+  private readonly permission: PermissionConfig | undefined;
   /** 会话级 allow_always 记忆：工具名 → 已允许的前缀集合。 */
   private readonly allowAlwaysPrefixes = new Map<string, Set<string>>();
 
   constructor(options: ApprovalGateOptions = {}) {
     this.decider = options.decider ?? DEFAULT_DECIDER;
+    this.permission = options.permission;
   }
 
   /**
    * 请求一次审批，返回裁决。管线对 `deny` 直接拦截（回可诊断错误给模型）。
    *
-   * - read：0.3.0 不拦，防御性直接放行（不发事件）；
+   * T-050 起分两段：
+   *
+   * **第一段——权限裁决**（permission 注入时）：
+   * - decidePermission 返回 `allow` → 直接放行（allow_once），不发任何事件；
+   * - 返回 `deny` → 直接拒绝，不发事件（管线回「被拒绝，别重试」）；
+   * - 返回 `ask` → 落入第二段审批流程。
+   *
+   * **第二段——审批流程**（ask 之后）：
+   * - read/network 且未注入 permission（0.3.0 兼容）：防御性直接放行；
    * - 危险命令（command 命中黑名单）→ 跳过 allow_always 记忆，强制逐次确认；
    * - allow_always 记忆命中（同工具 + 前缀匹配）→ 直接放行，不发任何事件；
    * - 其余 → 发 approval_request → 阻塞等待裁决 → 发 approval_resolved 收尾。
@@ -119,8 +144,24 @@ export class ApprovalGate {
     input: ApprovalRequestInput,
     emit?: (event: ProtocolEvent) => void,
   ): Promise<ApprovalDecision> {
-    if (input.risk === 'read') return 'allow_once';
+    // —— 第一段：按 PermissionConfig 裁决（T-050）——
+    if (this.permission !== undefined) {
+      const decision = decidePermission(
+        {
+          toolName: input.toolName,
+          risk: input.risk,
+          args: input.args,
+        },
+        this.permission,
+      );
+      if (decision === 'allow') return 'allow_once';
+      if (decision === 'deny') return 'deny';
+    } else if (input.risk === 'read' || input.risk === 'network') {
+      // 0.3.0 行为：read / network 不拦（write/exec 全问）
+      return 'allow_once';
+    }
 
+    // —— 第二段：审批流程（ask / 0.3.0 的 write/exec 全问）——
     const dangerous =
       input.command !== undefined && isDangerousCommand(input.command);
     const prefix = input.prefix ?? '';

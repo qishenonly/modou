@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 import { ApprovalGate } from '../permission/approval';
+import { defaultPermissionConfig } from '../permission/policy';
 import type { ProtocolEvent } from '../protocol/events';
 import { runToolPipeline } from './pipeline';
 import { ToolRegistry } from './registry';
@@ -210,6 +211,111 @@ describe('runToolPipeline ③ Authorize（T-033 接入）', () => {
       expect(
         requests[0].data.options.some((o) => o.id === 'allow_always'),
       ).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-050 接入：管线 ③ Authorize 按 PermissionConfig 矩阵裁决（read 也会被拦）。
+// ---------------------------------------------------------------------------
+
+describe('runToolPipeline × PermissionConfig（T-050 接入）', () => {
+  test('read-only 沙箱：write 被矩阵 deny，不经过审批流程（无 approval 事件）', async () => {
+    let calls = 0;
+    const gate = new ApprovalGate({
+      decider: async () => {
+        calls += 1;
+        return { decision: 'allow_once', source: 'user' };
+      },
+      permission: {
+        sandbox: 'read-only',
+        policy: 'never',
+        projectRoot: '/repo',
+      },
+    });
+    const { events, emit } = collectEvents();
+    const outcome = await runToolPipeline(
+      {
+        id: 'call-ro',
+        name: 'write-stub',
+        input: { path: '/a.ts', content: 'x' },
+      },
+      { registry: buildRegistry(), authorize: gate, emit },
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('被拒绝');
+    expect(calls).toBe(0); // 矩阵 deny 直通，decider 不被调用
+    // 事件流：tool_call → tool_result(ok:false)，无 approval_request / resolved
+    expect(events.map((e) => e.type)).toEqual(['tool_call', 'tool_result']);
+  });
+
+  test('read-only + untrusted：read 也问（矩阵「读也问」），放行后执行', async () => {
+    let calls = 0;
+    const gate = new ApprovalGate({
+      decider: async () => {
+        calls += 1;
+        return { decision: 'allow_once', source: 'user' };
+      },
+      permission: {
+        sandbox: 'read-only',
+        policy: 'untrusted',
+        projectRoot: '/repo',
+      },
+    });
+    const { events, emit } = collectEvents();
+    const outcome = await runToolPipeline(
+      { id: 'call-rd', name: 'read-stub', input: { path: '/a.ts' } },
+      { registry: buildRegistry(), authorize: gate, emit },
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toBe(1);
+    expect(approvalEvents(events)).toHaveLength(2); // request + resolved 配对
+    const requests = approvalEvents(events).filter(
+      (e) => e.type === 'approval_request',
+    );
+    if (requests[0].type === 'approval_request') {
+      expect(requests[0].data.description).toContain('读取文件');
+    }
+  });
+
+  test('默认组合 workspace-write + on-request：read 直通、write 经审批', async () => {
+    let calls = 0;
+    const gate = new ApprovalGate({
+      decider: async () => {
+        calls += 1;
+        return { decision: 'allow_once', source: 'user' };
+      },
+      permission: defaultPermissionConfig('/repo'),
+    });
+    const { events, emit } = collectEvents();
+
+    // read：矩阵 allow 直通（无审批事件）
+    const read = await runToolPipeline(
+      { id: 'call-1', name: 'read-stub', input: { path: '/a.ts' } },
+      { registry: buildRegistry(), authorize: gate, emit },
+    );
+    expect(read.ok).toBe(true);
+
+    // write：矩阵 ask → 审批流程（decider 放行）
+    const write = await runToolPipeline(
+      {
+        id: 'call-2',
+        name: 'write-stub',
+        input: { path: '/a.ts', content: 'x' },
+      },
+      { registry: buildRegistry(), authorize: gate, emit },
+    );
+    expect(write.ok).toBe(true);
+
+    expect(calls).toBe(1); // 只有 write 触发 decider
+    const requests = approvalEvents(events).filter(
+      (e) => e.type === 'approval_request',
+    );
+    expect(requests).toHaveLength(1);
+    if (requests[0].type === 'approval_request') {
+      expect(requests[0].data.risk).toBe('write');
     }
   });
 });

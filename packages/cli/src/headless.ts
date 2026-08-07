@@ -1,12 +1,14 @@
 import {
   ApprovalGate,
   buildSystemPrompt,
+  defaultPermissionConfig,
   defaultReadonlyTools,
   runAgentTurnStreaming,
   type ApprovalDecision,
   type Envelope,
   type ModelProvider,
   type PendingApprovalRequest,
+  type PermissionConfig,
   type ProviderError,
   type ProviderErrorKind,
   type RetryOptions,
@@ -73,6 +75,13 @@ export interface HeadlessOptions {
   readonly approve?: (
     request: PendingApprovalRequest,
   ) => Promise<ApprovalDecision> | ApprovalDecision;
+  /**
+   * T-050 正交权限配置（沙箱范围 × 审批策略）。缺省 = workspace-write +
+   * on-request（defaultPermissionConfig，projectRoot 取 cwd）——由 on-request
+   * 的保守近似等价 0.3.0「写死 write/exec 全问」；autoApprove / approve 注入
+   * 只影响 ask 之后的裁决，不改变矩阵裁决本身。
+   */
+  readonly permission?: PermissionConfig;
   /** stdout 写入器（默认 process.stdout.write；测试注入收集器）。 */
   readonly write?: (chunk: string) => void;
   /** stderr 写入器（默认 process.stderr.write；测试注入收集器）。 */
@@ -148,16 +157,24 @@ function renderClosingLines(result: TurnResult): string {
 }
 
 /**
- * 装配 headless 的审批闸门（T-033）。优先级：
+ * 装配 headless 的审批闸门（T-033，T-050 起按权限矩阵裁决）。优先级：
  * 1. 显式 `approve` 回调（测试注入）→ 逐请求裁决，source 记 user；
  * 2. `autoApprove: true` → 一律自动允许（allow_once，source 记 policy）；
  * 3. 缺省 → 一律拒绝（deny，source 记 policy）——无人值守安全默认。
  *
+ * 以上三层都只决定「ask 之后谁裁决」；「是否 ask」由 permission 配置（缺省
+ * workspace-write + on-request）经 decidePermission 矩阵裁决（T-050）。
+ *
  * 注意：危险命令（rm -rf、git push --force 等黑名单）无论哪种策略都在
- * ApprovalGate 内强制逐次确认（自动裁决也会逐次发 approval_request /
- * approval_resolved 事件对），不会因 autoApprove 走 allow_always 记忆捷径。
+ * decidePermission 与 ApprovalGate 内强制逐次确认（自动裁决也会逐次发
+ * approval_request / approval_resolved 事件对），不会因 autoApprove 走
+ * allow_always 记忆捷径。
  */
 function buildApprovalGate(options: HeadlessOptions): ApprovalGate {
+  // T-050：缺省 workspace-write + on-request，projectRoot 近似取 cwd
+  // （目录边界硬化 T-051）。
+  const permission =
+    options.permission ?? defaultPermissionConfig(options.cwd ?? process.cwd());
   const approve = options.approve;
   if (approve !== undefined) {
     return new ApprovalGate({
@@ -165,15 +182,17 @@ function buildApprovalGate(options: HeadlessOptions): ApprovalGate {
         decision: await approve(request),
         source: 'user',
       }),
+      permission,
     });
   }
   if (options.autoApprove === true) {
     return new ApprovalGate({
       decider: async () => ({ decision: 'allow_once', source: 'policy' }),
+      permission,
     });
   }
   // 默认拒绝（ApprovalGate 未注入 decider 时即一律 deny）
-  return new ApprovalGate();
+  return new ApprovalGate({ permission });
 }
 
 export async function runHeadless(

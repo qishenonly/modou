@@ -14,9 +14,10 @@ import { isToolOutcome } from './types';
  *
  * ① Resolve → ② Validate → ③ Authorize → ⑤ Execute → ⑥ Normalize → ⑧ Record
  *
- * - ③ Authorize（T-033）：write / exec 工具经 ApprovalGate 审批（发 approval_request
- *   阻塞等裁决）；deny → ok:false「被拒绝，别重试同样的操作」（002 5.3 第三类策略性
- *   拒绝，明示模型不要反复触发审批）；read 不拦（0.3.0）。
+ * - ③ Authorize（T-033，T-050 接入权限内核）：注入 ApprovalGate 时，闸门先按
+ *   PermissionConfig 裁决（allow 直通 / deny 拒绝 / ask 发 approval_request 阻塞
+ *   等裁决）；deny → ok:false「被拒绝，别重试同样的操作」（002 5.3 第三类策略性
+ *   拒绝，明示模型不要反复触发审批）；read 是否拦截由矩阵决定（缺省不拦）。
  * - ④ PreToolUse / ⑦ PostToolUse：0.14.0 在此挂载 hooks。
  *
  * 失败不是异常（002 5.3 错误即数据）：参数错误 / 权限拒绝 / 执行错误 / 超时全部归为
@@ -44,9 +45,11 @@ export interface ToolPipelineContext {
 export interface ToolPipelineOptions {
   readonly registry: ToolRegistry;
   /**
-   * ③ Authorize：审批闸门（T-033）。write / exec 工具调用前经它审批；
-   * read 不拦。缺省 = 不拦截（0.2.0 及之前行为；headless 会注入策略闸门，
-   * 纯管线测试可注入自建闸门验证拦截行为）。
+   * ③ Authorize：审批闸门（T-033，T-050 起按 PermissionConfig 裁决）。
+   * 注入时所有风险的工具调用都经它裁决（gate 内部 decidePermission 先跑，
+   * allow 直通 / deny 拒绝 / ask 才发 approval_request）。缺省 = 不拦截
+   * （0.2.0 及之前行为；headless/TUI 会注入策略闸门，纯管线测试可注入自建
+   * 闸门验证拦截行为）。
    */
   readonly authorize?: ApprovalGate;
   /** 执行超时（毫秒）。默认 60_000。超时归为失败结果回喂模型。 */
@@ -118,7 +121,9 @@ function validationFailureOutcome(tool: Tool, error: z.ZodError): ToolOutcome {
 /**
  * 构造审批请求输入（③ Authorize）：从工具名与已校验参数推导描述与记忆前缀。
  * - bash：command 作为描述与记忆前缀（危险命令黑名单据此检测）；
- * - 写 / 编辑工具：path 作为描述与记忆前缀；
+ * - 带 path 的工具：按 risk 区分「读取/写入/编辑」描述，path 作为记忆前缀；
+ * - args 原样透传：decidePermission（T-050）据 args.command 判危险、据 args.path
+ *   做工作区边界近似（T-051 硬化）；
  * - 描述先过 redactSecrets：命令里可能夹带密钥（`echo sk-…`），不能原样
  *   进 approval_request 事件流 / 会话日志（002 5.4 密钥脱敏）。
  */
@@ -135,7 +140,10 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
       description = `执行命令：${redactSecrets(record.command)}`;
     } else if (typeof record.path === 'string') {
       prefix = record.path;
-      description = `写入/编辑文件：${redactSecrets(record.path)}`;
+      description =
+        tool.risk === 'read'
+          ? `读取文件：${redactSecrets(record.path)}`
+          : `写入/编辑文件：${redactSecrets(record.path)}`;
     } else {
       description = `调用工具 ${tool.name}（risk: ${tool.risk}）`;
     }
@@ -149,6 +157,10 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
     description,
     ...(command !== undefined ? { command } : {}),
     ...(prefix !== undefined ? { prefix } : {}),
+    // T-050：已校验参数透传给权限裁决（危险命令 / 工作区边界近似）
+    ...(typeof args === 'object' && args !== null
+      ? { args: args as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -342,13 +354,13 @@ export async function runToolPipeline(
     return outcome;
   }
 
-  // ③ Authorize（T-033）：write / exec 工具经审批闸门；read 不拦（0.3.0）。
-  // deny → 策略性拒绝（「被拒绝，别重试」），不再进入执行；事件流：
-  // tool_call → approval_request → approval_resolved → tool_result（ok:false）。
-  if (
-    options.authorize !== undefined &&
-    (tool.risk === 'write' || tool.risk === 'exec')
-  ) {
+  // ③ Authorize（T-033/T-050）：注入审批闸门时，所有风险的工具调用都经它裁决——
+  // 闸门内部先跑 decidePermission（T-050 矩阵），allow 直通、deny 拒绝、
+  // ask 才发 approval_request；未注入 permission 时闸门保持 0.3.0 行为
+  // （read/network 不拦、write/exec 全问）。deny → 策略性拒绝
+  // （「被拒绝，别重试」，002 5.3 第三类），不再进入执行；事件流：
+  // tool_call → [approval_request → approval_resolved] → tool_result（ok:false）。
+  if (options.authorize !== undefined) {
     const decision = await options.authorize.requestApproval(
       buildApprovalInput(tool, parsed.data),
       emit,

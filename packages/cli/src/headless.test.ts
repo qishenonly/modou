@@ -652,4 +652,50 @@ describe('headless 审批策略（T-033）', () => {
       expect(toolResult.data.ok).toBe(true);
     }
   });
+
+  test('permission 覆盖 autoApprove：read-only 沙箱下 exec 即使 autoApprove 也矩阵 deny', async () => {
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'c1',
+          name: 'bash',
+          input: { command: 'echo hi' },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '无法执行。' },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const { envelopes } = await runHeadless({
+      provider: stub,
+      prompt: '跑一下',
+      tools: defaultWriteTools(),
+      autoApprove: true,
+      permission: {
+        sandbox: 'read-only',
+        policy: 'never',
+        projectRoot: '/repo',
+      },
+      write: () => {},
+      writeError: () => {},
+    });
+
+    // read-only 沙箱矩阵 deny 优先于 autoApprove decider：
+    // 不发审批事件（deny 直通）、工具结果 ok:false「被拒绝」
+    expect(envelopes.some((e) => e.type === 'approval_request')).toBe(false);
+    expect(envelopes.some((e) => e.type === 'approval_resolved')).toBe(false);
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'c1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(false);
+      expect(toolResult.data.forModel).toContain('被拒绝');
+    }
+  });
 });

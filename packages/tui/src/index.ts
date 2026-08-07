@@ -4,6 +4,7 @@ import { render } from 'ink';
 import {
   buildSystemPrompt,
   createProviderFromEnv,
+  defaultPermissionConfig,
   defaultReadonlyTools,
   runAgentTurnStreaming,
 } from '@modou/core';
@@ -11,6 +12,7 @@ import type {
   Command,
   Envelope,
   ModelProvider,
+  PermissionConfig,
   RetryOptions,
   ToolRegistry,
 } from '@modou/core';
@@ -53,6 +55,13 @@ export interface TuiOptions {
   readonly cwd?: string;
   /** 供应商错误的退避重试参数（缺省用 core 默认值）。 */
   readonly retry?: RetryOptions;
+  /**
+   * T-050 正交权限配置（沙箱范围 × 审批策略）。缺省 = workspace-write +
+   * on-request（defaultPermissionConfig，projectRoot 取 cwd）——由 on-request
+   * 的保守近似等价 0.3.0「写死 write/exec 全问」；弹窗只裁决 ask 之后的请求，
+   * 矩阵中的 allow / deny 由 gate 内部直接裁决（弹窗不出现）。
+   */
+  readonly permission?: PermissionConfig;
   /** Ink 输出流（测试注入；缺省 process.stdout）。 */
   readonly stdout?: NodeJS.WriteStream;
   /** Ink 输入流（测试注入；缺省 process.stdin）。 */
@@ -95,10 +104,13 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const cwd = options.cwd ?? process.cwd();
   const channel = createEventChannel();
   const emitter = options.signalEmitter ?? process;
+  // T-050：缺省权限组合 workspace-write + on-request（与 headless 一致），
+  // projectRoot 取 cwd；矩阵 allow/deny 由 gate 内部裁决，ask 才轮到弹窗。
+  const permission = options.permission ?? defaultPermissionConfig(cwd);
   // 审批桥（T-044）：TUI 的 `approve` Command → ApprovalGate decider 的裁决。
   // decider 对每个请求挂起等待用户从弹窗选择；退出时 denyAll 清空未裁决请求，
   // 防止 pending 审批悬挂导致轮次永不结束。
-  const approval = createApprovalBridge();
+  const approval = createApprovalBridge(permission);
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
@@ -116,8 +128,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         tools,
         readFiles,
         cwd,
-        // 审批闸门（T-044）：write / exec 工具经审批弹窗裁决；read 不拦。
-        // 默认 deny——无人裁决时一律拒绝（与 headless 同款安全默认）。
+        // 审批闸门（T-044/T-050）：注入的 gate 先按 permission 矩阵裁决
+        // （allow 直通 / deny 拒绝 / ask 才发 approval_request），弹窗展示
+        // ask 的请求；无人裁决时按默认拒绝（deny，与 headless 同款安全默认）。
+        // 危险命令（rm -rf 等黑名单）仍由 core 强制逐次确认。
         approval: approval.gate,
         options: {
           maxTurns: options.maxTurns ?? 10,
