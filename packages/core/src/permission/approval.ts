@@ -47,8 +47,9 @@ export interface ApprovalRequestInput {
    */
   readonly prefix?: string;
   /**
-   * 已校验的工具参数（T-050）：decidePermission 据 args.command 判危险、
-   * 据 args.path 做工作区边界近似（T-051 硬化）。缺省则不参与参数级裁决。
+   * 已校验的工具参数（T-050/T-051）：decidePermission 据 args.command 判危险、
+   * 据 args.path 做目录边界 realpath 归一（跟随符号链接 / 解析 `..` / 展开 `~`）。
+   * 缺省则不参与参数级裁决。
    */
   readonly args?: Readonly<Record<string, unknown>>;
 }

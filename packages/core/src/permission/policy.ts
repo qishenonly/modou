@@ -1,6 +1,6 @@
-import { isAbsolute, relative, resolve } from 'node:path';
 import type { RiskLevel } from '../protocol/events';
 import { isDangerousCommand } from './danger';
+import { resolveAllowedPath } from './paths';
 
 /**
  * 权限裁决内核（T-050，design 002 6.1 正交模型，ADR 0007）。
@@ -12,7 +12,7 @@ import { isDangerousCommand } from './danger';
  * deny 优先级最高；危险命令即使在 `never` 策略下也强制确认——「我信任这个
  * agent」不该等于「我同意它执行 `rm -rf /`」。
  *
- * 本版矩阵实现（T-051 / T-052 的硬化与规则表留占位，见各函数注释）：
+ * 本版矩阵实现（T-052 规则表留占位，见各函数注释）：
  *
  * |                  | untrusted        | on-request        | never                   |
  * |------------------|------------------|-------------------|-------------------------|
@@ -23,8 +23,9 @@ import { isDangerousCommand } from './danger';
  * ① workspace-write + on-request 的矩阵语义是「模型自认风险才问」；本版工具
  *   契约没有模型风险自报通道，取保守近似 = 写/执行一律 ask，等价 0.3.0 的
  *   「写死全问」（默认组合等价性由此保证）。
- * ② workspace-write + never 只放行工作区内；目录边界（T-051）硬化前用
- *   projectRoot 前缀近似（见 withinWorkspace），越界目标转为 ask。
+ * ② workspace-write + never 只放行工作区内；目录边界（T-051，paths.ts）在
+ *   沙箱范围阶段 realpath 归一后校验（跟随符号链接 / 解析 `..` / 展开 `~`），
+ *   越界目标转为 ask（用户显式确认）。
  * ③ full-access + on-request 的「危险操作才问」由 ② 危险黑名单承担：非危险
  *   操作直接 allow，与 never 在本版行为一致（未来「危险」扩展时分化）。
  */
@@ -55,11 +56,11 @@ export interface PermissionConfig {
   readonly sandbox: SandboxScope;
   readonly policy: ApprovalPolicy;
   /**
-   * 项目根 / 工作区根（绝对路径）：目录边界（T-051 硬化）的近似基准。
+   * 项目根 / 工作区根（绝对路径）：目录边界（T-051，paths.ts realpath 归一）的基准。
    * 缺省取启动 cwd；headless / TUI 用 `--add-dir` 语义扩展白名单（addDirs）。
    */
   readonly projectRoot: string;
-  /** 额外允许访问的目录（--add-dir，绝对路径；T-051 硬化前用前缀近似）。 */
+  /** 额外允许访问的目录（--add-dir，绝对路径；paths.ts 边界校验的扩展白名单）。 */
   readonly addDirs?: readonly string[];
   /** allow/deny 规则表（T-052 接口占位，本版空表不参与裁决）。 */
   readonly rules?: PermissionRules;
@@ -114,28 +115,32 @@ function dangerousExec(request: PermissionRequest): boolean {
   return typeof command === 'string' && isDangerousCommand(command);
 }
 
-/** 从工具参数取目标路径（写 / 编辑工具带 path；bash 无路径参数）。 */
-function targetPath(request: PermissionRequest): string | undefined {
+/**
+ * 从工具参数取边界校验目标（T-051）：写 / 编辑工具取 path；exec 取显式 cwd（若有）；
+ * 都没有则返回 undefined。
+ *
+ * bash 命令文本里的路径**不做静态解析**：002 6.3 诚实记录——shell 命令可以 `;` 串联、
+ * `bash -c`、`eval`、变量展开、base64 解码，静态字符串匹配挡不住有意的绕过。所以本版
+ * 对命令文本近似放行（只拦「显式把工作目录放到工作区外」的 cwd），真正的隔离依赖
+ * 1.0.0 的 OS 级沙箱。read 类工具本版默认放行（不在边界内——矩阵 read 分支先行返回）。
+ */
+function boundaryTarget(request: PermissionRequest): string | undefined {
   const path = request.args?.path;
-  return typeof path === 'string' ? path : undefined;
+  if (typeof path === 'string') return path;
+  if (request.risk === 'exec') {
+    const cwd = request.args?.cwd;
+    if (typeof cwd === 'string' && cwd.trim().length > 0) return cwd;
+  }
+  return undefined;
 }
 
 /**
- * 目录边界近似检查（T-051 硬化前）：目标路径解析（相对路径按 projectRoot 解析）
- * 后做前缀判断，落在 projectRoot 或 addDirs 内即「在工作区内」。
- *
- * 局限（T-051 硬化点）：不做符号链接跟随 / `..` 的 realpath 归一（002 6.2 明确
- * 要求「解析真实路径再判断前缀」，字符串比较可被软链逃逸绕过）；bash 命令无
- * 路径参数，本版近似放行——这两点都在 T-051 收紧。
+ * 目录边界检查（T-051，design 002 6.2）：realpath 归一（展开 `~` / 解析 `..` /
+ * 跟随符号链接 / 转绝对路径）后判断是否落在工作区根或 --add-dir 白名单内。
+ * 越界 = 返回 false；无法解析（权限不足等）也按越界处理（fail-closed）。
  */
 function withinWorkspace(path: string, config: PermissionConfig): boolean {
-  const target = isAbsolute(path) ? path : resolve(config.projectRoot, path);
-  const roots = [config.projectRoot, ...(config.addDirs ?? [])];
-  return roots.some((root) => {
-    const rel = relative(root, target);
-    // rel === '' 即目标就是根目录本身；`..` 开头 / 绝对路径（跨盘）为越界
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-  });
+  return resolveAllowedPath(path, config).inside;
 }
 
 /**
@@ -164,18 +169,25 @@ export function decidePermission(
   }
   if (config.sandbox === 'read-only') return 'deny';
 
+  // 目录边界（T-051，paths.ts realpath 归一）：在 allow 规则之前、沙箱范围阶段
+  // 校验——allow 规则（T-052）可以放行审批策略层（never 放行 / 记忆豁免），但
+  // **不能推翻沙箱范围**：workspace-write 下带 path 的写/执行目标越界 → 沙箱范围
+  // 外（转 ask，用户显式确认）；full-access 不做边界限制；无 path 参数（bash 命令
+  // 文本）近似放行（见 boundaryTarget 注释）。
+  if (config.sandbox === 'workspace-write') {
+    const target = boundaryTarget(request);
+    if (target !== undefined && !withinWorkspace(target, config)) {
+      return 'ask';
+    }
+  }
+
   // ④ allow 规则（T-052 占位，本版空表）
   if (allowRuleHit(config.rules)) return 'allow';
 
   // ⑤ 审批策略
   if (config.policy === 'never') {
-    // workspace-write + never = 「工作区内放手干」；full-access + never = 完全放手
-    if (
-      config.sandbox === 'workspace-write' &&
-      !withinWorkspace(targetPath(request) ?? '', config)
-    ) {
-      return 'ask'; // 越界写需要显式确认（T-051 硬化边界检查本身）
-    }
+    // workspace-write + never = 「工作区内放手干」（边界已在 ③ 校验，越界已转 ask）；
+    // full-access + never = 完全放手（无边界限制）
     return 'allow';
   }
   if (config.policy === 'on-request') {

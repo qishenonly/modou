@@ -185,7 +185,7 @@ describe('decidePermission：裁决顺序与危险命令强制', () => {
   });
 });
 
-describe('decidePermission：目录边界近似（T-051 占位）', () => {
+describe('decidePermission：目录边界（T-051 realpath 归一）', () => {
   test('workspace-write + never：工作区内放行、边界外 ask', () => {
     const c = cfg('workspace-write', 'never');
     // 工作区内（含根目录本身）
@@ -221,7 +221,7 @@ describe('decidePermission：目录边界近似（T-051 占位）', () => {
         c,
       ),
     ).toBe('ask');
-    // bash 无路径参数：本版近似放行（T-051 硬化命令级边界）
+    // bash 无路径参数：近似放行（命令文本不静态解析，002 6.3 诚实记录）
     expect(
       decidePermission({ ...EXEC_REQ, args: { command: 'echo hi' } }, c),
     ).toBe('allow');

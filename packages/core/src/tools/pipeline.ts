@@ -122,8 +122,8 @@ function validationFailureOutcome(tool: Tool, error: z.ZodError): ToolOutcome {
  * 构造审批请求输入（③ Authorize）：从工具名与已校验参数推导描述与记忆前缀。
  * - bash：command 作为描述与记忆前缀（危险命令黑名单据此检测）；
  * - 带 path 的工具：按 risk 区分「读取/写入/编辑」描述，path 作为记忆前缀；
- * - args 原样透传：decidePermission（T-050）据 args.command 判危险、据 args.path
- *   做工作区边界近似（T-051 硬化）；
+ * - args 原样透传：decidePermission（T-050/T-051）据 args.command 判危险、据
+ *   args.path 做目录边界 realpath 归一（跟随符号链接 / 解析 `..` / 展开 `~`）；
  * - 描述先过 redactSecrets：命令里可能夹带密钥（`echo sk-…`），不能原样
  *   进 approval_request 事件流 / 会话日志（002 5.4 密钥脱敏）。
  */
@@ -157,7 +157,7 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
     description,
     ...(command !== undefined ? { command } : {}),
     ...(prefix !== undefined ? { prefix } : {}),
-    // T-050：已校验参数透传给权限裁决（危险命令 / 工作区边界近似）
+    // T-050/T-051：已校验参数透传给权限裁决（危险命令 / 目录边界 realpath 归一）
     ...(typeof args === 'object' && args !== null
       ? { args: args as Record<string, unknown> }
       : {}),

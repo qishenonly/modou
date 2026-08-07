@@ -171,8 +171,8 @@ function renderClosingLines(result: TurnResult): string {
  * allow_always 记忆捷径。
  */
 function buildApprovalGate(options: HeadlessOptions): ApprovalGate {
-  // T-050：缺省 workspace-write + on-request，projectRoot 近似取 cwd
-  // （目录边界硬化 T-051）。
+  // T-050/T-051：缺省 workspace-write + on-request，projectRoot 取 cwd
+  // （目录边界 realpath 归一，paths.ts）。
   const permission =
     options.permission ?? defaultPermissionConfig(options.cwd ?? process.cwd());
   const approve = options.approve;

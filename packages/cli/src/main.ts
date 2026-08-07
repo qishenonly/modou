@@ -1,5 +1,10 @@
 #!/usr/bin/env bun
-import { createProviderFromEnv, defaultWriteTools } from '@modou/core';
+import {
+  createProviderFromEnv,
+  defaultPermissionConfig,
+  defaultWriteTools,
+} from '@modou/core';
+import { resolve } from 'node:path';
 import { parseArgs, UsageError } from './args';
 import type { CliArgs } from './args';
 import { runHeadless } from './headless';
@@ -16,6 +21,7 @@ const USAGE = `modou —— 终端编码 Agent（0.1.0）
 选项：
   -p, --prompt <文本>  要提交的提示词
   --auto-approve       跳过写入/执行审批（危险命令仍强制逐次确认）
+  --add-dir <目录>     额外允许访问的目录（目录边界白名单，T-051；可重复，相对路径按启动 cwd 解析）
   -h, --help           显示本帮助`;
 
 /**
@@ -74,6 +80,16 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   let result: HeadlessResult;
   try {
+    // T-051：--add-dir 扩展目录边界白名单。addDirs 转绝对路径（相对路径按启动 cwd
+    // 解析），进入 PermissionConfig.addDirs；缺省（无 --add-dir）不覆盖权限配置，
+    // headless 仍用其默认（workspace-write + on-request，projectRoot = cwd）。
+    const permission =
+      args.addDirs.length > 0
+        ? {
+            ...defaultPermissionConfig(process.cwd()),
+            addDirs: args.addDirs.map((dir) => resolve(dir)),
+          }
+        : undefined;
     result = await runHeadless({
       provider,
       prompt: args.prompt,
@@ -82,6 +98,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       // （缺省 false = headless 默认拒绝，无人值守安全默认）。
       tools: defaultWriteTools(),
       autoApprove: args.autoApprove,
+      ...(permission !== undefined ? { permission } : {}),
       abortSignal: interrupt.signal,
     });
   } catch (error) {

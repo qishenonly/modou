@@ -1,4 +1,5 @@
 import { describe, expect, test, mock } from 'bun:test';
+import { resolve } from 'node:path';
 import type { HeadlessOptions } from './headless';
 
 // ---------------------------------------------------------------------------
@@ -88,5 +89,31 @@ describe('main（CLI 装配：写工具集 + autoApprove）', () => {
 
     expect(code).toBe(0);
     expect(headlessCalls[0]?.autoApprove).toBe(true);
+  });
+
+  test('--add-dir：permission.addDirs 透传为绝对路径（T-051 白名单）', async () => {
+    headlessCalls.length = 0;
+    const code = await withOpencodeEnv(() =>
+      main(['--add-dir', './shared', '--add-dir', '/abs/dir', '-p', 'hi']),
+    );
+
+    expect(code).toBe(0);
+    const permission = headlessCalls[0]?.permission;
+    expect(permission).toBeDefined();
+    expect(permission?.addDirs).toEqual([
+      resolve(process.cwd(), 'shared'),
+      '/abs/dir',
+    ]);
+    // 缺省权限组合保持不变：workspace-write + on-request，projectRoot = 启动 cwd
+    expect(permission?.sandbox).toBe('workspace-write');
+    expect(permission?.policy).toBe('on-request');
+    expect(permission?.projectRoot).toBe(process.cwd());
+  });
+
+  test('无 --add-dir：不注入 permission（沿用 headless 默认）', async () => {
+    headlessCalls.length = 0;
+    await withOpencodeEnv(() => main(['-p', 'hi']));
+
+    expect(headlessCalls[0]?.permission).toBeUndefined();
   });
 });
