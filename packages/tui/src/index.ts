@@ -4,6 +4,7 @@ import { createElement, type ReactElement } from 'react';
 import { render, type Instance } from 'ink';
 import {
   buildSystemPrompt,
+  BudgetLedger,
   countUserMessages,
   createProviderFromEnv,
   defaultPermissionConfig,
@@ -149,6 +150,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   let resumeCandidates: readonly ResumeCandidate[] = [];
   // /resume 恢复后的初始 token 累计（App 状态栏种子）。
   let initialTotals: TokenTotals | undefined;
+  // 预算账本（T-062）：会话级累计——每轮传入同一实例，跨轮次累计请求前粗估
+  // 与响应后校准；/resume 时从会话 usage 重建实际分项（粗估从零重新累计）。
+  let budget = new BudgetLedger();
 
   // 合成 notice 信封（runTui 侧提示：/resume 结果等；App 是事件流纯消费者，
   // 直接经 channel 推信封即可展示——与 core 发出的 notice 同构）。
@@ -240,6 +244,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           session: sessionLog ?? undefined,
           // T-061：跳过历史里已入日志的 user 消息，只记录新增段。
           loggedUserCount,
+          // 预算账本（T-062）：会话级累计，每轮沿用同一实例。
+          budget,
           options: {
             maxTurns: options.maxTurns ?? 10,
             abortSignal: controller.signal,
@@ -329,6 +335,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       cacheReadTokens: resumed.usage.cacheReadTokens ?? 0,
       cacheWriteTokens: resumed.usage.cacheWriteTokens ?? 0,
     };
+    // 预算账本（T-062）：从会话 usage 重建实际分项（粗估不持久化，从零累计；
+    // 后续轮次的粗估 / 校准在新账本上接续）。
+    budget = BudgetLedger.rebuild([resumed.usage]);
     rerender();
     pushNotice(
       'info',

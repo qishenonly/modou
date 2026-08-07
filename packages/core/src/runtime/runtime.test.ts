@@ -30,6 +30,7 @@ import type { Tool, ToolContext } from '../tools/types';
 import { ApprovalGate } from '../permission/approval';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
+import { BudgetLedger } from '../context/budget';
 
 // ---------------------------------------------------------------------------
 // 测试替身：StubProvider —— 一个完全本地、不访问外网的假 ModelProvider。
@@ -1196,5 +1197,101 @@ describe('审批闸门接线（T-033 loop → 管线 ③）', () => {
     expect(result.termination).toBe('end_turn');
     expect(toolResultById(events, 'call-1')?.ok).toBe(true);
     expect(approvalRequests(events)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 预算核算接线（T-062 loop → BudgetLedger）：请求前粗估、响应后校准、
+// 失败丢弃粗估、传入预建账本跨调用累计。
+// ---------------------------------------------------------------------------
+
+describe('预算核算接线（T-062 loop → BudgetLedger）', () => {
+  test('单轮：请求前粗估入账、usage 校准，TurnResult.budget 可读', async () => {
+    const stub = new StubProvider([textEvents('你好')]);
+    const result = await runAgentTurn({
+      provider: stub,
+      messages: [userMsg],
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+    const snapshot = result.budget.snapshot();
+    // 供应商 usage 为准：input 10 / output 5
+    expect(snapshot.inputTokens).toBe(10);
+    expect(snapshot.outputTokens).toBe(5);
+    // 请求前粗估已入账（消息正文 '你好' 至少 2 token）
+    expect(snapshot.estimatedInput).toBeGreaterThanOrEqual(2);
+    // 偏差已配对：estimateError = 粗估 - 实测输入
+    expect(snapshot.estimateError).toBe(snapshot.estimatedInput - 10);
+    const drift = result.budget.drift();
+    expect(drift.actual).toBe(10);
+    expect(drift.error).toBe(snapshot.estimateError);
+  });
+
+  test('多轮：每轮粗估 + 校准，累计与 usage 一致', async () => {
+    const registry = new ToolRegistry().register(echoTool);
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: '你好' }),
+      textEvents('好的。'),
+    ]);
+    const result = await runAgentTurn({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+    expect(result.turns).toBe(2);
+    expect(result.usage).toEqual({ inputTokens: 20, outputTokens: 8 });
+    const snapshot = result.budget.snapshot();
+    expect(snapshot.inputTokens).toBe(20);
+    expect(snapshot.outputTokens).toBe(8);
+    // 两轮都有粗估（第二轮消息更多：含工具调用与结果），estimatedInput > 实际
+    expect(snapshot.estimatedInput).toBeGreaterThan(20);
+    expect(snapshot.estimateError).toBe(snapshot.estimatedInput - 20);
+  });
+
+  test('错误终止：未产生 usage 的轮次丢弃粗估，不残留漂移', async () => {
+    const notFound = new ProviderError({
+      kind: 'not_found',
+      message: '模型不存在',
+    });
+    const stub = new StubProvider([{ throw: notFound }]);
+    const result = await runAgentTurn({
+      provider: stub,
+      messages: [userMsg],
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('error');
+    const snapshot = result.budget.snapshot();
+    expect(snapshot.inputTokens).toBe(0);
+    expect(snapshot.estimatedInput).toBe(0);
+    expect(snapshot.estimateError).toBe(0);
+    expect(result.budget.drift().error).toBe(0);
+  });
+
+  test('传入预建账本：跨调用累计（/resume 续写的账本沿用）', async () => {
+    const ledger = new BudgetLedger();
+    const first = new StubProvider([textEvents('第一轮')]);
+    const second = new StubProvider([textEvents('第二轮')]);
+    await runAgentTurn({
+      provider: first,
+      messages: [userMsg],
+      options: { maxTurns: 5 },
+      budget: ledger,
+    });
+    const result = await runAgentTurn({
+      provider: second,
+      messages: [userMsg],
+      options: { maxTurns: 5 },
+      budget: ledger,
+    });
+
+    // 两次调用同一账本：实际分项接续累计（每次 input 10 / output 5）
+    expect(ledger.snapshot().inputTokens).toBe(20);
+    expect(ledger.snapshot().outputTokens).toBe(10);
+    expect(result.budget).toBe(ledger); // TurnResult 返回同一实例
   });
 });

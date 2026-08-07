@@ -28,6 +28,7 @@ import { toToolSet } from '../tools/toolset';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
+import { BudgetLedger, estimateTokens } from '../context/budget';
 import {
   canTransition,
   stopReasonToTransition,
@@ -94,6 +95,13 @@ export interface RunAgentTurnInput {
    * 缺省 0 = 所有 user 消息都记录（既有行为，旧调用不受影响）。
    */
   readonly loggedUserCount?: number;
+  /**
+   * 预算账本（T-062）：提供时，loop 把每次请求前的粗估与响应后的校准记入该
+   * 账本（跨调用持续累计——TUI 每轮传入同一实例即得会话累计；/resume 可先用
+   * `BudgetLedger.rebuild` 从会话 usage 条目重建后传入，实际分项接续历史）。
+   * 缺省 loop 自建新账本，并随 `TurnResult.budget` 返回给调用方。
+   */
+  readonly budget?: BudgetLedger;
   readonly options: TurnOptions;
 }
 
@@ -105,6 +113,12 @@ export interface TurnResult {
   readonly text: string;
   /** 累计 token 用量（各分项缺失时保持 undefined） */
   readonly usage: TokenUsage;
+  /**
+   * 本次调用的预算账本（T-062）：含每次请求前的粗估、响应后的校准与累计漂移
+   * （`TurnResult.budget.drift()`）。传入的 `RunAgentTurnInput.budget` 实例
+   * 会原样返回——调用方跨轮次累计只需持有同一实例。
+   */
+  readonly budget: BudgetLedger;
   /** 最后一轮的 finish reason（未收到 finish 事件时为 null） */
   readonly finishReason: StreamFinishReason | null;
   readonly termination: TurnTermination;
@@ -195,12 +209,88 @@ function extractUserText(message: ModelMessage): string {
 }
 
 /**
+ * 展平一条 ModelMessage 为纯文本（预算粗估用：与发给模型的正文同源）。
+ *
+ * - text part 取原文；reasoning 取推理文本；
+ * - tool-call / tool-result 序列化为 `[tool-call:名称] 参数JSON` 形态
+ *   （模型实际收到的工具调用 / 结果是 JSON，按 JSON 文本计入）;
+ * - file / image 等二进制载体不以字节计入（base64 会严重偏斜估算），
+ *   以 `[file:媒体类型]` 占位——本估算是粗估，精确值交给 drift() 校准；
+ * - 稀有 part 类型（custom / reasoning-file / 工具审批）以类型名占位。
+ */
+function serializeMessageText(message: ModelMessage): string {
+  if (typeof message.content === 'string') return message.content;
+  const parts: string[] = [];
+  for (const part of message.content) {
+    switch (part.type) {
+      case 'text':
+      case 'reasoning':
+        parts.push(part.text);
+        break;
+      case 'tool-call':
+        parts.push(
+          `[tool-call:${part.toolName}] ${JSON.stringify(part.input)}`,
+        );
+        break;
+      case 'tool-result':
+        parts.push(
+          `[tool-result:${part.toolName}] ${JSON.stringify(part.output)}`,
+        );
+        break;
+      case 'file':
+        parts.push(`[file:${part.mediaType}]`);
+        break;
+      case 'image':
+        parts.push('[image]');
+        break;
+      default:
+        parts.push(`[${part.type}]`);
+        break;
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * 工具定义文本（预算粗估用）：近似 provider 随请求序列化的 tools 数组
+ * （name + description + 参数 JSON Schema）。系统提示词已内嵌工具说明文本
+ * （prompt/system.ts 双通道），此处计入的是 provider 另行发送的原生 tools
+ * 载荷——两部分都会真实计费，粗估都应覆盖；固定冗余由 drift() 度量吸收。
+ */
+function serializeToolsText(registry: ToolRegistry): string {
+  const lines: string[] = [];
+  for (const tool of registry.list()) {
+    lines.push(`${tool.name}: ${tool.description}`);
+    lines.push(JSON.stringify(registry.toJsonSchema(tool.name)));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 粗估一次模型请求的输入 token（002 7.3 请求前本地粗估）：对将发内容估算
+ * （system 提示词 + 消息正文 + 工具定义文本）。估算精度与取舍见
+ * context/budget.ts「精度取舍」——请求级拼装在本层，字符级计价在 estimateTokens。
+ */
+function estimateRequestText(
+  system: string | undefined,
+  messages: readonly ModelMessage[],
+  tools: ToolRegistry | undefined,
+): number {
+  const parts: string[] = [];
+  if (system !== undefined && system.length > 0) parts.push(system);
+  for (const message of messages) parts.push(serializeMessageText(message));
+  if (tools !== undefined) parts.push(serializeToolsText(tools));
+  return estimateTokens(parts.join('\n'));
+}
+
+/**
  * Agent loop 内核（002 4.2 / 4.3）：`while(tool_use)` 裸循环。
  *
  * 主流程：
  * 1. idle → assemble → streaming，发起一次 `provider.streamChat`；
  * 2. 流中事件直接透出（text / thinking / tool_use / usage），
- *    文本累计进结果、usage 累计进账本；
+ *    文本累计进结果、usage 累计进账本；请求前本地粗估（T-062）在发起前
+ *    入账、usage 到达后以供应商为准校准（BudgetLedger）；
  * 3. `stop_reason` 驱动流转（stopReasonToTransition）：
  *    - `tool_use` → executing：tools 提供时（注册与否）一律经 runToolPipeline
  *      执行并回喂，未注册工具由管线产出 ok:false + 可用工具列表；tools 未提供
@@ -228,9 +318,16 @@ export async function runAgentTurn(
     approval,
     session,
     loggedUserCount,
+    budget: inputBudget,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
+
+  /**
+   * 预算账本（T-062）：调用方注入（/resume 重建后的实例）或缺省自建，
+   * 全程累计——每次请求前粗估、响应后校准，随 TurnResult.budget 返回。
+   */
+  const ledger = inputBudget ?? new BudgetLedger();
 
   /**
    * 会话级已读文件集合（Write/Edit 防盲写的生产者）：
@@ -468,6 +565,7 @@ export async function runAgentTurn(
     const result: TurnResult = {
       text,
       usage,
+      budget: ledger,
       finishReason,
       termination,
       turns: turn,
@@ -527,6 +625,13 @@ export async function runAgentTurn(
     let roundError: ProviderError | undefined;
     let aborted = false;
 
+    // —— 请求前粗估（002 7.3）：对将发内容估算（system + 消息正文 + 工具定义），
+    // 入账挂起待校准；本轮未产生 usage 时在下方收尾处丢弃（见 roundUsageArrived）。
+    ledger.recordEstimate(estimateRequestText(system, thread, tools));
+    // 本轮是否收到 usage 事件：没有则说明请求失败 / 供应商未上报，粗估不得
+    // 参与配对——没有实际用量与之比较，计入漂移会让偏差失真。
+    let roundUsageArrived = false;
+
     try {
       // 供应商错误（429 / 5xx / 超时）由 withRetry 按指数退避重试：
       // 只有尚未产出事件的失败才整体重试，已产出部分内容则直接按错误
@@ -573,6 +678,9 @@ export async function runAgentTurn(
             break;
           case 'usage':
             accumulateUsage(event.usage);
+            // 预算校准（T-062）：供应商 usage 为准，与请求前粗估配对入账。
+            ledger.recordUsage(event.usage);
+            roundUsageArrived = true;
             emit({ type: 'usage', usage: event.usage });
             await session?.appendUsage(event.usage);
             break;
@@ -590,6 +698,11 @@ export async function runAgentTurn(
         roundError = providerError;
       }
     }
+
+    // —— 本轮粗估校准兜底：未产生 usage 的轮次（中断 / 错误 / 供应商未上报），
+    // 丢弃本轮待校准的粗估——请求从未真正消耗，不该计入累计漂移。已产生
+    // usage 时队列已配对出队，forgetEstimate 幂等无操作。
+    if (!roundUsageArrived) ledger.forgetEstimate();
 
     // —— 中断：streaming --interrupt--> interrupted ——
     if (aborted) {
