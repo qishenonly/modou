@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Box, Text, useInput } from 'ink';
-import type {
-  ApprovalRequestData,
-  Command,
-  Envelope,
-  UsageData,
-} from '@modou/core';
+import type { ApprovalRequestData, Command, Envelope } from '@modou/core';
 import { ApprovalModal } from './approval';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
+import {
+  StatusBar,
+  ZERO_TOKEN_TOTALS,
+  applyUsage,
+  type PermissionMode,
+  type TokenTotals,
+} from './status';
 import type { ToolCallEntry } from './tools';
 import { reduceToolEvent, ToolCallList } from './tools';
 
@@ -26,6 +28,16 @@ export interface AppProps {
   readonly send: (command: Command) => void;
   /** 干净退出回调（Ctrl+C 触发；由装配方 runTui 负责卸载与收尾）。 */
   readonly onExit?: () => void;
+  /**
+   * 模型名（T-045 状态栏：runTui 注入 provider.modelId）。
+   * 缺省不显示该段——App 独立渲染（测试）时状态栏仍可用。
+   */
+  readonly modelName?: string;
+  /**
+   * 权限模式（T-045 状态栏：runTui 从工具注册表推导）。
+   * 缺省不显示该段；0.4.0 只有「只读」/「写/执行需审批」两种。
+   */
+  readonly permissionMode?: PermissionMode;
 }
 
 /**
@@ -34,7 +46,7 @@ export interface AppProps {
  * 结构对齐 002 第十二节目录布局：
  * - 消息/输出区（markdown.tsx 流式渲染：语法高亮 + 帧节流，T-042）；
  * - 底部输入行（input.tsx：多行/粘贴/历史上翻/斜杠补全，T-041）；
- * - 状态栏位（本版内联一行占位，T-045 换成 status.tsx：模型名/token/权限模式）；
+ * - 状态栏（status.tsx，T-045：模型名 / 权限模式 / 累计 token / 运行状态）；
  * - tools.tsx / approval.tsx 分别由 T-043 / T-044 接入工具展示与审批弹窗。
  *
  * 键盘（T-041 分工）：
@@ -49,7 +61,7 @@ export interface AppProps {
  * 状态更新用函数式 setState，事件按 seq 到达即天然有序。
  */
 export function App(props: AppProps): ReactElement {
-  const { stream, send, onExit } = props;
+  const { stream, send, onExit, modelName, permissionMode } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
   const {
@@ -57,11 +69,12 @@ export function App(props: AppProps): ReactElement {
     append: appendDelta,
     flush: flushDelta,
   } = useFrameThrottledText(DEFAULT_FRAME_MS);
-  // 运行状态：由 turn_start / turn_end 推导（T-045 状态栏完善）
+  // 运行状态：由 turn_start / turn_end 推导（T-045 状态栏消费）
   const [running, setRunning] = useState(false);
   const [lastTurn, setLastTurn] = useState(0);
-  // 最近一次 usage（T-045 状态栏消费；minimal 版只报 token）
-  const [usage, setUsage] = useState<UsageData | null>(null);
+  // 本会话累计 token（T-045 状态栏消费：usage 事件逐次累加 input/output，
+  // 最小版只累计不核算；完整 /context 分项在 0.6.0）
+  const [totals, setTotals] = useState<TokenTotals>(ZERO_TOKEN_TOTALS);
   // 提示信息（配置告警、未知工具回馈等 notice 事件）
   const [notices, setNotices] = useState<string[]>([]);
   // 错误（002 5.3：错误即数据）
@@ -102,7 +115,8 @@ export function App(props: AppProps): ReactElement {
           setRunning(false);
           break;
         case 'usage':
-          setUsage(envelope.data);
+          // T-045 状态栏：累进会话总量（函数式 setState 防丢事件；缺省字段按 0 计）
+          setTotals((prev) => applyUsage(prev, envelope.data));
           break;
         case 'notice':
           setNotices((prev) => [...prev, envelope.data.text]);
@@ -195,14 +209,14 @@ export function App(props: AppProps): ReactElement {
         {error !== null && <Text color="red">错误：{error}</Text>}
       </Box>
 
-      {/* 状态栏位（T-045 换成 status.tsx：模型名 / token 用量 / 权限模式） */}
-      <Box>
-        <Text dimColor>
-          {running ? '● 运行中' : '○ 就绪'} · turn {lastTurn}
-          {usage !== null &&
-            ` · in ${usage.inputTokens ?? '?'} / out ${usage.outputTokens ?? '?'}`}
-        </Text>
-      </Box>
+      {/* 状态栏（status.tsx，T-045）：模型名 / 权限模式 / 累计 token / 运行状态 */}
+      <StatusBar
+        modelName={modelName}
+        permissionMode={permissionMode}
+        totals={totals}
+        running={running}
+        turn={lastTurn}
+      />
 
       {/* 审批弹窗（T-044）：approval_request 打开，approval_resolved 关闭；
           弹窗期间输入行隐藏（阻塞输入提交），裁决后恢复 */}

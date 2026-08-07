@@ -16,6 +16,7 @@ import type {
 } from '@modou/core';
 import { App } from './app';
 import { createApprovalBridge } from './approval';
+import { derivePermissionMode } from './status';
 import { createEventChannel } from './stream';
 
 export const version = '0.1.0';
@@ -179,6 +180,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         stream: channel.stream,
         send,
         onExit: () => finish(0),
+        // 状态栏（T-045）：模型名取 provider.modelId；权限模式从工具注册表推导
+        // （含写/执行工具 =「写/执行需审批」，只读工具集 =「只读」，见 status.tsx）
+        modelName: provider.modelId,
+        permissionMode: derivePermissionMode(tools),
       }),
       {
         // Ctrl+C 由 App 的 useInput 接管（发 Command 中断 + 干净退出），
@@ -205,6 +210,19 @@ export { Markdown } from './markdown';
 export type { MarkdownProps } from './markdown';
 export { ApprovalModal, createApprovalBridge } from './approval';
 export type { ApprovalModalProps, ApprovalBridge } from './approval';
+export {
+  StatusBar,
+  PERMISSION_MODE_LABEL,
+  ZERO_TOKEN_TOTALS,
+  applyUsage,
+  derivePermissionMode,
+} from './status';
+export type {
+  StatusBarProps,
+  TokenTotals,
+  PermissionMode,
+  PermissionToolSource,
+} from './status';
 export {
   ToolCallList,
   DiffView,
