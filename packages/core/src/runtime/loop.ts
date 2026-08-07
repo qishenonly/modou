@@ -19,7 +19,9 @@ import type { ApprovalGate } from '../permission/approval';
 import type {
   ApprovalDecision,
   ApprovalOption,
+  CompactionData,
   ContextStateData,
+  NoticeLevel,
   RiskLevel,
 } from '../protocol/events';
 import { runToolPipeline } from '../tools/pipeline';
@@ -31,6 +33,16 @@ import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
 import { BudgetLedger } from '../context/budget';
 import { buildContextState, estimateContextSections } from '../context/project';
+import {
+  compactProjection,
+  isCompactionNeeded,
+  runCompaction,
+  splitThreadIntoTurns,
+  DEFAULT_KEEP_TURNS,
+} from '../context/compact';
+import type { CompactOptions } from '../context/compact';
+import type { SummaryState } from '../context/summary';
+import { createSummaryState } from '../context/summary';
 import {
   canTransition,
   stopReasonToTransition,
@@ -104,6 +116,22 @@ export interface RunAgentTurnInput {
    * 缺省 loop 自建新账本，并随 `TurnResult.budget` 返回给调用方。
    */
   readonly budget?: BudgetLedger;
+  /**
+   * 持久摘要状态（T-070 /compact）：提供时，loop 把压缩后的状态随
+   * `TurnResult.summaryState` 返回（调用方 / TUI 每轮传入同一演进状态即可
+   * 跨轮次增量压缩）；/resume 可先用 `rebuildSummaryState` 从会话日志的
+   * compaction 条目重建后传入。缺省 = 本轮不进行任何压缩 / 折叠。
+   */
+  readonly summaryState?: SummaryState;
+  /**
+   * 压缩配置（T-070 /compact）：提供时，loop 在每轮请求前做「触发 → 压缩 →
+   * 投影」：上下文估算超 `thresholdTokens` 且轮数超 `keepTurns` 时调用
+   * `generateDelta`（可注入；生产由模型生成增量，测试注入 stub）产出 delta、
+   * 增量合并进摘要状态、发出协议 `compaction` 事件并把压缩后的状态记入会话
+   * 日志（提供 session 时）；随后把发给模型的请求投影为「摘要块 + 近 N 轮
+   * 原文」（早期轮次用摘要占位，日志原文仍在）。缺省 = 不压缩不折叠。
+   */
+  readonly compact?: CompactOptions;
   readonly options: TurnOptions;
 }
 
@@ -121,6 +149,12 @@ export interface TurnResult {
    * 会原样返回——调用方跨轮次累计只需持有同一实例。
    */
   readonly budget: BudgetLedger;
+  /**
+   * 本轮结束后的持久摘要状态（T-070）：仅当入参提供了 `summaryState`（或本轮
+   * 发生了压缩）时存在——调用方把它作为下一轮的种子传入，跨轮次增量压缩。
+   * 缺省 undefined（未启用压缩）。
+   */
+  readonly summaryState?: SummaryState;
   /** 最后一轮的 finish reason（未收到 finish 事件时为 null） */
   readonly finishReason: StreamFinishReason | null;
   readonly termination: TurnTermination;
@@ -184,6 +218,15 @@ export type RuntimeEvent =
   | {
       readonly type: 'context_state';
       readonly data: ContextStateData;
+    }
+  | {
+      readonly type: 'compaction';
+      readonly data: CompactionData;
+    }
+  | {
+      readonly type: 'notice';
+      readonly level: NoticeLevel;
+      readonly text: string;
     }
   | { readonly type: 'error'; readonly error: ProviderError }
   | {
@@ -271,6 +314,8 @@ export async function runAgentTurn(
     session,
     loggedUserCount,
     budget: inputBudget,
+    summaryState: inputSummaryState,
+    compact: compactConfig,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -290,6 +335,15 @@ export async function runAgentTurn(
   /** 工作目录：入参提供或缺省 process.cwd()，传给工具 ctx.cwd。 */
   const cwd = inputCwd ?? process.cwd();
 
+  /**
+   * 持久摘要状态（T-070）：从入参复制，压缩发生时在此演进，随
+   * `TurnResult.summaryState` 返回给调用方（跨轮次增量压缩的种子）。
+   * 提供 `compact` 配置而未提供状态时自动新建空状态（首轮压缩即产出内容）。
+   */
+  let summaryState: SummaryState | undefined =
+    inputSummaryState ??
+    (compactConfig === undefined ? undefined : createSummaryState());
+
   let state: LoopState = 'idle';
   let termination: TurnTermination = 'end_turn';
   let turn = 0;
@@ -305,6 +359,12 @@ export async function runAgentTurn(
 
   /** 追加写的消息线程。绝不修改调用方的 messages。 */
   const thread: ModelMessage[] = [...messages];
+
+  /**
+   * 最近一轮发给模型的请求消息（T-070 压缩投影后；context_state 收尾核算用）。
+   * 未启用压缩时恒等于 thread；启用后反映「摘要块 + 近 N 轮原文」的实际请求。
+   */
+  let lastRequestMessages: ModelMessage[] = thread;
 
   // —— 会话日志旁路：把本轮入参里的新增 user 消息追加进日志（唯一真相）。
   // 0.6.0 会话每次新建，messages 通常为「本轮用户输入」单条（TUI 每轮传
@@ -518,6 +578,7 @@ export async function runAgentTurn(
       text,
       usage,
       budget: ledger,
+      ...(summaryState !== undefined ? { summaryState } : {}),
       finishReason,
       termination,
       turns: turn,
@@ -537,7 +598,9 @@ export async function runAgentTurn(
       data: buildContextState({
         system: system ?? '',
         tools,
-        thread,
+        // T-070：以最近一轮发给模型的投影为准（压缩后 = 摘要块 + 近 N 轮原文），
+        // 让 /context 分项视图反映真实请求，而非全量历史。
+        thread: lastRequestMessages,
         budget: ledger,
       }),
     });
@@ -591,9 +654,57 @@ export async function runAgentTurn(
     let roundError: ProviderError | undefined;
     let aborted = false;
 
+    // —— 压缩触发 + 投影（T-070 /compact）——
+    // 触发：上下文估算超阈值且轮数超 keepTurns → 调注入的摘要生成函数产出
+    // delta、增量合并进持久摘要（merge，rev+1）、发协议 compaction 事件、把
+    // 压缩后的状态快照记入会话日志（/resume 重建依据）。日志原文仍在——
+    // 压缩只影响投影，不删日志（002 4.1）。
+    // 投影：早期轮次 → 摘要块，近 N 轮原文保留（含当前输入轮）；只影响发给
+    // 模型的请求，内部 thread 与日志不动。
+    let requestMessages: ModelMessage[] = thread;
+    if (compactConfig !== undefined && summaryState !== undefined) {
+      const keepTurns = compactConfig.keepTurns ?? DEFAULT_KEEP_TURNS;
+      if (
+        isCompactionNeeded(thread, compactConfig.thresholdTokens) &&
+        splitThreadIntoTurns(thread).length > keepTurns
+      ) {
+        if (compactConfig.generateDelta === undefined) {
+          emit({
+            type: 'notice',
+            level: 'warn',
+            text: '上下文超压缩阈值但未注入摘要生成函数（compact.generateDelta），本轮跳过压缩',
+          });
+        } else {
+          try {
+            const outcome = await runCompaction(
+              thread,
+              summaryState,
+              compactConfig,
+            );
+            summaryState = outcome.state;
+            emit({ type: 'compaction', data: outcome.event });
+            await session?.appendCompaction({
+              covers: outcome.event.coveredTurns,
+              summaryRev: outcome.state.rev,
+              state: outcome.state,
+            });
+          } catch (caught) {
+            emit({
+              type: 'notice',
+              level: 'warn',
+              text: `压缩失败（${caught instanceof Error ? caught.message : String(caught)}），继续按既有摘要折叠投影`,
+            });
+          }
+        }
+      }
+      requestMessages = compactProjection(thread, summaryState, compactConfig);
+    }
+    lastRequestMessages = requestMessages;
+
     // —— 请求前粗估（002 7.3）：对将发内容估算（system + 消息正文 + 工具定义），
     // 入账挂起待校准；本轮未产生 usage 时在下方收尾处丢弃（见 roundUsageArrived）。
-    ledger.recordEstimate(estimateRequestText(system, thread, tools));
+    // T-070：以压缩投影后的请求为准（发给模型的正文才是真实计费口径）。
+    ledger.recordEstimate(estimateRequestText(system, requestMessages, tools));
     // 本轮是否收到 usage 事件：没有则说明请求失败 / 供应商未上报，粗估不得
     // 参与配对——没有实际用量与之比较，计入漂移会让偏差失真。
     let roundUsageArrived = false;
@@ -606,7 +717,7 @@ export async function runAgentTurn(
         () =>
           provider.streamChat({
             system,
-            messages: thread,
+            messages: requestMessages,
             // 工具定义随请求发给模型：真实模型据此发出 tool_use（G-0.2.0）。
             // 注册表缺失时不传（模型没有工具可用）。
             ...(toolSet === undefined ? {} : { tools: toolSet }),

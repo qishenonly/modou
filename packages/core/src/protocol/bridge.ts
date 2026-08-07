@@ -24,6 +24,8 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  * | approval_resolved  | approval_resolved（裁决收尾）       |
  * | usage              | usage                               |
  * | context_state      | context_state（分项 + 合计 + drift）|
+ * | compaction         | compaction（压缩前后 token、折叠轮次）|
+ * | notice             | notice（loop 侧提示，如压缩跳过）   |
  * | error              | error（ProviderError → ErrorData）  |
  * | turn_end           | turn_end（带终止原因）              |
  * | tool_feedback      | notice（warn）：模型调用了未知工具   |
@@ -34,8 +36,7 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  * 流式阶段的 tool_use 事件（→ tool_call）负责「模型正在请求调用」的即时展示。
  *
  * TODO（本版不产生，不映射）：
- * - `tool_progress`：等长命令实时输出（bash 工具落地时）；
- * - `compaction`：等压缩（0.7.0）落地。
+ * - `tool_progress`：等长命令实时输出（bash 工具落地时）。
  */
 export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
   switch (event.type) {
@@ -64,6 +65,15 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
     case 'context_state':
       // 上下文分项核算（T-063）：loop 每轮收尾发出，前端 /context 视图直接消费
       return [{ type: 'context_state', data: event.data }];
+    case 'compaction':
+      // 压缩事件（T-070）：压缩前后 token、被折叠的轮次范围——前端据此
+      // 告知用户「刚压缩过」（002 3.2 compaction 表）。
+      return [{ type: 'compaction', data: event.data }];
+    case 'notice':
+      // loop 侧提示（T-070：压缩跳过 / 压缩失败等），与协议 notice 同形
+      return [
+        { type: 'notice', data: { level: event.level, text: event.text } },
+      ];
     case 'tool_result':
       // 工具执行结果：与人看的 tool_result 协议事件同形，直接映射
       return [

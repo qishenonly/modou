@@ -234,8 +234,10 @@ export function estimateContextSections(
  * - `sections` / `total`：estimateContextSections 的分项与合计；
  * - `drift`：预算账本累计粗估 vs 实测偏差（协议 ContextDrift 形态）。
  *
- * loop 每轮收尾以内部 thread + 当轮账本调用本函数并发出 context_state；
- * TUI `/context` 以「系统提示 + 工具 + 投影历史 + 账本」实时组装同款负载。
+ * loop 每轮收尾以「最近一轮发给模型的请求消息」（T-070：启用压缩后为投影
+ * 后的「摘要块 + 近 N 轮原文」，未启用 = 内部 thread）+ 当轮账本调用本函数
+ * 并发出 context_state；TUI `/context` 以「系统提示 + 工具 + 投影历史 + 账本」
+ * 实时组装同款负载。
  */
 export function buildContextState(
   input: EstimateContextInput,

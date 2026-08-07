@@ -157,6 +157,11 @@ export class VercelModelProvider implements ModelProvider {
       model: this.createModel(this.modelId),
       system: input.system,
       messages: input.messages,
+      // T-070 /compact：压缩投影会把摘要块作为 system 角色消息放进 messages
+      // 数组（早期轮次的占位，见 context/compact.ts）。AI SDK 默认不允许
+      // system 消息出现在 messages 中，这里显式放行；供应商适配层负责把
+      // system 消息转换为各自的 system prompt 语义（Anthropic / OpenAI 均支持）。
+      allowSystemInMessages: true,
       ...(input.tools === undefined ? {} : { tools: input.tools }),
       abortSignal: input.abortSignal,
       maxRetries: input.maxRetries ?? 2,

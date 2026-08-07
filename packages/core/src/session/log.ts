@@ -104,6 +104,21 @@ export interface ErrorEntryData {
   readonly message: string;
 }
 
+/**
+ * compaction 条目负载（design 002 §4.2：压缩事件入日志；0.7.0 落地）。
+ * - `covers`：被折叠的轮次范围（当前线程的轮次序号，1-based）；
+ * - `summaryRev`：压缩后的摘要版本号；
+ * - `state`：压缩后的完整摘要状态快照（T-070 扩展落盘字段）——/resume
+ *   （T-070：从日志 compaction 条目重建）据此恢复持久摘要状态，无需重放
+ *   全量历史。状态的结构校验在 context/summary.ts 的 isSummaryState /
+ *   rebuildSummaryState（本模块不自知 SummaryState，落盘为 unknown）。
+ */
+export interface CompactionEntryData {
+  readonly covers: readonly [number, number];
+  readonly summaryRev: number;
+  readonly state?: unknown;
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -114,6 +129,7 @@ export interface SessionEntryDataMap {
   turn_end: TurnEndEntryData;
   notice: NoticeEntryData;
   error: ErrorEntryData;
+  compaction: CompactionEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -128,6 +144,7 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'turn_end',
   'notice',
   'error',
+  'compaction',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -150,6 +167,7 @@ export type SessionRecord = {
   | { readonly kind: 'turn_end'; readonly data: TurnEndEntryData }
   | { readonly kind: 'notice'; readonly data: NoticeEntryData }
   | { readonly kind: 'error'; readonly data: ErrorEntryData }
+  | { readonly kind: 'compaction'; readonly data: CompactionEntryData }
 );
 
 /**
@@ -393,6 +411,15 @@ export class SessionLog {
   /** 追加 error 条目。 */
   appendError(data: ErrorEntryData): Promise<void> {
     return this.append('error', data);
+  }
+
+  /**
+   * 追加 compaction 条目（T-070：压缩事件入日志）。
+   * `state` 为压缩后的完整摘要状态快照（/resume 重建的依据，002 4.2
+   * 「日志是唯一真相」——压缩只影响投影，原文仍在，本条只记录压缩史）。
+   */
+  appendCompaction(data: CompactionEntryData): Promise<void> {
+    return this.append('compaction', data);
   }
 
   /**
