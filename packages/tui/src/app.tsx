@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { Command, Envelope, UsageData } from '@modou/core';
+import { Input } from './input';
 
-/** App 组件属性（T-040 骨架）。 */
+/** App 组件属性（T-040 骨架 + T-041 输入框）。 */
 export interface AppProps {
   /**
    * core 事件流：runAgentTurnStreaming 产出的信封序列（经 stream.ts 适配为
@@ -11,7 +12,7 @@ export interface AppProps {
   readonly stream: AsyncIterable<Envelope>;
   /**
    * 发 Command 通道（002 3.3 反向通道）：App 的一切操作都转成 Command 经此回调
-   * 回传 core。本版是简单回调（T-041 输入框会把它接到更完整的状态）。
+   * 回传 core。输入框（input.tsx）的提交 / 斜杠命令都汇聚到这里。
    */
   readonly send: (command: Command) => void;
   /** 干净退出回调（Ctrl+C 触发；由装配方 runTui 负责卸载与收尾）。 */
@@ -23,14 +24,15 @@ export interface AppProps {
  *
  * 结构对齐 002 第十二节目录布局：
  * - 消息/输出区（本版流式纯文本；T-042 换成 markdown.tsx 并做帧节流）；
- * - 底部输入行（本版最小单行输入，T-041 换成 input.tsx：多行/粘贴/历史上翻/斜杠）；
+ * - 底部输入行（input.tsx：多行/粘贴/历史上翻/斜杠补全，T-041）；
  * - 状态栏位（本版内联一行占位，T-045 换成 status.tsx：模型名/token/权限模式）；
  * - tools.tsx / approval.tsx 分别由 T-043 / T-044 接入工具展示与审批弹窗。
  *
- * 键盘（T-040 范围）：
- * - 回车：提交输入行（空输入不提交）；
- * - Esc：发 interrupt Command 打断当前轮（headless 无键盘路径，不受影响）；
- * - Ctrl+C：触发 onExit 干净退出（交互式 TUI 里 Ctrl+C 是主动退出，非信号中断）。
+ * 键盘（T-041 分工）：
+ * - App 层只管「全局键」：Esc 发 interrupt Command 打断当前轮、Ctrl+C 触发 onExit
+ *   干净退出（headless 无键盘路径，不受影响）；
+ * - 输入编辑（字符/换行/光标移动/历史上翻/斜杠补全）全部由 input.tsx 处理；
+ * - 输入框提交：普通文本 → submit，以 `/` 开头 → slash（002 3.3 表）。
  *
  * 消费模型：事件流经 for-await 逐条应用（useEffect 内），卸载时置 disposed 停止。
  * 状态更新用函数式 setState，事件按 seq 到达即天然有序。
@@ -50,10 +52,8 @@ export function App(props: AppProps): ReactElement {
   // 错误（002 5.3：错误即数据）
   const [error, setError] = useState<string | null>(null);
 
-  // 输入行内容：state 供渲染，ref 供键盘回调读最新值
-  // （useInput 的 handler 每次渲染都重建，用 ref 绕开闭包过期的可能）
-  const [inputValue, setInputValue] = useState('');
-  const inputRef = useRef('');
+  // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
+  // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
 
   // 消费 core 事件流
   useEffect(() => {
@@ -102,35 +102,30 @@ export function App(props: AppProps): ReactElement {
     };
   }, [stream]);
 
-  // 键盘处理
-  useInput((text, key) => {
-    if (key.return) {
-      const value = inputRef.current.trim();
-      if (value.length > 0) {
-        send({ type: 'submit', text: value });
-        inputRef.current = '';
-        setInputValue('');
-      }
-      return;
-    }
+  // 键盘处理：App 层只管「全局键」——Esc 打断、Ctrl+C 干净退出。
+  // 输入编辑（字符/换行/光标/历史/补全）全部由 input.tsx 的 useInput 处理。
+  useInput((_text, key) => {
     if (key.escape) {
       send({ type: 'interrupt' });
       return;
     }
-    if (key.ctrl && text === 'c') {
+    if (key.ctrl && _text === 'c') {
       onExit?.();
       return;
     }
-    if (key.backspace) {
-      inputRef.current = inputRef.current.slice(0, -1);
-      setInputValue(inputRef.current);
-      return;
-    }
-    if (text.length > 0) {
-      inputRef.current += text;
-      setInputValue(inputRef.current);
-    }
   });
+
+  // 输入框 → Command 通道（002 3.3 表：submit 普通文本 / slash 斜杠命令）
+  const handleSubmit = (text: string): void => {
+    send({ type: 'submit', text });
+  };
+  const handleSlash = (name: string, args?: string): void => {
+    send(
+      args === undefined
+        ? { type: 'slash', name }
+        : { type: 'slash', name, args },
+    );
+  };
 
   return (
     <Box flexDirection="column" minHeight={5}>
@@ -154,10 +149,12 @@ export function App(props: AppProps): ReactElement {
         </Text>
       </Box>
 
-      {/* 底部输入行（T-041 换成 input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全） */}
+      {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全） */}
       <Box>
         <Text color="cyan">&gt; </Text>
-        <Text>{inputValue}</Text>
+        <Box flexGrow={1}>
+          <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+        </Box>
       </Box>
     </Box>
   );

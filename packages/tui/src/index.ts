@@ -182,5 +182,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
 export { App } from './app';
 export type { AppProps } from './app';
+export { Input } from './input';
+export type { InputProps } from './input';
 export { createEventChannel } from './stream';
 export type { EventChannel } from './stream';
