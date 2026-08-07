@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { createProviderFromEnv } from '@modou/core';
+import { createProviderFromEnv, defaultWriteTools } from '@modou/core';
 import { parseArgs, UsageError } from './args';
 import type { CliArgs } from './args';
 import { runHeadless } from './headless';
@@ -10,9 +10,11 @@ const USAGE = `modou —— 终端编码 Agent（0.1.0）
 
 用法：
   modou -p "你好"    提交提示词，流式输出回答（headless）
+  modou --auto-approve -p "修复一下某个 bug"   自动允许写入/执行（自用/评测用）
 
 选项：
   -p, --prompt <文本>  要提交的提示词
+  --auto-approve       跳过写入/执行审批（危险命令仍强制逐次确认）
   -h, --help           显示本帮助`;
 
 /**
@@ -70,6 +72,11 @@ export async function main(argv: readonly string[]): Promise<number> {
     result = await runHeadless({
       provider,
       prompt: args.prompt,
+      // 0.3.0：CLI 装配写/执行工具集（read/grep/glob/write/edit/bash），
+      // `modou -p` 能改文件、能跑命令；审批策略由 --auto-approve 决定
+      // （缺省 false = headless 默认拒绝，无人值守安全默认）。
+      tools: defaultWriteTools(),
+      autoApprove: args.autoApprove,
       abortSignal: interrupt.signal,
     });
   } catch (error) {

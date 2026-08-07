@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { defaultReadonlyTools } from '../tools/impl';
+import { defaultReadonlyTools, defaultWriteTools } from '../tools/impl';
 import { globTool } from '../tools/impl/glob';
 import { grepTool } from '../tools/impl/grep';
 import { readTool } from '../tools/impl/read';
@@ -7,13 +7,16 @@ import { ToolRegistry } from '../tools/registry';
 import { buildSystemPrompt } from './system';
 
 describe('buildSystemPrompt（T-023 系统提示词首版）', () => {
-  test('身份段：modou 身份与行为准则（照线干活、不越界、只读边界）', () => {
+  test('身份段：modou 身份与行为准则（照线干活、不越界、审批边界）', () => {
     const prompt = buildSystemPrompt({ tools: defaultReadonlyTools() });
     expect(prompt).toContain('你是 modou');
     expect(prompt).toContain('照线干活');
     expect(prompt).toContain('不越界');
-    expect(prompt).toContain('只读');
-    expect(prompt).toContain('不修改、不创建、不删除文件');
+    // 0.3.0 语义：有读与写/执行工具，写入与命令执行需经审批
+    expect(prompt).toContain('写入/执行工具');
+    expect(prompt).toContain('需经用户审批');
+    expect(prompt).toContain('被拒绝时按拒绝提示调整方案');
+    expect(prompt).toContain('不要换写法反复触发审批');
     expect(prompt).toContain('绝不编造');
   });
 
@@ -63,6 +66,30 @@ describe('buildSystemPrompt（T-023 系统提示词首版）', () => {
     expect(prompt).not.toContain('### edit');
     expect(prompt).not.toContain('### write');
     expect(prompt).not.toContain('### echo');
+  });
+
+  test('0.3.0 写工具集（defaultWriteTools）：write / edit / bash 全部声明给模型', () => {
+    const prompt = buildSystemPrompt({ tools: defaultWriteTools() });
+    expect(prompt).toContain('### read');
+    expect(prompt).toContain('### grep');
+    expect(prompt).toContain('### glob');
+    expect(prompt).toContain('### write');
+    expect(prompt).toContain('### edit');
+    expect(prompt).toContain('### bash');
+  });
+
+  test('编辑纪律段（T-034）：先 Read 再 Edit、带足上下文、失败按诊断调整、改完自行验证、Bash 独立子进程', () => {
+    const prompt = buildSystemPrompt({ tools: defaultWriteTools() });
+    expect(prompt).toContain('编辑纪律');
+    expect(prompt).toContain('先 Read 再 Edit');
+    expect(prompt).toContain('带足上下文');
+    expect(prompt).toContain('使 old_string 唯一');
+    expect(prompt).toContain('最相近片段');
+    expect(prompt).toContain('不要瞎猜');
+    expect(prompt).toContain('改完自行验证');
+    expect(prompt).toContain('测试 / 构建');
+    expect(prompt).toContain('独立子进程');
+    expect(prompt).toContain('cwd');
   });
 
   test('按注册表生成：只注册 read 时，只出现 read 的工具说明', () => {

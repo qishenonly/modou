@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultWriteTools, ProviderError } from '@modou/core';
@@ -503,6 +509,97 @@ describe('headless 审批策略（T-033）', () => {
       if (toolResult?.type === 'tool_result') {
         expect(toolResult.data.ok).toBe(true);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('默认拒绝：write 工具调用被拦下（无人值守安全默认）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-headless-wdeny-'));
+    const filePath = join(dir, 'new.txt');
+    try {
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'w1',
+            name: 'write',
+            input: { path: filePath, content: '你好' },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'text_delta', delta: '未写入。' },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'stop' },
+        ],
+      ]);
+      const { envelopes } = await runHeadless({
+        provider: stub,
+        prompt: '写个文件',
+        tools: defaultWriteTools(),
+        write: () => {},
+        writeError: () => {},
+      });
+
+      // 审批请求与裁决成对；write 是 write 级操作，默认拒绝且不落盘
+      expect(envelopes.some((e) => e.type === 'approval_request')).toBe(true);
+      expect(envelopes.some((e) => e.type === 'approval_resolved')).toBe(true);
+      const toolResult = envelopes.find(
+        (e) => e.type === 'tool_result' && e.data.id === 'w1',
+      );
+      expect(toolResult?.type).toBe('tool_result');
+      if (toolResult?.type === 'tool_result') {
+        expect(toolResult.data.ok).toBe(false);
+        expect(toolResult.data.forModel).toContain('被拒绝');
+      }
+      // 文件未被创建
+      expect(existsSync(filePath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('autoApprove：write 工具调用放行并真实落盘（fixture 临时文件）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-headless-wallow-'));
+    const filePath = join(dir, 'new.txt');
+    try {
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'w1',
+            name: 'write',
+            input: { path: filePath, content: '你好\n' },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'text_delta', delta: '完成。' },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'stop' },
+        ],
+      ]);
+      const { envelopes } = await runHeadless({
+        provider: stub,
+        prompt: '写个文件',
+        tools: defaultWriteTools(),
+        autoApprove: true,
+        write: () => {},
+        writeError: () => {},
+      });
+
+      const toolResult = envelopes.find(
+        (e) => e.type === 'tool_result' && e.data.id === 'w1',
+      );
+      expect(toolResult?.type).toBe('tool_result');
+      if (toolResult?.type === 'tool_result') {
+        expect(toolResult.data.ok).toBe(true);
+      }
+      // 文件真实创建且内容正确
+      expect(readFileSync(filePath, 'utf8')).toBe('你好\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
