@@ -15,6 +15,7 @@ import { runToolPipeline } from '../pipeline';
 import { ToolRegistry } from '../registry';
 import type { ToolContext } from '../types';
 import { defaultWriteTools } from './index';
+import { editTool } from './edit';
 import { writeSchema, writeTool } from './write';
 
 /**
@@ -109,20 +110,23 @@ describe('writeTool 基本形态', () => {
     );
   });
 
-  test('defaultWriteTools：注册 read / grep / glob / write 并幂等', () => {
+  test('defaultWriteTools：注册 read / grep / glob / write / edit 并幂等', () => {
     const registry = defaultWriteTools();
     expect(registry.has('read')).toBe(true);
     expect(registry.has('grep')).toBe(true);
     expect(registry.has('glob')).toBe(true);
     expect(registry.has('write')).toBe(true);
+    expect(registry.has('edit')).toBe(true);
     expect(registry.find('write')).toBe(writeTool);
+    expect(registry.find('edit')).toBe(editTool);
     // 幂等：再次装配不重复注册、不抛错
     const again = defaultWriteTools(registry);
-    expect(again.size).toBe(4);
+    expect(again.size).toBe(5);
     // 可继续在同一注册表上叠加其他工具
     const custom = new ToolRegistry();
     defaultWriteTools(custom);
     expect(custom.has('write')).toBe(true);
+    expect(custom.has('edit')).toBe(true);
   });
 });
 

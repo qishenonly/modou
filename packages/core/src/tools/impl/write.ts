@@ -117,9 +117,9 @@ function fsErrorOutcome(
 /**
  * 原子写：先写同目录临时文件，再 rename 到目标。
  * 临时文件与目标同目录（同一文件系统，rename 才原子）；随机名避免并发冲突。
- * 失败时尽力清理临时文件，不留残留。
+ * 失败时尽力清理临时文件，不留残留。导出供 Edit（T-031）等写工具复用。
  */
-async function writeFileAtomically(
+export async function writeFileAtomically(
   target: string,
   content: string,
   signal: AbortSignal,
