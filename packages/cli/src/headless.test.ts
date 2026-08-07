@@ -3,6 +3,7 @@ import { ProviderError } from '@modou/core';
 import type {
   ModelProvider,
   ProviderCapabilities,
+  StreamChatInput,
   StreamEvent,
 } from '@modou/core';
 import { runHeadless } from './headless';
@@ -30,7 +31,11 @@ class StubProvider implements ModelProvider {
 
   constructor(private readonly rounds: StubRound[]) {}
 
-  async *streamChat(): AsyncIterable<StreamEvent> {
+  /** 最近一次请求收到的 system（集成测试断言 headless 注入了什么）。 */
+  lastSystem: string | undefined;
+
+  async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
+    this.lastSystem = input.system;
     const round = this.rounds[Math.min(this.callCount, this.rounds.length - 1)];
     this.callCount += 1;
     if ('throw' in round) throw round.throw;
@@ -200,5 +205,51 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
 
     expect(result.termination).toBe('halted');
     expect(stderr).toContain('达到轮次/预算上限');
+  });
+
+  test('缺省注入系统提示词：发给模型的 system 含搜索优先策略与全部工具', async () => {
+    const stub = new StubProvider([
+      [
+        { type: 'text_delta', delta: 'ok' },
+        { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+
+    await runHeadless({
+      provider: stub,
+      prompt: 'hi',
+      write: () => {},
+      writeError: () => {},
+    });
+
+    expect(stub.lastSystem).toBeDefined();
+    expect(stub.lastSystem).toContain('搜索优先策略');
+    expect(stub.lastSystem).toContain('先 Glob/Grep 定位');
+    // 默认只读工具集（read / grep / glob）全部声明给模型
+    expect(stub.lastSystem).toContain('### read');
+    expect(stub.lastSystem).toContain('### grep');
+    expect(stub.lastSystem).toContain('### glob');
+  });
+
+  test('自定义 system 可注入：headless 不覆盖调用方提供的 system', async () => {
+    const stub = new StubProvider([
+      [
+        { type: 'text_delta', delta: 'ok' },
+        { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const custom = '自定义系统指令（测试注入）';
+
+    await runHeadless({
+      provider: stub,
+      prompt: 'hi',
+      system: custom,
+      write: () => {},
+      writeError: () => {},
+    });
+
+    expect(stub.lastSystem).toBe(custom);
   });
 });

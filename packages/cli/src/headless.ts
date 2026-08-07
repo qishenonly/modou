@@ -1,4 +1,6 @@
 import {
+  buildSystemPrompt,
+  defaultReadonlyTools,
   runAgentTurnStreaming,
   type Envelope,
   type ModelProvider,
@@ -25,7 +27,11 @@ export interface HeadlessOptions {
   readonly provider: ModelProvider;
   /** 用户提示词。 */
   readonly prompt: string;
-  /** 系统指令（可选；0.1.0 默认不注入）。 */
+  /**
+   * 系统指令（可选）。缺省用 core 生成的系统提示词
+   * （buildSystemPrompt(defaultReadonlyTools())：身份 / 搜索优先策略 / 工具说明）；
+   * 传入则完全覆盖，测试可注入自定义 system。
+   */
   readonly system?: string;
   /** 轮次上限（默认 10）。 */
   readonly maxTurns?: number;
@@ -122,7 +128,8 @@ export async function runHeadless(
   const result = await runAgentTurnStreaming(
     {
       provider: options.provider,
-      system: options.system,
+      system:
+        options.system ?? buildSystemPrompt({ tools: defaultReadonlyTools() }),
       messages: [{ role: 'user', content: options.prompt }],
       options: {
         maxTurns: options.maxTurns ?? 10,
