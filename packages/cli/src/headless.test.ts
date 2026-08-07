@@ -698,4 +698,51 @@ describe('headless 审批策略（T-033）', () => {
       expect(toolResult.data.forModel).toContain('被拒绝');
     }
   });
+
+  test('deny 规则覆盖 autoApprove：--rule deny 命中时直接拒绝，不走审批、不落盘', async () => {
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'c1',
+          name: 'write',
+          input: { path: '/repo/should-not-exist.txt', content: 'x' },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '无法写入。' },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const { envelopes } = await runHeadless({
+      provider: stub,
+      prompt: '写一下',
+      tools: defaultWriteTools(),
+      autoApprove: true,
+      permission: {
+        sandbox: 'workspace-write',
+        policy: 'never',
+        projectRoot: '/repo',
+        rules: [{ effect: 'deny', match: 'write' }],
+      },
+      write: () => {},
+      writeError: () => {},
+    });
+
+    // deny 规则（裁决顺序 ①）优先于 autoApprove decider：不发审批事件、
+    // 工具结果 ok:false「被拒绝」（工具未执行，故 /repo 是否存在都无影响）
+    expect(envelopes.some((e) => e.type === 'approval_request')).toBe(false);
+    expect(envelopes.some((e) => e.type === 'approval_resolved')).toBe(false);
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'c1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(false);
+      expect(toolResult.data.forModel).toContain('被拒绝');
+    }
+  });
 });

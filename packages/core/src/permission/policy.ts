@@ -1,9 +1,11 @@
 import type { RiskLevel } from '../protocol/events';
 import { isDangerousCommand } from './danger';
 import { resolveAllowedPath } from './paths';
+import { matchRule } from './rules';
+import type { PermissionRule } from './rules';
 
 /**
- * 权限裁决内核（T-050，design 002 6.1 正交模型，ADR 0007）。
+ * 权限裁决内核（T-050/T-052，design 002 6.1 正交模型，ADR 0007）。
  *
  * 沙箱范围 × 审批策略的正交九宫格，裁决顺序（002 6.1）：
  *
@@ -12,7 +14,7 @@ import { resolveAllowedPath } from './paths';
  * deny 优先级最高；危险命令即使在 `never` 策略下也强制确认——「我信任这个
  * agent」不该等于「我同意它执行 `rm -rf /`」。
  *
- * 本版矩阵实现（T-052 规则表留占位，见各函数注释）：
+ * 本版矩阵实现（T-052 规则表已在 rules.ts 落地，见各函数注释）：
  *
  * |                  | untrusted        | on-request        | never                   |
  * |------------------|------------------|-------------------|-------------------------|
@@ -36,17 +38,11 @@ export type SandboxScope = 'read-only' | 'workspace-write' | 'full-access';
 /** 审批策略：决定「模型自报风险时要不要停下来问人」。 */
 export type ApprovalPolicy = 'untrusted' | 'on-request' | 'never';
 
-/** 规则表条目（T-052 规则表）：命令 / 工具 / 路径前缀匹配规则。 */
-export interface PermissionRule {
-  /** 匹配模式（T-052 定义语法：命令前缀 / 工具名 / 路径前缀）。 */
-  readonly pattern: string;
-}
-
-/** allow/deny 规则表（T-052 接口占位）。缺省空表，裁决顺序已预留。 */
-export interface PermissionRules {
-  readonly deny?: readonly PermissionRule[];
-  readonly allow?: readonly PermissionRule[];
-}
+/**
+ * allow/deny 规则表（T-052，rules.ts）：命令 / 工具名 / 路径前缀匹配。
+ * 缺省空表；裁决顺序 ① deny（最高优先）与 ④ allow（沙箱范围之后）由
+ * rules.ts 的 matchRule 承载。
+ */
 
 /**
  * 正交权限配置。headless / TUI 装配后注入 ApprovalGate（T-050）：
@@ -62,8 +58,13 @@ export interface PermissionConfig {
   readonly projectRoot: string;
   /** 额外允许访问的目录（--add-dir，绝对路径；paths.ts 边界校验的扩展白名单）。 */
   readonly addDirs?: readonly string[];
-  /** allow/deny 规则表（T-052 接口占位，本版空表不参与裁决）。 */
-  readonly rules?: PermissionRules;
+  /**
+   * allow/deny 规则表（T-052，rules.ts）：命令 / 工具名 / 路径前缀匹配。
+   * deny 规则命中直接拒绝（最高优先）；allow 规则命中放行审批策略层，但不能
+   * 推翻危险黑名单 / 沙箱范围 / 目录边界。可编程注入（headless / TUI 的
+   * permission 选项），CLI 经 `--rule <allow|deny>:<前缀>` 简单参数装配。
+   */
+  readonly rules?: readonly PermissionRule[];
 }
 
 /** 权限裁决输入（gate 从 ApprovalRequestInput 构造后传入）。 */
@@ -88,24 +89,28 @@ export function defaultPermissionConfig(projectRoot: string): PermissionConfig {
 }
 
 /**
- * deny 规则命中判定（T-052 规则表占位）：本版空表恒不命中，但「deny 规则 >
- * 危险黑名单 > …」的裁决顺序第一位结构已就位——T-052 只需在此填入
- * 命令 / 工具 / 路径前缀的匹配实现。002 6.3：规则表是「防手滑、防模型莽撞」
- * 的深度防御一层，不是安全边界。
+ * deny 规则命中判定（T-052 规则表，rules.ts matchRule）：裁决顺序第 ① 位，
+ * 优先级最高——命中即拒绝，即使 `never` 策略 / autoApprove 也不会走审批流程。
+ * 002 6.3：规则表是「防手滑、防模型莽撞」的深度防御一层，不是安全边界。
  */
-function denyRuleHit(rules: PermissionRules | undefined): boolean {
-  if (rules === undefined || (rules.deny ?? []).length === 0) return false;
-  return false; // T-052：本版恒不命中（占位）
+function denyRuleHit(
+  request: PermissionRequest,
+  config: PermissionConfig,
+): boolean {
+  return matchRule(request, config.rules, 'deny');
 }
 
 /**
- * allow 规则命中判定（T-052 规则表占位）：同 denyRuleHit，空表恒不命中。
- * 位置在沙箱范围之后、审批策略之前——allow 规则可放行策略层（never 放行 /
- * 记忆豁免），但不能推翻更优先的 deny 规则与沙箱范围。
+ * allow 规则命中判定（T-052 规则表，rules.ts matchRule）：裁决顺序第 ④ 位，
+ * 在沙箱范围之后、审批策略之前——allow 规则可放行策略层（never 放行 /
+ * 记忆豁免），但不能推翻更优先的 deny 规则、危险命令黑名单与沙箱范围 /
+ * 目录边界。
  */
-function allowRuleHit(rules: PermissionRules | undefined): boolean {
-  if (rules === undefined || (rules.allow ?? []).length === 0) return false;
-  return false; // T-052：本版恒不命中（占位）
+function allowRuleHit(
+  request: PermissionRequest,
+  config: PermissionConfig,
+): boolean {
+  return matchRule(request, config.rules, 'allow');
 }
 
 /** exec 工具是否命中危险命令黑名单（T-033 danger.ts）。 */
@@ -153,8 +158,9 @@ export function decidePermission(
   request: PermissionRequest,
   config: PermissionConfig,
 ): PermissionDecision {
-  // ① deny 规则（T-052 占位，本版空表）：优先级最高
-  if (denyRuleHit(config.rules)) return 'deny';
+  // ① deny 规则（T-052，rules.ts）：优先级最高，命中即拒绝——即使 never 策略 /
+  // autoApprove 也不会走审批流程
+  if (denyRuleHit(request, config)) return 'deny';
 
   // ② 危险命令黑名单：命中 → 强制 ask——即使 never 策略 / read-only 沙箱也
   // 强制逐次确认（002 6.1「我信任这个 agent」≠「我同意 rm -rf /」）
@@ -181,8 +187,9 @@ export function decidePermission(
     }
   }
 
-  // ④ allow 规则（T-052 占位，本版空表）
-  if (allowRuleHit(config.rules)) return 'allow';
+  // ④ allow 规则（T-052，rules.ts）：在沙箱范围之后——可放行审批策略层，
+  // 但不能推翻危险黑名单（②）/ 沙箱范围 / 目录边界（③）
+  if (allowRuleHit(request, config)) return 'allow';
 
   // ⑤ 审批策略
   if (config.policy === 'never') {

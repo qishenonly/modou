@@ -116,4 +116,30 @@ describe('main（CLI 装配：写工具集 + autoApprove）', () => {
 
     expect(headlessCalls[0]?.permission).toBeUndefined();
   });
+
+  test('--rule：permission.rules 透传为规则表（T-052），缺省权限组合不变', async () => {
+    headlessCalls.length = 0;
+    const code = await withOpencodeEnv(() =>
+      main(['--rule', 'deny:rm -rf', '--rule', 'allow:git status', '-p', 'hi']),
+    );
+
+    expect(code).toBe(0);
+    const permission = headlessCalls[0]?.permission;
+    expect(permission).toBeDefined();
+    expect(permission?.rules).toEqual([
+      { effect: 'deny', match: 'rm -rf' },
+      { effect: 'allow', match: 'git status' },
+    ]);
+    // 缺省权限组合保持不变：workspace-write + on-request，projectRoot = 启动 cwd
+    expect(permission?.sandbox).toBe('workspace-write');
+    expect(permission?.policy).toBe('on-request');
+    expect(permission?.projectRoot).toBe(process.cwd());
+  });
+
+  test('无 --rule：不注入 permission（沿用 headless 默认）', async () => {
+    headlessCalls.length = 0;
+    await withOpencodeEnv(() => main(['-p', 'hi']));
+
+    expect(headlessCalls[0]?.permission).toBeUndefined();
+  });
 });

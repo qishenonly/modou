@@ -175,13 +175,17 @@ describe('decidePermission：裁决顺序与危险命令强制', () => {
     }
   });
 
-  test('规则表占位（T-052）：deny/allow 规则本版不参与裁决', () => {
-    const withRules = cfg('workspace-write', 'never', {
-      rules: { deny: [{ pattern: 'write' }], allow: [{ pattern: 'read' }] },
+  test('规则表（T-052）：deny 命中拒绝、allow 命中放行（完整匹配语义见 rules.test.ts）', () => {
+    // deny：工具名匹配 write → 即使 never 策略也直接拒绝
+    const denyWrite = cfg('workspace-write', 'never', {
+      rules: [{ effect: 'deny', match: 'write' }],
     });
-    // 规则匹配未实现（T-052），本版仍按矩阵走（deny 规则第一位结构已就位）
-    expect(decidePermission(WRITE_REQ, withRules)).toBe('allow');
-    expect(decidePermission(READ_REQ, withRules)).toBe('allow');
+    expect(decidePermission(WRITE_REQ, denyWrite)).toBe('deny');
+    // allow：命令前缀匹配，默认组合下原本要问的 exec 放行审批策略层
+    const allowNpm = cfg('workspace-write', 'on-request', {
+      rules: [{ effect: 'allow', match: 'npm run' }],
+    });
+    expect(decidePermission(EXEC_REQ, allowNpm)).toBe('allow');
   });
 });
 

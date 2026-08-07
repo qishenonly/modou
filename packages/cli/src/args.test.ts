@@ -1,13 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { parseArgs, UsageError } from './args';
 
-/** 缺省参数结果（无 addDirs 时）。 */
+/** 缺省参数结果（无 addDirs / rules 时）。 */
 function base(overrides: Partial<ReturnType<typeof parseArgs>> = {}) {
   return {
     prompt: undefined,
     help: false,
     autoApprove: false,
     addDirs: [],
+    rules: [],
     ...overrides,
   };
 }
@@ -61,6 +62,32 @@ describe('parseArgs（-p 参数解析）', () => {
     expect(parseArgs([])).toEqual(base());
   });
 
+  test('--rule：allow/deny 规则表可重复收集，支持 --rule= 形式', () => {
+    expect(parseArgs(['--rule', 'deny:rm -rf'])).toEqual(
+      base({ rules: [{ effect: 'deny', match: 'rm -rf' }] }),
+    );
+    expect(
+      parseArgs(['--rule=allow:git status', '--rule', 'deny:npm run build']),
+    ).toEqual(
+      base({
+        rules: [
+          { effect: 'allow', match: 'git status' },
+          { effect: 'deny', match: 'npm run build' },
+        ],
+      }),
+    );
+    // 与 -p / --auto-approve 可共存
+    expect(
+      parseArgs(['-p', 'hi', '--auto-approve', '--rule', 'allow:git status']),
+    ).toEqual(
+      base({
+        prompt: 'hi',
+        autoApprove: true,
+        rules: [{ effect: 'allow', match: 'git status' }],
+      }),
+    );
+  });
+
   test('缺 -p 参数值抛 UsageError', () => {
     expect(() => parseArgs(['-p'])).toThrow(UsageError);
     expect(() => parseArgs(['--prompt'])).toThrow(UsageError);
@@ -75,6 +102,16 @@ describe('parseArgs（-p 参数解析）', () => {
     expect(() => parseArgs(['--add-dir', '--auto-approve'])).toThrow(
       UsageError,
     );
+  });
+
+  test('--rule 非法格式抛 UsageError', () => {
+    // 缺冒号 / effect 非 allow|deny / 空 match / 缺参数值
+    expect(() => parseArgs(['--rule', 'rm -rf'])).toThrow(UsageError);
+    expect(() => parseArgs(['--rule', ':rm -rf'])).toThrow(UsageError);
+    expect(() => parseArgs(['--rule', 'ban:rm -rf'])).toThrow(UsageError);
+    expect(() => parseArgs(['--rule', 'deny:'])).toThrow(UsageError);
+    expect(() => parseArgs(['--rule='])).toThrow(UsageError);
+    expect(() => parseArgs(['--rule', '--auto-approve'])).toThrow(UsageError);
   });
 
   test('未知参数与意外位置参数抛 UsageError', () => {

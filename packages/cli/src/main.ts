@@ -22,6 +22,7 @@ const USAGE = `modou —— 终端编码 Agent（0.1.0）
   -p, --prompt <文本>  要提交的提示词
   --auto-approve       跳过写入/执行审批（危险命令仍强制逐次确认）
   --add-dir <目录>     额外允许访问的目录（目录边界白名单，T-051；可重复，相对路径按启动 cwd 解析）
+  --rule <allow|deny>:<前缀>  规则表条目（T-052；可重复，如 --rule deny:"rm -rf" / --rule allow:"git status"）
   -h, --help           显示本帮助`;
 
 /**
@@ -80,14 +81,18 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   let result: HeadlessResult;
   try {
-    // T-051：--add-dir 扩展目录边界白名单。addDirs 转绝对路径（相对路径按启动 cwd
-    // 解析），进入 PermissionConfig.addDirs；缺省（无 --add-dir）不覆盖权限配置，
-    // headless 仍用其默认（workspace-write + on-request，projectRoot = cwd）。
+    // T-051/T-052：--add-dir 扩展目录边界白名单、--rule 装配规则表。
+    // addDirs 转绝对路径（相对路径按启动 cwd 解析），进入 PermissionConfig.addDirs；
+    // rules 原样进入 PermissionConfig.rules。缺省（无 --add-dir 且无 --rule）不覆盖
+    // 权限配置，headless 仍用其默认（workspace-write + on-request，projectRoot = cwd）。
     const permission =
-      args.addDirs.length > 0
+      args.addDirs.length > 0 || args.rules.length > 0
         ? {
             ...defaultPermissionConfig(process.cwd()),
-            addDirs: args.addDirs.map((dir) => resolve(dir)),
+            ...(args.addDirs.length > 0
+              ? { addDirs: args.addDirs.map((dir) => resolve(dir)) }
+              : {}),
+            ...(args.rules.length > 0 ? { rules: args.rules } : {}),
           }
         : undefined;
     result = await runHeadless({

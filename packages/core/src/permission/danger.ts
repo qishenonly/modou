@@ -15,8 +15,12 @@
 /**
  * 归一化命令：折叠任意空白为单个空格、去掉首尾空白、剥离首部 `sudo `。
  * `sudo rm -rf /` 与 `rm -rf /` 同样危险，剥离前缀使两者都命中黑名单。
+ *
+ * T-052 规则表（rules.ts）复用此函数做命令候选串归一：用户写 `--rule deny:rm -rf`，
+ * 模型跑 `sudo rm -rf /x` 或 `rm  -rf /x` 都同样命中。规则表不做可配置持久化，
+ * 但命令归一逻辑只此一份，不重复实现。
  */
-function normalizeCommand(command: string): string {
+export function normalizeCommand(command: string): string {
   return command
     .trim()
     .replace(/\s+/g, ' ')
