@@ -13,6 +13,8 @@ import type {
   ConfigOverrides,
   ModelProvider,
   PermissionConfig,
+  ProviderFromConfigInput,
+  ProviderType,
   ResolvedConfig,
   RetryOptions,
   ToolRegistry,
@@ -20,8 +22,15 @@ import type {
 import {
   createProviderFromConfig,
   loadSettings,
+  readOpencodeEnv,
   resolveConfig,
 } from '@modou/core';
+
+/** /model 重建 provider 实例的工厂（与 core createProviderFromConfig 同形）。 */
+export type CreateProvider = (
+  config: ProviderFromConfigInput,
+  env: NodeJS.ProcessEnv,
+) => ModelProvider;
 
 /**
  * runTui 选项（T-040 骨架）。
@@ -84,6 +93,13 @@ export interface TuiOptions {
   readonly stdin?: NodeJS.ReadStream;
   /** 信号源（测试注入 EventEmitter；缺省 process）。 */
   readonly signalEmitter?: EventEmitter;
+  /**
+   * /model 切换（T-082）时重建 provider 实例的工厂。缺省 =
+   * createProviderFromConfig（按装配面的 type / model / baseURL + 环境变量
+   * 重建；002 8.2「换 provider 实例」）。测试注入 stub 以离线覆盖（不访问
+   * 外网、不读真实环境变量）。/resume 恢复会话模型时同样走本工厂。
+   */
+  readonly createProvider?: CreateProvider;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */
@@ -100,6 +116,18 @@ export interface TuiStartupConfig {
   readonly maxTurns: number;
   /** 压缩保留的近 N 轮原文（配置解析后的最终值）。 */
   readonly keepTurns: number;
+  /**
+   * provider 装配面（T-082 /model 重建 provider 实例用）：供应商类型 +
+   * 生效端点。baseURL 取「配置显式值 → opencode 测试端点 → OPENAI_BASE_URL」，
+   * 与装配时的 createProviderFromConfig 分支同口径；options.provider 注入时
+   * 无装配面（undefined），/model 回落环境变量。
+   */
+  readonly providerSpec: {
+    readonly type: ProviderType;
+    readonly baseURL?: string;
+  };
+  /** 装配时使用的环境（/model 重建 provider 时沿用同一环境）。 */
+  readonly env: NodeJS.ProcessEnv;
 }
 
 /**
@@ -130,6 +158,23 @@ export function assembleTuiStartup(
     env,
     overrides,
   });
+  // provider 装配面（T-082 /model 重建用）：baseURL 与装配时的
+  // createProviderFromConfig 分支同口径——openai-compat 且未配置 model 时
+  // 优先 opencode 测试端点，否则配置显式值 / OPENAI_BASE_URL 回落环境变量。
+  const opencode = readOpencodeEnv(env);
+  const usedOpencode =
+    resolved.model === undefined &&
+    resolved.provider === 'openai-compat' &&
+    opencode !== null;
+  const providerBaseURL =
+    options.provider !== undefined
+      ? undefined // 注入的 provider 无装配面：/model 回落环境变量
+      : (resolved.baseURL ??
+        (resolved.provider === 'openai-compat'
+          ? usedOpencode
+            ? opencode?.baseURL
+            : env.OPENAI_BASE_URL
+          : undefined));
   return {
     homeDir: resolved.homeDir,
     projectRoot,
@@ -147,6 +192,11 @@ export function assembleTuiStartup(
       options.permission ?? permissionFromResolved(resolved, projectRoot),
     maxTurns: resolved.maxTurns,
     keepTurns: resolved.keepTurns,
+    providerSpec: {
+      type: (options.provider?.id as ProviderType) ?? resolved.provider,
+      ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),
+    },
+    env,
   };
 }
 

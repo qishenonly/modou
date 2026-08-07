@@ -6,6 +6,7 @@ import {
   BudgetLedger,
   countUserMessages,
   createModelDeltaGenerator,
+  createProviderFromConfig,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   listSessionsForResume,
@@ -34,6 +35,15 @@ import type {
 import { App } from './app';
 import { createApprovalBridge } from './approval';
 import { performCompact } from './compact';
+import {
+  collectModelCandidates,
+  describeError,
+  dispatchSlash,
+  lastModelSwitchTo,
+  renderHelpText,
+  SUPPORTED_SLASH_LIST,
+} from './slash';
+import type { SlashHandlers } from './slash';
 import { derivePermissionMode, type TokenTotals } from './status';
 import { createEventChannel } from './stream';
 import { assembleTuiStartup, type TuiOptions } from './startup';
@@ -87,7 +97,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // → MODOU_* 环境变量 → 显式选项（最高优先）；provider / permission / maxTurns /
   // keepTurns / homeDir 全部来自装配结果。
   const startup = assembleTuiStartup(options);
-  const provider = startup.provider;
+  // 当前 provider 实例（T-082 /model：会话中途换模型 = 换实例，002 8.2；
+  // let 供切换后重建并接续）。
+  let provider: ModelProvider = startup.provider;
   const tools = options.tools ?? defaultReadonlyTools();
   const cwd = startup.projectRoot;
   const homeDir = startup.homeDir;
@@ -125,6 +137,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   let historyRefresh: Promise<void> = Promise.resolve();
   // /resume 选择器候选（非空 = App 显示会话选择器）。
   let resumeCandidates: readonly ResumeCandidate[] = [];
+  // /model 选择器候选（T-082：非空 = App 显示模型选择器；slash.ts 收集）。
+  let modelCandidates: readonly string[] = [];
   // /resume 恢复后的初始 token 累计（App 状态栏种子）。
   let initialTotals: TokenTotals | undefined;
   // 预算账本（T-062）：会话级累计——每轮传入同一实例，跨轮次累计请求前粗估
@@ -139,8 +153,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 有效压缩配置：generateDelta 缺省 = 生产模型生成器（createModelDeltaGenerator
   // 捕获 provider）；阈值缺省 = 上下文窗口的 70% 折；迟滞缺省 5 轮（压缩后 5 轮
   // 内不重复自动触发，避免跨阈值后每轮压缩）。测试可经 TuiOptions.compact 注入
-  // stub generateDelta，实现离线覆盖。
-  const compactConfig: CompactOptions = {
+  // stub generateDelta，实现离线覆盖。T-082 /model：切模型后阈值随新模型的上下文
+  // 窗口重算、生成器改用新 provider（let 供重建）。
+  let compactConfig: CompactOptions = {
     keepTurns: startup.keepTurns,
     thresholdTokens:
       options.compact?.thresholdTokens ?? defaultCompactionThreshold(provider),
@@ -317,24 +332,27 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     return snapshot;
   };
 
-  /** 斜杠命令分发：0.6.0 实现 /resume 与 /context（T-063）；0.7.0 增加 /compact（T-070）。 */
+  /** 斜杠命令分发（T-082 框架）：dispatchSlash 按命令表路由到各实现（002 3.3）。 */
   const handleSlash = (name: string, args?: string): void => {
-    if (name === 'resume') {
-      void handleSlashResume(args);
-      return;
-    }
-    if (name === 'context') {
-      handleSlashContext(args);
-      return;
-    }
-    if (name === 'compact') {
-      handleSlashCompact();
-      return;
-    }
-    pushNotice(
-      'info',
-      `斜杠命令 /${name} 尚未实现（0.7.0 支持 /compact、/resume 与 /context）`,
-    );
+    const handlers: SlashHandlers = {
+      help: handleSlashHelp,
+      model: handleSlashModel,
+      compact: handleSlashCompact,
+      resume: handleSlashResume,
+      context: handleSlashContext,
+      clear: handleSlashClear,
+    };
+    dispatchSlash(name, args, handlers, (unimplemented) => {
+      pushNotice(
+        'info',
+        `斜杠命令 /${unimplemented} 尚未实现（0.8.0 支持 ${SUPPORTED_SLASH_LIST}）`,
+      );
+    });
+  };
+
+  /** /help（T-082）：列出全部命令与用法（BUILTIN_SLASH_COMMANDS 渲染）。 */
+  const handleSlashHelp = (): void => {
+    pushNotice('info', renderHelpText());
   };
 
   /**
@@ -470,12 +488,155 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     // 预算账本（T-062）：从会话 usage 重建实际分项（粗估不持久化，从零累计；
     // 后续轮次的粗估 / 校准在新账本上接续）。
     budget = BudgetLedger.rebuild([resumed.usage]);
+    // T-082 /model：resume 后模型恢复为该会话最后使用的模型（002 8.2
+    // 「model_switch 条目入日志，resume 后正确」）。重建失败（环境缺失）时
+    // 保持当前模型并发 notice 降级，不阻断恢复。
+    const restoredModel = lastModelSwitchTo(resumed.records);
+    if (restoredModel !== undefined && restoredModel !== provider.modelId) {
+      try {
+        provider = rebuildProvider(restoredModel);
+      } catch (caught) {
+        pushNotice(
+          'warn',
+          `会话曾使用模型 ${restoredModel}，但重建 provider 失败（${describeError(caught)}），继续使用 ${provider.modelId}`,
+        );
+      }
+    }
     rerender();
     pushNotice(
       'info',
       `已恢复会话 ${resumed.sessionId}（${resumed.entryCount} 条记录，` +
         `in ${initialTotals.inputTokens} / out ${initialTotals.outputTokens} tokens）。` +
         `继续输入即可续写同一会话。`,
+    );
+  };
+
+  /**
+   * 按模型 ID 重建 provider 实例（T-082 /model 与 /resume 模型恢复共用）。
+   * 装配面（供应商类型 + 端点）来自 startup.providerSpec，环境沿用 startup.env；
+   * 测试可经 TuiOptions.createProvider 注入 stub 以离线覆盖（不访问外网）。
+   */
+  const rebuildProvider = (modelId: string): ModelProvider => {
+    const create = options.createProvider ?? createProviderFromConfig;
+    return create(
+      {
+        type: startup.providerSpec.type,
+        model: modelId,
+        ...(startup.providerSpec.baseURL !== undefined
+          ? { baseURL: startup.providerSpec.baseURL }
+          : {}),
+      },
+      startup.env,
+    );
+  };
+
+  /**
+   * /model（T-082）：切换模型（002 8.2「换 provider 实例」）。
+   * - 带参数 `/model <模型ID>`：直接切换；
+   * - 无参数：打开候选列表选择器（slash.ts collectModelCandidates 收集）。
+   * 轮次运行中拒绝（loop 持有 provider 引用）；切换后上下文延续（historyMessages
+   * 不动），压缩阈值 / 摘要生成器随新模型能力重算，model_switch 条目入日志。
+   */
+  const handleSlashModel = (args?: string): void => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /model（等当前轮次结束后再试）');
+      return;
+    }
+    const modelId = (args ?? '').trim();
+    if (modelId.length > 0) {
+      void switchModel(modelId);
+      return;
+    }
+    modelCandidates = collectModelCandidates(provider, startup.env);
+    rerender();
+  };
+
+  /**
+   * 执行模型切换（/model 的异步体，串行化在历史投影之后，保证切换不打断
+   * 在途投影）。成功时压缩配置随新模型能力联动（002 8.2：上下文长度 / 能力
+   * 变化处理），并记 model_switch 条目入日志（/resume 重建依据）。
+   */
+  const switchModel = async (modelId: string): Promise<void> => {
+    modelCandidates = [];
+    rerender(); // 先关选择器，防重入
+    const from = provider.modelId;
+    if (modelId === from) {
+      pushNotice('info', `已在模型 ${modelId} 上，无需切换`);
+      return;
+    }
+    let next: ModelProvider;
+    try {
+      next = rebuildProvider(modelId);
+    } catch (caught) {
+      pushNotice(
+        'error',
+        `切换模型失败：${describeError(caught)}（模型未变，仍为 ${from}）`,
+      );
+      return;
+    }
+    provider = next;
+    // 上下文延续：historyMessages 保持不动（002 8.2「只换 provider 实例，消息不丢」）。
+    // 能力变化（002 8.2）：压缩阈值随新模型上下文窗口重算；生产摘要生成器改用
+    // 新 provider（测试注入的 generateDelta / thresholdTokens 保持用户覆盖）。
+    compactConfig = {
+      ...compactConfig,
+      thresholdTokens:
+        options.compact?.thresholdTokens ??
+        defaultCompactionThreshold(provider),
+      generateDelta:
+        options.compact?.generateDelta ?? createModelDeltaGenerator(provider),
+    };
+    // 切换入日志（model_switch 条目；/resume 重建正确状态，002 8.2）。
+    if (sessionLog === null) openSession(); // 首轮前切换：先开日志以便记录
+    await sessionLog?.appendModelSwitch(from, modelId);
+    pushNotice('info', `已切换到模型 ${modelId}（原 ${from}；历史上下文延续）`);
+    rerender(); // 状态栏模型名更新
+  };
+
+  /**
+   * /clear（T-082）：清空当前会话上下文并开启新会话。
+   *
+   * 语义：重置内存中的上下文投影——历史消息 / 已读集合 / 预算账本 / 摘要状态，
+   * 并开启**新的会话日志**（新 sessionId）承接后续输入。原会话日志文件完整保留
+   * （日志是唯一真相，永不裁剪，002 4.1），可用 /resume 恢复查看或续写。等价
+   * Claude Code 的 /clear：开始一段新对话，历史留在会话文件里。
+   */
+  const handleSlashClear = (): void => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /clear（等当前轮次结束后再试）');
+      return;
+    }
+    if (
+      historyMessages.length === 0 &&
+      (sessionLog === null || sessionLog.seq === 0)
+    ) {
+      pushNotice('info', '上下文已是空的，无需 /clear');
+      return;
+    }
+    void clearSession();
+  };
+
+  /** 执行清空（/clear 的异步体，串行化在历史投影之后）。 */
+  const clearSession = async (): Promise<void> => {
+    // 等上一轮历史投影收尾（与 /resume 同款串行化），保证新会话从干净起点开始
+    await historyRefresh;
+    const oldId = sessionLog?.sessionId;
+    openSession(); // 新会话日志（新 sessionId；原日志文件保留）
+    historyMessages = [];
+    loggedUserCount = 0;
+    readFiles.clear();
+    for (const seed of options.readFiles ?? []) readFiles.add(seed);
+    budget = new BudgetLedger();
+    summaryState = undefined;
+    initialTotals = undefined;
+    contextSnapshot = null;
+    rerender();
+    pushNotice(
+      'info',
+      `已清空上下文并开启新会话 ${sessionLog?.sessionId ?? ''}` +
+        (oldId !== undefined
+          ? `；原会话 ${oldId} 日志保留，可用 /resume 恢复`
+          : ''),
     );
   };
 
@@ -493,7 +654,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         approval.resolve(command.requestId, command.decision);
         break;
       case 'slash':
-        // T-061 /resume：斜杠命令（输入框已支持 slash 发送，T-041）
+        // T-082 斜杠命令框架：dispatchSlash 分发（/help /model /compact /
+        // /resume /context /clear；未实现发 notice）。输入框已支持 slash 发送（T-041）。
         handleSlash(command.name, command.args);
         break;
       default:
@@ -532,6 +694,16 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       contextState: contextSnapshot ?? undefined,
       onContextDismiss: () => {
         contextSnapshot = null;
+        rerender();
+      },
+      // /model（T-082）：非空 = 模型选择器打开（模态），Esc 取消关闭；
+      // 用户选中 → switchModel 重建 provider（上下文延续）
+      modelCandidates,
+      onModelSelect: (modelId) => {
+        void switchModel(modelId);
+      },
+      onModelCancel: () => {
+        modelCandidates = [];
         rerender();
       },
     });
@@ -591,6 +763,10 @@ export { ApprovalModal, createApprovalBridge } from './approval';
 export type { ApprovalModalProps, ApprovalBridge } from './approval';
 export { ResumePicker } from './resume';
 export type { ResumePickerProps } from './resume';
+export { ModelPicker } from './model';
+export type { ModelPickerProps } from './model';
+export * from './slash';
+export type { CreateProvider } from './startup';
 export {
   ContextPanel,
   formatContextRows,

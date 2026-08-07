@@ -11,6 +11,7 @@ import { ApprovalModal } from './approval';
 import { ContextPanel } from './context';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
+import { ModelPicker } from './model';
 import { ResumePicker } from './resume';
 import {
   StatusBar,
@@ -67,6 +68,15 @@ export interface AppProps {
   readonly contextState?: ContextStateData;
   /** /context：用户 Esc 关闭面板（runTui 清空 contextState 并重渲染）。 */
   readonly onContextDismiss?: () => void;
+  /**
+   * /model（T-082）：待选模型列表（runTui 注入；非空时显示模型选择器并隐藏
+   * 输入行，阻塞输入提交）。缺省/空数组 = 正常输入。
+   */
+  readonly modelCandidates?: readonly string[];
+  /** /model：用户选中一个模型（modelId；runTui 重建 provider 并续写同一会话）。 */
+  readonly onModelSelect?: (modelId: string) => void;
+  /** /model：用户取消选择（Esc；runTui 关闭选择器）。 */
+  readonly onModelCancel?: () => void;
 }
 
 /**
@@ -102,6 +112,9 @@ export function App(props: AppProps): ReactElement {
     initialTotals,
     contextState,
     onContextDismiss,
+    modelCandidates,
+    onModelSelect,
+    onModelCancel,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -146,6 +159,11 @@ export function App(props: AppProps): ReactElement {
   // 全局 Esc 让给面板（关闭），不触发 interrupt。
   const contextOpenRef = useRef(contextState !== undefined);
   contextOpenRef.current = contextState !== undefined;
+  // 模型选择器（T-082 /model）：runTui 注入候选列表；非空即打开。与 /resume
+  // 选择器同一惯例——打开时输入行隐藏，全局 Esc 让给选择器（取消）。
+  const modelOpen = (modelCandidates?.length ?? 0) > 0;
+  const modelOpenRef = useRef(modelOpen);
+  modelOpenRef.current = modelOpen;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -233,7 +251,11 @@ export function App(props: AppProps): ReactElement {
   // interrupt；Ctrl+C 仍可退出（runTui 收尾会以 deny 清空未裁决的审批请求，
   // 不会悬挂轮次）。
   useInput((_text, key) => {
-    if (approvalOpenRef.current || resumeOpenRef.current) {
+    if (
+      approvalOpenRef.current ||
+      resumeOpenRef.current ||
+      modelOpenRef.current
+    ) {
       if (key.ctrl && _text === 'c') {
         onExit?.();
       }
@@ -319,14 +341,28 @@ export function App(props: AppProps): ReactElement {
         />
       )}
 
+      {/* 模型选择器（T-082 /model）：runTui 注入候选列表；非空即显示。
+          打开期间隐藏输入行（阻塞输入提交），Esc 取消后恢复；与 /resume
+          选择器同一惯例，用户选中即重建 provider 并续写同一会话 */}
+      {modelOpen && (
+        <ModelPicker
+          candidates={modelCandidates ?? []}
+          currentModel={modelName ?? ''}
+          onSelect={(modelId) => onModelSelect?.(modelId)}
+          onCancel={() => onModelCancel?.()}
+        />
+      )}
+
       {/* /context 用量面板（T-063）：runTui 注入 contextState 即显示（模态），
           Esc 经 onContextDismiss 关闭；与弹窗/选择器同款「打开时隐藏输入行」 */}
       {contextState !== undefined && <ContextPanel state={contextState} />}
 
       {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
-          审批弹窗、会话选择器或 /context 面板打开时隐藏——模态期间不接受新的输入提交 */}
+          审批弹窗、会话选择器、模型选择器或 /context 面板打开时隐藏——模态期间
+          不接受新的输入提交 */}
       {pendingApproval === null &&
         !resumeOpen &&
+        !modelOpen &&
         contextState === undefined && (
           <Box>
             <Text color="cyan">&gt; </Text>

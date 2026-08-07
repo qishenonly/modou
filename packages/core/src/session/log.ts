@@ -10,10 +10,10 @@
  * 它**永远不被裁剪**；上下文（Context）是它的投影，/resume（T-061）与压缩
  * （0.7.0）都只读它。
  *
- * 记录形态：`{ seq, ts, kind, data }`。kind 为 002 §4.2 Entry 的 0.6.0 子集
- * （user / assistant / tool_result / notice），另加过程性条目
- * turn_start / turn_end / usage / error。seq 从 1 单调递增（会话重开时续读
- * 既有最大 seq），ts 为 epoch ms（可注入时钟）。
+ * 记录形态：`{ seq, ts, kind, data }`。kind 为 002 §4.2 Entry 的子集
+ * （user / assistant / tool_result / notice / compaction / model_switch），
+ * 另加过程性条目 turn_start / turn_end / usage / error。seq 从 1 单调递增
+ * （会话重开时续读既有最大 seq），ts 为 epoch ms（可注入时钟）。
  *
  * 写入语义：
  * - 只追加不重写、不裁剪；内部串行写队列保证并发 append 的文件顺序与
@@ -124,6 +124,14 @@ export interface CompactionEntryData {
   readonly state?: unknown;
 }
 
+/** model_switch 条目负载（design 002 §4.2：会话中途换模型入日志；0.8.0 落地）。 */
+export interface ModelSwitchEntryData {
+  /** 切换前的模型 ID。 */
+  readonly from: string;
+  /** 切换后的模型 ID。 */
+  readonly to: string;
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -135,6 +143,7 @@ export interface SessionEntryDataMap {
   notice: NoticeEntryData;
   error: ErrorEntryData;
   compaction: CompactionEntryData;
+  model_switch: ModelSwitchEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -150,6 +159,7 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'notice',
   'error',
   'compaction',
+  'model_switch',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -173,6 +183,7 @@ export type SessionRecord = {
   | { readonly kind: 'notice'; readonly data: NoticeEntryData }
   | { readonly kind: 'error'; readonly data: ErrorEntryData }
   | { readonly kind: 'compaction'; readonly data: CompactionEntryData }
+  | { readonly kind: 'model_switch'; readonly data: ModelSwitchEntryData }
 );
 
 /**
@@ -425,6 +436,16 @@ export class SessionLog {
    */
   appendCompaction(data: CompactionEntryData): Promise<void> {
     return this.append('compaction', data);
+  }
+
+  /**
+   * 追加 model_switch 条目（T-082 /model：会话中途换模型入日志）。
+   * /resume 重放日志即可重建正确的模型状态（002 8.2「切换本身作为
+   * model_switch 条目入日志」）。投影时该条目被忽略（不产生模型消息），
+   * 历史上下文无缝延续。
+   */
+  appendModelSwitch(from: string, to: string): Promise<void> {
+    return this.append('model_switch', { from, to });
   }
 
   /**

@@ -220,7 +220,9 @@ export async function resumeSession(
  *   一条 tool 消息（与 loop 的 feedBackToolRound 把一轮全部结果打进一条
  *   tool 消息一致）。callId → 工具名从 assistant 条目的 calls 建立映射，
  *   映射缺失时兜底 'unknown'（防御坏日志）；
- * - `turn_start / turn_end / usage / notice / error` 是过程性条目，不投影。
+ * - `turn_start / turn_end / usage / notice / error` 是过程性条目，不投影；
+ * - `compaction / model_switch` 是会话史条目，不投影（压缩只影响投影口径，
+ *   模型切换不影响历史消息序列——002 8.2 上下文延续）。
  */
 export function projectMessages(
   records: readonly SessionRecord[],
