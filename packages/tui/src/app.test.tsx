@@ -1,8 +1,14 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { render, cleanup } from 'ink-testing-library';
-import type { Command, Envelope, ProtocolEvent } from '@modou/core';
+import type {
+  Command,
+  Envelope,
+  ProtocolEvent,
+  ResumeCandidate,
+} from '@modou/core';
 import { App } from './app';
 import { createEventChannel } from './stream';
+import { ZERO_TOKEN_TOTALS } from './status';
 
 // ---------------------------------------------------------------------------
 // 测试替身：离线事件流（createEventChannel）+ 信封构造（不访问外网）
@@ -29,6 +35,25 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 40));
   await new Promise((resolve) => setTimeout(resolve, 40));
   await new Promise((resolve) => setTimeout(resolve, 40));
+}
+
+/** 构造一条 ResumeCandidate（T-061 /resume 选择器测试用）。 */
+function resumeCandidate(
+  sessionId: string,
+  overrides: Partial<ResumeCandidate> = {},
+): ResumeCandidate {
+  return {
+    projectHash: 'abc',
+    sessionId,
+    path: `/sessions/${sessionId}.jsonl`,
+    firstTs: 1_700_000_000_000,
+    lastTs: 1_700_000_100_000,
+    maxSeq: 1,
+    entryCount: 2,
+    sizeBytes: 100,
+    preview: '实现 /resume',
+    ...overrides,
+  };
 }
 
 describe('App（T-040 Ink 应用骨架）', () => {
@@ -165,6 +190,113 @@ describe('App（T-040 Ink 应用骨架）', () => {
     stdin.write('\x03'); // 0x03 = ctrl+c
     expect(exits).toBe(1);
 
+    unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /resume（T-061）：会话选择器 + 初始 token 种子
+// ---------------------------------------------------------------------------
+
+describe('App /resume（T-061）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  test('resumeCandidates 非空时显示会话选择器，输入行隐藏', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App
+        stream={stream}
+        send={() => {}}
+        resumeCandidates={[resumeCandidate('sess-1')]}
+      />,
+    );
+
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('已保存的会话（/resume）');
+    expect(frame).toContain('sess-1');
+    // 选择器打开时输入行隐藏（不再显示 `>` 提示）
+    expect(frame).not.toContain('>');
+    unmount();
+  });
+
+  test('选择器打开时 Esc 不打断（interrupt 不发），数字键选择回传 sessionId', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    const selected: string[] = [];
+    const { stdin, unmount } = render(
+      <App
+        stream={stream}
+        send={(command) => calls.push(command)}
+        resumeCandidates={[
+          resumeCandidate('sess-a'),
+          resumeCandidate('sess-b'),
+        ]}
+        onResumeSelect={(sessionId) => selected.push(sessionId)}
+      />,
+    );
+    await flush();
+
+    stdin.write('\x1b'); // 选择器打开：Esc 应被选择器消费，不发 interrupt
+    expect(calls).toEqual([]);
+
+    stdin.write('2'); // 数字键直接选择第二个会话
+    expect(selected).toEqual(['sess-b']);
+    unmount();
+  });
+
+  test('选择器打开时 Enter 选择当前项，Esc 走 onResumeCancel', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    const selected: string[] = [];
+    let cancelled = 0;
+    const { stdin, unmount } = render(
+      <App
+        stream={stream}
+        send={(command) => calls.push(command)}
+        resumeCandidates={[resumeCandidate('sess-a')]}
+        onResumeSelect={(sessionId) => selected.push(sessionId)}
+        onResumeCancel={() => (cancelled += 1)}
+      />,
+    );
+    await flush();
+
+    stdin.write('\r');
+    expect(selected).toEqual(['sess-a']);
+    expect(calls).toEqual([]);
+
+    // 重新挂载一个（选中后 runTui 会 rerender 关闭选择器；这里模拟再次打开）
+    const { stdin: stdin2, unmount: unmount2 } = render(
+      <App
+        stream={stream}
+        send={(command) => calls.push(command)}
+        resumeCandidates={[resumeCandidate('sess-a')]}
+        onResumeCancel={() => (cancelled += 1)}
+      />,
+    );
+    await flush();
+    stdin2.write('\x1b');
+    expect(cancelled).toBe(1);
+    expect(calls).toEqual([]);
+    unmount2();
+    unmount();
+  });
+
+  test('initialTotals 种子进入状态栏（恢复后从历史累计开始）', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App
+        stream={stream}
+        send={() => {}}
+        initialTotals={{
+          ...ZERO_TOKEN_TOTALS,
+          inputTokens: 20,
+          outputTokens: 8,
+        }}
+      />,
+    );
+    expect(lastFrame() ?? '').toContain('in 20 / out 8');
     unmount();
   });
 });

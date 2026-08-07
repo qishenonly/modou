@@ -87,6 +87,13 @@ export interface RunAgentTurnInput {
    * SessionLog 自行经 onError 报告，不改变返回值 / 事件流语义；缺省不记录。
    */
   readonly session?: SessionLog;
+  /**
+   * 已入日志的 user 消息数（T-061 /resume 续写）：messages 中前
+   * `loggedUserCount` 条 user 消息已在本会话日志中记录过（resume 重放的
+   * 完整历史），loop 不再重复追加，只记录其后的新增 user 消息。
+   * 缺省 0 = 所有 user 消息都记录（既有行为，旧调用不受影响）。
+   */
+  readonly loggedUserCount?: number;
   readonly options: TurnOptions;
 }
 
@@ -220,6 +227,7 @@ export async function runAgentTurn(
     cwd: inputCwd,
     approval,
     session,
+    loggedUserCount,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -249,14 +257,19 @@ export async function runAgentTurn(
   /** 追加写的消息线程。绝不修改调用方的 messages。 */
   const thread: ModelMessage[] = [...messages];
 
-  // —— 会话日志旁路：把本轮入参里的 user 消息追加进日志（唯一真相）。
+  // —— 会话日志旁路：把本轮入参里的新增 user 消息追加进日志（唯一真相）。
   // 0.6.0 会话每次新建，messages 通常为「本轮用户输入」单条（TUI 每轮传
-  // `[{ role: 'user', content: text }]`）；将来 resume 传入完整历史时由调用方
-  // 保证只传新增段，避免重复记录历史里的 user 消息。
+  // `[{ role: 'user', content: text }]`）；/resume（T-061）续写时调用方传入
+  // 完整历史 + 新增段，并置 loggedUserCount = 历史里的 user 消息条数——
+  // loop 跳过已入日志的前 N 条，只记录新增段，避免历史重复落盘。
   if (session !== undefined) {
+    let userSeen = 0;
     for (const message of messages) {
       if (message.role === 'user') {
-        await session.appendUser(extractUserText(message));
+        if (userSeen >= (loggedUserCount ?? 0)) {
+          await session.appendUser(extractUserText(message));
+        }
+        userSeen += 1;
       }
     }
   }

@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Box, Text, useInput } from 'ink';
-import type { ApprovalRequestData, Command, Envelope } from '@modou/core';
+import type {
+  ApprovalRequestData,
+  Command,
+  Envelope,
+  ResumeCandidate,
+} from '@modou/core';
 import { ApprovalModal } from './approval';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
+import { ResumePicker } from './resume';
 import {
   StatusBar,
   ZERO_TOKEN_TOTALS,
@@ -38,6 +44,20 @@ export interface AppProps {
    * 缺省不显示该段；0.4.0 只有「只读」/「写/执行需审批」两种。
    */
   readonly permissionMode?: PermissionMode;
+  /**
+   * /resume（T-061）：待选会话列表（runTui 注入；非空时显示会话选择器并隐藏
+   * 输入行，阻塞输入提交）。缺省/空数组 = 正常输入。
+   */
+  readonly resumeCandidates?: readonly ResumeCandidate[];
+  /** /resume：用户选中一个会话（sessionId；runTui 负责恢复并继续）。 */
+  readonly onResumeSelect?: (sessionId: string) => void;
+  /** /resume：用户取消选择（Esc；runTui 关闭选择器）。 */
+  readonly onResumeCancel?: () => void;
+  /**
+   * /resume：恢复会话后的初始 token 累计（状态栏种子；runTui 注入）。
+   * 变化时 App 把它覆写进 totals——恢复后状态栏从历史累计开始，而非从零。
+   */
+  readonly initialTotals?: TokenTotals;
 }
 
 /**
@@ -61,7 +81,17 @@ export interface AppProps {
  * 状态更新用函数式 setState，事件按 seq 到达即天然有序。
  */
 export function App(props: AppProps): ReactElement {
-  const { stream, send, onExit, modelName, permissionMode } = props;
+  const {
+    stream,
+    send,
+    onExit,
+    modelName,
+    permissionMode,
+    resumeCandidates,
+    onResumeSelect,
+    onResumeCancel,
+    initialTotals,
+  } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
   const {
@@ -73,8 +103,15 @@ export function App(props: AppProps): ReactElement {
   const [running, setRunning] = useState(false);
   const [lastTurn, setLastTurn] = useState(0);
   // 本会话累计 token（T-045 状态栏消费：usage 事件逐次累加 input/output，
-  // 最小版只累计不核算；完整 /context 分项在 0.6.0）
-  const [totals, setTotals] = useState<TokenTotals>(ZERO_TOKEN_TOTALS);
+  // 最小版只累计不核算；完整 /context 分项在 0.6.0）。/resume 恢复时 runTui
+  // 注入 initialTotals 作为种子——历史累计直接进入状态栏，不从零开始。
+  const [totals, setTotals] = useState<TokenTotals>(
+    initialTotals ?? ZERO_TOKEN_TOTALS,
+  );
+  // initialTotals 变化（/resume 恢复其他会话）时覆写 totals
+  useEffect(() => {
+    if (initialTotals !== undefined) setTotals(initialTotals);
+  }, [initialTotals]);
   // 提示信息（配置告警、未知工具回馈等 notice 事件）
   const [notices, setNotices] = useState<string[]>([]);
   // 错误（002 5.3：错误即数据）
@@ -89,6 +126,11 @@ export function App(props: AppProps): ReactElement {
   // 键盘回调读到的是旧闭包：用 ref 镜像弹窗是否打开，供 App 层全局键判断
   const approvalOpenRef = useRef(false);
   approvalOpenRef.current = pendingApproval !== null;
+  // 会话选择器（T-061 /resume）：runTui 注入候选列表；非空即打开。与弹窗同一
+  // 惯例——选择器打开时输入行隐藏，全局 Esc 让给选择器（取消）。
+  const resumeOpen = (resumeCandidates?.length ?? 0) > 0;
+  const resumeOpenRef = useRef(resumeOpen);
+  resumeOpenRef.current = resumeOpen;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -163,10 +205,11 @@ export function App(props: AppProps): ReactElement {
 
   // 键盘处理：App 层只管「全局键」——Esc 打断、Ctrl+C 干净退出。
   // 输入编辑（字符/换行/光标/历史/补全）全部由 input.tsx 的 useInput 处理。
-  // 弹窗打开时：Esc 让给弹窗（拒绝），App 不再发 interrupt；Ctrl+C 仍可退出
-  // （runTui 收尾会以 deny 清空未裁决的审批请求，不会悬挂轮次）。
+  // 弹窗 / 会话选择器打开时：Esc 让给弹窗（拒绝）或选择器（取消），App 不再发
+  // interrupt；Ctrl+C 仍可退出（runTui 收尾会以 deny 清空未裁决的审批请求，
+  // 不会悬挂轮次）。
   useInput((_text, key) => {
-    if (approvalOpenRef.current) {
+    if (approvalOpenRef.current || resumeOpenRef.current) {
       if (key.ctrl && _text === 'c') {
         onExit?.();
       }
@@ -230,9 +273,19 @@ export function App(props: AppProps): ReactElement {
         />
       )}
 
+      {/* 会话选择器（T-061 /resume）：runTui 注入候选列表；非空即显示。
+          打开期间隐藏输入行（阻塞输入提交），Esc 取消后恢复 */}
+      {resumeOpen && (
+        <ResumePicker
+          candidates={resumeCandidates ?? []}
+          onSelect={(sessionId) => onResumeSelect?.(sessionId)}
+          onCancel={() => onResumeCancel?.()}
+        />
+      )}
+
       {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
-          审批弹窗打开时隐藏——模态期间不接受新的输入提交 */}
-      {pendingApproval === null && (
+          审批弹窗或会话选择器打开时隐藏——模态期间不接受新的输入提交 */}
+      {pendingApproval === null && !resumeOpen && (
         <Box>
           <Text color="cyan">&gt; </Text>
           <Box flexGrow={1}>
