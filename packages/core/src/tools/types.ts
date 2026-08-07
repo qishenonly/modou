@@ -21,6 +21,13 @@ export interface ToolContext {
   readonly cwd?: string;
   /** 项目根目录。 */
   readonly projectRoot?: string;
+  /**
+   * 本会话已读过的文件（绝对路径集合，T-030 Write 的防盲写依赖）。
+   * 由运行时维护：Read 工具成功读到的文件路径入集，随工具上下文下发；
+   * 集合为只读快照，工具不得改写。Write 覆盖已有文件时要求该文件
+   * 在集合内（防盲写覆盖）；新文件不受此限。测试可注入该集合。
+   */
+  readonly readFiles?: ReadonlySet<string>;
 }
 
 /**

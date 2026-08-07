@@ -2,14 +2,17 @@ import { ToolRegistry } from '../registry';
 import { globTool } from './glob';
 import { grepTool } from './grep';
 import { readTool } from './read';
+import { writeTool } from './write';
 
 /**
  * 工具实现（design 002 第十二节 `tools/impl/{read,write,edit,grep,glob,bash}.ts`）。
- * 0.2.0 只读工具集：read（T-021）、grep / glob（T-022）。
+ * 0.2.0 只读工具集：read（T-021）、grep / glob（T-022）；
+ * 0.3.0 加入 write（T-030，编辑 / 执行类工具随 T-031 / T-032 就位）。
  */
 export * from './read';
 export * from './grep';
 export * from './glob';
+export * from './write';
 
 /**
  * 便捷装配：把全部只读工具（read / grep / glob）加入一个工具注册表
@@ -23,6 +26,21 @@ export function defaultReadonlyTools(
   registry: ToolRegistry = new ToolRegistry(),
 ): ToolRegistry {
   for (const tool of [readTool, grepTool, globTool]) {
+    if (!registry.has(tool.name)) registry.register(tool);
+  }
+  return registry;
+}
+
+/**
+ * 便捷装配：0.3.0 写工具集（read / grep / glob / write）加入一个工具注册表
+ * （0.3.0 工具集 = read/grep/glob/write；Edit（T-031）/ Bash（T-032）就位后并入）。
+ * 覆盖已有的 read/grep/glob 组件（与 defaultReadonlyTools 同源）；传入已有
+ * 注册表时幂等。缺省创建新注册表。
+ */
+export function defaultWriteTools(
+  registry: ToolRegistry = new ToolRegistry(),
+): ToolRegistry {
+  for (const tool of [readTool, grepTool, globTool, writeTool]) {
     if (!registry.has(tool.name)) registry.register(tool);
   }
   return registry;

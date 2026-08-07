@@ -28,10 +28,12 @@ export interface ToolCallRequest {
   readonly input: unknown;
 }
 
-/** 执行环境的注入项（cwd / 项目根）；signal 由管线内部管理，调用方不用给。 */
+/** 执行环境的注入项（cwd / 项目根 / 已读文件集合）；signal 由管线内部管理，调用方不用给。 */
 export interface ToolPipelineContext {
   readonly cwd?: string;
   readonly projectRoot?: string;
+  /** 本会话已读文件集合（绝对路径），透传给工具 ctx.readFiles（T-030 防盲写）。 */
+  readonly readFiles?: ReadonlySet<string>;
 }
 
 export interface ToolPipelineOptions {
@@ -157,6 +159,9 @@ function executeWithTimeout(
       ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
       ...(context.projectRoot !== undefined
         ? { projectRoot: context.projectRoot }
+        : {}),
+      ...(context.readFiles !== undefined
+        ? { readFiles: context.readFiles }
         : {}),
     };
 
