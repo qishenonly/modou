@@ -260,6 +260,38 @@ describe('bridge 映射', () => {
       },
     ]);
   });
+
+  test('context_state → 协议 context_state（分项 + 合计 + drift，T-063）', () => {
+    expect(
+      mapRuntimeEvent({
+        type: 'context_state',
+        data: {
+          nearCompaction: false,
+          sections: [
+            { name: 'system', tokens: 100 },
+            { name: 'tools', tokens: 200 },
+            { name: 'history', tokens: 300 },
+          ],
+          total: 600,
+          drift: { estimated: 700, actual: 600, error: 100, rate: 100 / 600 },
+        },
+      }),
+    ).toEqual([
+      {
+        type: 'context_state',
+        data: {
+          nearCompaction: false,
+          sections: [
+            { name: 'system', tokens: 100 },
+            { name: 'tools', tokens: 200 },
+            { name: 'history', tokens: 300 },
+          ],
+          total: 600,
+          drift: { estimated: 700, actual: 600, error: 100, rate: 100 / 600 },
+        },
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -280,15 +312,16 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
     expect(result.text).toBe('你好');
 
     // seq 严格连续递增（前端排序/去重依赖它）
-    expect(envelopes.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(envelopes.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(envelopes.map((e) => e.type)).toEqual([
       'turn_start',
       'text_delta',
       'text_delta',
       'usage',
+      'context_state',
       'turn_end',
     ]);
-    expect(envelopes.map((e) => e.turn)).toEqual([1, 1, 1, 1, 1]);
+    expect(envelopes.map((e) => e.turn)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(envelopes[envelopes.length - 1].data).toEqual({
       turn: 1,
       termination: 'end_turn',
@@ -346,6 +379,7 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
       'text_delta',
       'text_delta',
       'usage',
+      'context_state',
       'turn_end',
     ]);
   });
@@ -593,6 +627,7 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
     expect(envelopes.map((e) => e.type)).toEqual([
       'turn_start',
       'error',
+      'context_state',
       'turn_end',
     ]);
   });
@@ -694,6 +729,8 @@ describe('协议演进约束', () => {
         data: {
           nearCompaction: false,
           sections: [{ name: 'tools', tokens: 100 }],
+          total: 100,
+          drift: { estimated: 120, actual: 100, error: 20, rate: 0.2 },
         },
       },
       {

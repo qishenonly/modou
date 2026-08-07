@@ -204,6 +204,64 @@ describe('runAgentTurn（0.1.0 裸循环）', () => {
     });
   });
 
+  test('每轮收尾发出 context_state：分项 + 合计 + drift（T-063）', async () => {
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: '你好' }),
+      textEvents('好了'),
+    ]);
+    const registry = new ToolRegistry().register(echoTool);
+    const ledger = new BudgetLedger();
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: registry,
+        budget: ledger,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(result.turns).toBe(2);
+
+    // context_state 在收尾发出，且位于 turn_end 之前
+    const contextIndex = events.findIndex((e) => e.type === 'context_state');
+    const turnEndIndex = events.findIndex((e) => e.type === 'turn_end');
+    expect(contextIndex).toBeGreaterThanOrEqual(0);
+    expect(contextIndex).toBeLessThan(turnEndIndex);
+
+    const event = events[contextIndex];
+    expect(event.type).toBe('context_state');
+    if (event.type === 'context_state') {
+      const data = event.data;
+      // 五个分项齐全（002 7.1 分段）
+      expect(data.sections.map((s) => s.name)).toEqual([
+        'system',
+        'tools',
+        'instructions',
+        'history',
+        'tool_output',
+      ]);
+      // 合计 = 各段之和
+      expect(data.total).toBe(
+        data.sections.reduce((sum, s) => sum + s.tokens, 0),
+      );
+      // 2 轮含工具执行：历史与工具输出都非空
+      const history =
+        data.sections.find((s) => s.name === 'history')?.tokens ?? 0;
+      const toolOutput =
+        data.sections.find((s) => s.name === 'tool_output')?.tokens ?? 0;
+      expect(history).toBeGreaterThan(0);
+      expect(toolOutput).toBeGreaterThan(0);
+      // drift 来自传入账本：2 次请求均有 usage → 已配对校准
+      expect(data.drift.actual).toBe(20);
+      // 0.7.0 压缩之前恒 false
+      expect(data.nearCompaction).toBe(false);
+    }
+  });
+
   test('tool_use → 「未知工具」回喂 → 模型改出纯文本（2 轮）', async () => {
     const stub = new StubProvider([
       toolUseEvents('bash', 'call-1'),

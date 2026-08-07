@@ -137,10 +137,30 @@ export interface ContextSection {
   readonly tokens: number;
 }
 
-/** context_state：各分项占用、压缩是否临近。0.6.0 才产出。 */
+/**
+ * context_state 的预算偏差（粗估 vs 实测；协议自持一份，与 core 内部
+ * TokenDrift 同形——前端据此判断字符级近似与供应商分词器的系统性偏离，
+ * 002 7.3「偏差大说明分词器选错了」）。
+ */
+export interface ContextDrift {
+  /** 累计粗估输入 token（请求前本地估算，仅含已校准的请求） */
+  readonly estimated: number;
+  /** 供应商校准的累计实测输入 token */
+  readonly actual: number;
+  /** 偏差 = estimated - actual（正 = 高估，负 = 低估） */
+  readonly error: number;
+  /** 相对偏差率 = error / actual（actual 为 0 时取 0） */
+  readonly rate: number;
+}
+
+/** context_state：各分项占用、合计、预算偏差、压缩是否临近。0.6.0 才产出。 */
 export interface ContextStateData {
   readonly nearCompaction: boolean;
   readonly sections: readonly ContextSection[];
+  /** 各分项合计（估算输入 token；drift 由此与累计实测校准） */
+  readonly total: number;
+  /** 粗估 vs 实测偏差（budget 账本的 drift，见 ContextDrift） */
+  readonly drift: ContextDrift;
 }
 
 /** compaction：压缩前后 token、被折叠的轮次范围。0.6.0 才产出。 */

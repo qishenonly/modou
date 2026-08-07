@@ -5,7 +5,8 @@
  * 依赖方向：Context 只依赖 Session 与 Provider（002 2.2）——预算核算只复用
  * 协议类型（protocol/events），不感知 provider / runtime 内部。
  *
- * 0.6.0 只落地 budget（T-062）；project（投影）、compact / summary（压缩，
- * 0.7.0）随后在此目录扩展。
+ * 0.6.0 落地 budget（T-062）与 project 分项估算（T-063 /context）；
+ * compact / summary（压缩，0.7.0）随后在此目录扩展。
  */
 export * from './budget';
+export * from './project';

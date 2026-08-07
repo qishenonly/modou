@@ -3,10 +3,12 @@ import { Box, Text, useInput } from 'ink';
 import type {
   ApprovalRequestData,
   Command,
+  ContextStateData,
   Envelope,
   ResumeCandidate,
 } from '@modou/core';
 import { ApprovalModal } from './approval';
+import { ContextPanel } from './context';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import { ResumePicker } from './resume';
@@ -58,6 +60,13 @@ export interface AppProps {
    * 变化时 App 把它覆写进 totals——恢复后状态栏从历史累计开始，而非从零。
    */
   readonly initialTotals?: TokenTotals;
+  /**
+   * /context（T-063）：非空时显示上下文用量面板（runTui 在用户敲 /context 时
+   * 实时组装 context_state 负载后注入）。面板打开时输入行隐藏（模态，Esc 关闭）。
+   */
+  readonly contextState?: ContextStateData;
+  /** /context：用户 Esc 关闭面板（runTui 清空 contextState 并重渲染）。 */
+  readonly onContextDismiss?: () => void;
 }
 
 /**
@@ -91,6 +100,8 @@ export function App(props: AppProps): ReactElement {
     onResumeSelect,
     onResumeCancel,
     initialTotals,
+    contextState,
+    onContextDismiss,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -131,6 +142,10 @@ export function App(props: AppProps): ReactElement {
   const resumeOpen = (resumeCandidates?.length ?? 0) > 0;
   const resumeOpenRef = useRef(resumeOpen);
   resumeOpenRef.current = resumeOpen;
+  // /context 用量面板（T-063）：runTui 注入 contextState 即打开（模态）；
+  // 全局 Esc 让给面板（关闭），不触发 interrupt。
+  const contextOpenRef = useRef(contextState !== undefined);
+  contextOpenRef.current = contextState !== undefined;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -215,6 +230,18 @@ export function App(props: AppProps): ReactElement {
       }
       return;
     }
+    // /context 面板打开：Esc 关闭面板（不打断当前轮），Ctrl+C 仍可退出
+    if (contextOpenRef.current) {
+      if (key.escape) {
+        onContextDismiss?.();
+        return;
+      }
+      if (key.ctrl && _text === 'c') {
+        onExit?.();
+        return;
+      }
+      return;
+    }
     if (key.escape) {
       send({ type: 'interrupt' });
       return;
@@ -283,16 +310,22 @@ export function App(props: AppProps): ReactElement {
         />
       )}
 
+      {/* /context 用量面板（T-063）：runTui 注入 contextState 即显示（模态），
+          Esc 经 onContextDismiss 关闭；与弹窗/选择器同款「打开时隐藏输入行」 */}
+      {contextState !== undefined && <ContextPanel state={contextState} />}
+
       {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
-          审批弹窗或会话选择器打开时隐藏——模态期间不接受新的输入提交 */}
-      {pendingApproval === null && !resumeOpen && (
-        <Box>
-          <Text color="cyan">&gt; </Text>
-          <Box flexGrow={1}>
-            <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+          审批弹窗、会话选择器或 /context 面板打开时隐藏——模态期间不接受新的输入提交 */}
+      {pendingApproval === null &&
+        !resumeOpen &&
+        contextState === undefined && (
+          <Box>
+            <Text color="cyan">&gt; </Text>
+            <Box flexGrow={1}>
+              <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+            </Box>
           </Box>
-        </Box>
-      )}
+        )}
     </Box>
   );
 }

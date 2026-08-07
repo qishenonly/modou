@@ -19,6 +19,7 @@ import type { ApprovalGate } from '../permission/approval';
 import type {
   ApprovalDecision,
   ApprovalOption,
+  ContextStateData,
   RiskLevel,
 } from '../protocol/events';
 import { runToolPipeline } from '../tools/pipeline';
@@ -28,7 +29,8 @@ import { toToolSet } from '../tools/toolset';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
-import { BudgetLedger, estimateTokens } from '../context/budget';
+import { BudgetLedger } from '../context/budget';
+import { buildContextState, estimateContextSections } from '../context/project';
 import {
   canTransition,
   stopReasonToTransition,
@@ -179,6 +181,10 @@ export type RuntimeEvent =
       readonly source: 'user' | 'rule' | 'policy';
     }
   | { readonly type: 'usage'; readonly usage: TokenUsage }
+  | {
+      readonly type: 'context_state';
+      readonly data: ContextStateData;
+    }
   | { readonly type: 'error'; readonly error: ProviderError }
   | {
       readonly type: 'turn_end';
@@ -209,78 +215,24 @@ function extractUserText(message: ModelMessage): string {
 }
 
 /**
- * 展平一条 ModelMessage 为纯文本（预算粗估用：与发给模型的正文同源）。
- *
- * - text part 取原文；reasoning 取推理文本；
- * - tool-call / tool-result 序列化为 `[tool-call:名称] 参数JSON` 形态
- *   （模型实际收到的工具调用 / 结果是 JSON，按 JSON 文本计入）;
- * - file / image 等二进制载体不以字节计入（base64 会严重偏斜估算），
- *   以 `[file:媒体类型]` 占位——本估算是粗估，精确值交给 drift() 校准；
- * - 稀有 part 类型（custom / reasoning-file / 工具审批）以类型名占位。
- */
-function serializeMessageText(message: ModelMessage): string {
-  if (typeof message.content === 'string') return message.content;
-  const parts: string[] = [];
-  for (const part of message.content) {
-    switch (part.type) {
-      case 'text':
-      case 'reasoning':
-        parts.push(part.text);
-        break;
-      case 'tool-call':
-        parts.push(
-          `[tool-call:${part.toolName}] ${JSON.stringify(part.input)}`,
-        );
-        break;
-      case 'tool-result':
-        parts.push(
-          `[tool-result:${part.toolName}] ${JSON.stringify(part.output)}`,
-        );
-        break;
-      case 'file':
-        parts.push(`[file:${part.mediaType}]`);
-        break;
-      case 'image':
-        parts.push('[image]');
-        break;
-      default:
-        parts.push(`[${part.type}]`);
-        break;
-    }
-  }
-  return parts.join('\n');
-}
-
-/**
- * 工具定义文本（预算粗估用）：近似 provider 随请求序列化的 tools 数组
- * （name + description + 参数 JSON Schema）。系统提示词已内嵌工具说明文本
- * （prompt/system.ts 双通道），此处计入的是 provider 另行发送的原生 tools
- * 载荷——两部分都会真实计费，粗估都应覆盖；固定冗余由 drift() 度量吸收。
- */
-function serializeToolsText(registry: ToolRegistry): string {
-  const lines: string[] = [];
-  for (const tool of registry.list()) {
-    lines.push(`${tool.name}: ${tool.description}`);
-    lines.push(JSON.stringify(registry.toJsonSchema(tool.name)));
-  }
-  return lines.join('\n');
-}
-
-/**
  * 粗估一次模型请求的输入 token（002 7.3 请求前本地粗估）：对将发内容估算
- * （system 提示词 + 消息正文 + 工具定义文本）。估算精度与取舍见
- * context/budget.ts「精度取舍」——请求级拼装在本层，字符级计价在 estimateTokens。
+ * （system 提示词 + 消息正文 + 工具定义文本）。
+ *
+ * 直接复用 context/project.ts 的分项估算（`estimateContextSections().total`，
+ * 即系统提示 + 工具定义 + 项目指令占位 + 历史 + 工具输出五段之和）——请求级
+ * 粗估与 `/context` 分项视图**必须同源**，否则账本 drift 度量的是两套估算的
+ * 差而不是「近似 vs 实测」的系统偏差。估算精度与取舍见 budget.ts「精度取舍」。
  */
 function estimateRequestText(
   system: string | undefined,
   messages: readonly ModelMessage[],
   tools: ToolRegistry | undefined,
 ): number {
-  const parts: string[] = [];
-  if (system !== undefined && system.length > 0) parts.push(system);
-  for (const message of messages) parts.push(serializeMessageText(message));
-  if (tools !== undefined) parts.push(serializeToolsText(tools));
-  return estimateTokens(parts.join('\n'));
+  return estimateContextSections({
+    system: system ?? '',
+    tools,
+    thread: messages,
+  }).total;
 }
 
 /**
@@ -575,6 +527,20 @@ export async function runAgentTurn(
         ? { interruptedReason }
         : {}),
     };
+    // context_state（T-063）：本轮收尾时的上下文分项核算——系统提示 / 工具定义 /
+    // 项目指令占位 / 历史 / 工具输出各段 token + 合计 + 预算 drift。前端 `/context`
+    // 视图可直接消费（也即调试仪器：预算超支一眼看出哪段在膨胀，002 7.1）。
+    // 在 turn_end 之前发出，信封轮次沿用当前轮（EnvelopeEmitter 由 turn_start
+    // 推进；最终轮之后 turn_end 不再改变轮次值）。
+    emit({
+      type: 'context_state',
+      data: buildContextState({
+        system: system ?? '',
+        tools,
+        thread,
+        budget: ledger,
+      }),
+    });
     emit({ type: 'turn_end', turn, termination });
     if (session !== undefined) {
       // 末轮若未随 feedBackToolRound 记入（纯文本轮 / 中断 / 错误的部分回复），

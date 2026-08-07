@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { render, cleanup } from 'ink-testing-library';
 import type {
   Command,
+  ContextStateData,
   Envelope,
   ProtocolEvent,
   ResumeCandidate,
@@ -297,6 +298,65 @@ describe('App /resume（T-061）', () => {
       />,
     );
     expect(lastFrame() ?? '').toContain('in 20 / out 8');
+    unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /context（T-063）：用量面板显示 + Esc 关闭
+// ---------------------------------------------------------------------------
+
+describe('App /context（T-063）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  const contextState: ContextStateData = {
+    nearCompaction: false,
+    sections: [
+      { name: 'system', tokens: 1200 },
+      { name: 'tools', tokens: 300 },
+      { name: 'instructions', tokens: 0 },
+      { name: 'history', tokens: 400 },
+      { name: 'tool_output', tokens: 200 },
+    ],
+    total: 2100,
+    drift: { estimated: 2300, actual: 2100, error: 200, rate: 200 / 2100 },
+  };
+
+  test('注入 contextState：显示分项面板，输入行隐藏（模态）', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} contextState={contextState} />,
+    );
+    const frame = lastFrame() ?? '';
+    // 面板内容（标题 + 分项 + 合计）
+    expect(frame).toContain('/context 上下文用量');
+    expect(frame).toContain('系统提示');
+    expect(frame).toContain('工具输出');
+    expect(frame).toContain('合计 2100 tokens');
+    // 模态：输入行隐藏（不再显示 `>` 提示）
+    expect(frame).not.toContain('>');
+    unmount();
+  });
+
+  test('面板打开时 Esc 关闭（发 onContextDismiss，不触发 interrupt）', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    let dismissed = 0;
+    const { stdin, unmount } = render(
+      <App
+        stream={stream}
+        send={(command) => calls.push(command)}
+        contextState={contextState}
+        onContextDismiss={() => (dismissed += 1)}
+      />,
+    );
+    await flush();
+
+    stdin.write('\x1b'); // Esc
+    expect(dismissed).toBe(1);
+    expect(calls).toEqual([]); // 不向 core 发 interrupt
     unmount();
   });
 });

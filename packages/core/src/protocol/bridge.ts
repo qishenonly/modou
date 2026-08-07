@@ -23,6 +23,7 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  * | approval_request   | approval_request（③ Authorize 弹窗）|
  * | approval_resolved  | approval_resolved（裁决收尾）       |
  * | usage              | usage                               |
+ * | context_state      | context_state（分项 + 合计 + drift）|
  * | error              | error（ProviderError → ErrorData）  |
  * | turn_end           | turn_end（带终止原因）              |
  * | tool_feedback      | notice（warn）：模型调用了未知工具   |
@@ -34,7 +35,7 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  *
  * TODO（本版不产生，不映射）：
  * - `tool_progress`：等长命令实时输出（bash 工具落地时）；
- * - `context_state` / `compaction`：等上下文核算与压缩（0.6.0）落地。
+ * - `compaction`：等压缩（0.7.0）落地。
  */
 export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
   switch (event.type) {
@@ -60,6 +61,9 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
       ];
     case 'usage':
       return [{ type: 'usage', data: { ...event.usage } }];
+    case 'context_state':
+      // 上下文分项核算（T-063）：loop 每轮收尾发出，前端 /context 视图直接消费
+      return [{ type: 'context_state', data: event.data }];
     case 'tool_result':
       // 工具执行结果：与人看的 tool_result 协议事件同形，直接映射
       return [

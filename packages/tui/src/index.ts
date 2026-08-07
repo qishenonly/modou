@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { createElement, type ReactElement } from 'react';
 import { render, type Instance } from 'ink';
 import {
+  buildContextState,
   buildSystemPrompt,
   BudgetLedger,
   countUserMessages,
@@ -20,6 +21,7 @@ import {
 } from '@modou/core';
 import type {
   Command,
+  ContextStateData,
   Envelope,
   ModelMessage,
   ModelProvider,
@@ -153,6 +155,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 预算账本（T-062）：会话级累计——每轮传入同一实例，跨轮次累计请求前粗估
   // 与响应后校准；/resume 时从会话 usage 重建实际分项（粗估从零重新累计）。
   let budget = new BudgetLedger();
+  // /context（T-063）：非空 = 用量面板打开。runTui 在用户敲 /context 时用
+  // 「系统提示 + 工具注册表 + 投影历史 + 账本」实时组装 context_state 负载注入
+  // App（模态面板），Esc 经 onContextDismiss 清空关闭。
+  let contextSnapshot: ContextStateData | null = null;
 
   // 合成 notice 信封（runTui 侧提示：/resume 结果等；App 是事件流纯消费者，
   // 直接经 channel 推信封即可展示——与 core 发出的 notice 同构）。
@@ -216,6 +222,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
   const startTurn = (text: string): void => {
     if (currentController !== null) return; // 已在运行，忽略（T-041 完善排队/并入）
+    // 新一轮输入开始：关闭 /context 面板（避免模态遮挡新任务；Esc 也可随时关闭）
+    if (contextSnapshot !== null) {
+      contextSnapshot = null;
+      rerender();
+    }
     // 等上一轮的历史投影完成（幂等：首轮 historyRefresh 已是 resolved），
     // 保证提交时的 messages 与 loggedUserCount 一致（续写不重复落盘历史）。
     void historyRefresh.then(() => {
@@ -267,13 +278,65 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
   // —— /resume（T-061）：列会话 → 选择 → 恢复并继续 ——
 
-  /** 斜杠命令分发：0.6.0 只实现 /resume（002 3.3 slash；T-082 0.8.0 做框架）。 */
+  /**
+   * 组装当前上下文的分项核算并推入事件流（T-063）。
+   *
+   * 数据源：系统提示（runTui 持有）+ 工具注册表 + 投影出的历史消息
+   * （historyMessages，002 4.1「上下文是日志的投影」）+ 预算账本——与
+   * loop 每轮收尾发出的 context_state 同源同构（buildContextState）。
+   * 合成信封走 channel（seq 接续），既是机器可读输出（评测采集），
+   * 也保证 `/context` 在任意时刻（含首轮之前）都能看到核算。
+   */
+  const pushContextState = (): ContextStateData => {
+    const snapshot = buildContextState({
+      system,
+      tools,
+      thread: historyMessages,
+      budget,
+    });
+    channel.push({
+      v: 1 as const,
+      seq: ++syntheticSeq,
+      ts: Date.now(),
+      agent: 'main',
+      turn: 0,
+      type: 'context_state',
+      data: snapshot,
+    });
+    return snapshot;
+  };
+
+  /** 斜杠命令分发：0.6.0 实现 /resume 与 /context（T-063；002 3.3 slash）。 */
   const handleSlash = (name: string, args?: string): void => {
     if (name === 'resume') {
       void handleSlashResume(args);
       return;
     }
-    pushNotice('info', `斜杠命令 /${name} 尚未实现（0.6.0 仅支持 /resume）`);
+    if (name === 'context') {
+      handleSlashContext(args);
+      return;
+    }
+    pushNotice(
+      'info',
+      `斜杠命令 /${name} 尚未实现（0.6.0 支持 /resume 与 /context）`,
+    );
+  };
+
+  /**
+   * /context 用量视图（T-063）：
+   * - 普通 `/context`：打开模态面板（分项条 + 合计 + drift），Esc 关闭；
+   * - `/context --json`：把核算 JSON 打成 notice 推入输出区（机器可读，
+   *   供评测采集；不回显面板）；
+   * 两种形态都先把核算以 context_state 信封推入事件流。
+   */
+  const handleSlashContext = (args?: string): void => {
+    const snapshot = pushContextState();
+    if ((args ?? '').includes('json')) {
+      pushNotice('info', JSON.stringify(snapshot, null, 2));
+      return;
+    }
+    contextSnapshot = snapshot;
+    rerender();
   };
 
   /**
@@ -311,6 +374,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   /** /resume 选择：恢复会话并继续对话（续开同一日志文件，seq 延续）。 */
   const handleResumeSelect = async (sessionId: string): Promise<void> => {
     resumeCandidates = [];
+    contextSnapshot = null; // 会话切换：用量面板数据源已变，关闭
     rerender(); // 先关选择器，防重入
     // 等上一轮的历史投影收尾，避免它在本次恢复后仍以旧会话覆盖 historyMessages
     await historyRefresh;
@@ -396,6 +460,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       },
       // 恢复会话后的初始 token 累计（状态栏种子）
       initialTotals,
+      // /context（T-063）：非空 = 用量面板打开（模态），Esc 清空关闭
+      contextState: contextSnapshot ?? undefined,
+      onContextDismiss: () => {
+        contextSnapshot = null;
+        rerender();
+      },
     });
 
   /** 重渲染 App（app 就绪后）；未就绪时静默跳过（构造期尚未挂载）。 */
@@ -451,6 +521,12 @@ export { ApprovalModal, createApprovalBridge } from './approval';
 export type { ApprovalModalProps, ApprovalBridge } from './approval';
 export { ResumePicker } from './resume';
 export type { ResumePickerProps } from './resume';
+export {
+  ContextPanel,
+  formatContextRows,
+  formatContextFooter,
+} from './context';
+export type { ContextPanelProps } from './context';
 export {
   StatusBar,
   PERMISSION_MODE_LABEL,
