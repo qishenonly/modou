@@ -9,6 +9,7 @@ import { createSignalInterrupt, signalToExitCode } from './signals';
 const USAGE = `modou —— 终端编码 Agent（0.1.0）
 
 用法：
+  modou              进入交互式 TUI（Claude Code 式界面）
   modou -p "你好"    提交提示词，流式输出回答（headless）
   modou --auto-approve -p "修复一下某个 bug"   自动允许写入/执行（自用/评测用）
 
@@ -48,8 +49,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 
   if (args.prompt === undefined) {
-    process.stderr.write(`缺少 -p/--prompt 参数。\n\n${USAGE}\n`);
-    return 2;
+    // 0.4.0：无 -p 时进入交互式 TUI（Claude Code 式界面）。
+    // TUI 是 core 事件流的纯消费者；写入/执行经审批弹窗（T-044），
+    // 退出码由 TUI 的 Ctrl+C(0) / SIGINT(130) 路径决定。
+    const { runTui } = await import('@modou/tui');
+    const tui = await runTui({ tools: defaultWriteTools() });
+    return tui.exitCode;
   }
 
   let provider;
