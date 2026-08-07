@@ -1,7 +1,10 @@
+import type { CompactOptions } from '../context/compact';
+
 /**
- * 评测任务类型：修 bug / 加功能 / 读代码答问。
+ * 评测任务类型（T-090 四类）：修 bug / 加功能 / 重构（行为不变断言）/
+ * 读代码答问。
  */
-export type EvalTaskKind = 'fix' | 'feature' | 'read';
+export type EvalTaskKind = 'fix' | 'feature' | 'refactor' | 'read';
 
 /**
  * 评测任务判定上下文：judge 拿到的全部信息。
@@ -46,4 +49,14 @@ export interface EvalTask {
   readonly judge: (ctx: JudgeContext) => Promise<JudgeResult> | JudgeResult;
   /** 轮次上限（缺省 10）。 */
   readonly maxTurns?: number;
+  /**
+   * 压缩配置（T-070 /compact）：提供时该任务在 loop 中启用增量压缩
+   * （长任务压缩用例，验证「压缩后任务延续率」——压缩前后 judge 仍通过）。
+   * 未注入 generateDelta 时由 runEval 缺省装配生产摘要生成器
+   * （createModelDeltaGenerator，见 runner.ts）；测试可经 RunEvalOptions.compact
+   * 整体覆盖注入 stub。
+   */
+  readonly compact?: CompactOptions;
+  /** 是否长任务压缩用例（40+ 轮、触发压缩、压缩后延续率的主要来源）。 */
+  readonly long?: boolean;
 }
