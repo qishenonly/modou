@@ -27,6 +27,7 @@ import {
 } from '../tools';
 import { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolContext } from '../tools/types';
+import { ApprovalGate } from '../permission/approval';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
 
@@ -995,5 +996,205 @@ describe('防盲写 readFiles 运行时生产者（loop 维护会话已读集合
     const probe = toolResultById(events, 'c1');
     expect(probe?.ok).toBe(true);
     expect(probe?.forModel).toBe(`cwd=${expectedCwd}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 审批闸门接线（T-033）：runAgentTurn 把 approval 注入管线 ③ Authorize，
+// write/exec 工具调用前发 approval_request / approval_resolved RuntimeEvent，
+// deny → 策略性拒绝回喂。read 不拦。
+// ---------------------------------------------------------------------------
+
+describe('审批闸门接线（T-033 loop → 管线 ③）', () => {
+  /** 从事件流里取指定 id 的 tool_result（ok 与 forModel）。 */
+  function toolResultById(
+    events: RuntimeEvent[],
+    id: string,
+  ): { ok: boolean; forModel: string } | undefined {
+    const event = events.find((e) => e.type === 'tool_result' && e.id === id);
+    if (event === undefined || event.type !== 'tool_result') return undefined;
+    return { ok: event.ok, forModel: event.forModel ?? '' };
+  }
+
+  /** 构造只含一个 write-stub 的注册表（不落盘）。 */
+  function writeStubRegistry(): ToolRegistry {
+    return new ToolRegistry().register({
+      name: 'write-stub',
+      description: '写入（测试用）',
+      risk: 'write',
+      schema: z.object({ path: z.string().min(1), content: z.string() }),
+      execute: async () => ({ ok: true, forModel: '已写入（stub）' }),
+    });
+  }
+
+  function writeCall(id = 'call-1'): {
+    id: string;
+    name: string;
+    input: unknown;
+  } {
+    return { id, name: 'write-stub', input: { path: '/a.ts', content: 'x' } };
+  }
+
+  function approvalRequests(events: RuntimeEvent[]): RuntimeEvent[] {
+    return events.filter((e) => e.type === 'approval_request');
+  }
+
+  test('gate 放行：write 工具执行成功，approval_request/resolved 事件配对', async () => {
+    const gate = new ApprovalGate({
+      decider: async () => ({ decision: 'allow_once', source: 'user' }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'call-1',
+          name: 'write-stub',
+          input: { path: '/a.ts', content: 'x' },
+        },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: writeStubRegistry(),
+        approval: gate,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    const write = toolResultById(events, 'call-1');
+    expect(write?.ok).toBe(true);
+
+    // 审批事件配对：request 与 resolved 各一条
+    expect(approvalRequests(events)).toHaveLength(1);
+    const resolved = events.filter((e) => e.type === 'approval_resolved');
+    expect(resolved).toHaveLength(1);
+    const request = approvalRequests(events)[0];
+    if (
+      request.type === 'approval_request' &&
+      resolved[0].type === 'approval_resolved'
+    ) {
+      expect(resolved[0].id).toBe(request.id);
+      expect(request.risk).toBe('write');
+      expect(resolved[0].decision).toBe('allow_once');
+    }
+  });
+
+  test('gate 拒绝：write 工具回「被拒绝别重试」，不执行', async () => {
+    const gate = new ApprovalGate({
+      decider: async () => ({ decision: 'deny', source: 'user' }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'call-1',
+          name: 'write-stub',
+          input: { path: '/a.ts', content: 'x' },
+        },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('好的，不再写入。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: writeStubRegistry(),
+        approval: gate,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    const write = toolResultById(events, 'call-1');
+    expect(write?.ok).toBe(false);
+    expect(write?.forModel).toContain('被拒绝');
+    expect(write?.forModel).toContain('别重试');
+
+    // 拒绝后模型看到 ok:false 错误结果（AI SDK error-text 回喂）
+    const second = stub.seenMessages[1];
+    expect(second[2].role).toBe('tool');
+    if (second[2].role === 'tool') {
+      const output = second[2].content[0];
+      expect(output.type).toBe('tool-result');
+      if (output.type === 'tool-result') {
+        const value =
+          'value' in output.output ? String(output.output.value) : '';
+        expect(value).toContain('被拒绝');
+      }
+    }
+  });
+
+  test('allow_always：第二次同前缀调用不再发 approval_request', async () => {
+    const gate = new ApprovalGate({
+      decider: async () => ({ decision: 'allow_always', source: 'user' }),
+    });
+    // 第一轮调用 write-stub 记住前缀；第二轮再调同样入参
+    const stub = new StubProvider([
+      [
+        { type: 'tool_use', ...writeCall('call-1') },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'tool_use', ...writeCall('call-2') },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: writeStubRegistry(),
+        approval: gate,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(toolResultById(events, 'call-1')?.ok).toBe(true);
+    expect(toolResultById(events, 'call-2')?.ok).toBe(true);
+    // 只有第一次调用触发审批（记忆命中第二次直接放行）
+    expect(approvalRequests(events)).toHaveLength(1);
+  });
+
+  test('未注入 approval：write/exec 工具不拦（0.2.0 行为兼容）', async () => {
+    const stub = new StubProvider([
+      [
+        { type: 'tool_use', ...writeCall() },
+        { type: 'usage', usage: { inputTokens: 10, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: writeStubRegistry(),
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(toolResultById(events, 'call-1')?.ok).toBe(true);
+    expect(approvalRequests(events)).toHaveLength(0);
   });
 });

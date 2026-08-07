@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { ApprovalGate } from '../permission/approval';
+import type { ApprovalRequestInput } from '../permission/approval';
 import type { ProtocolEvent } from '../protocol/events';
 import { redactSecrets, redactValue } from './redact';
 import type { ToolRegistry } from './registry';
@@ -8,15 +10,16 @@ import type { Tool, ToolContext, ToolOutcome, TruncationInfo } from './types';
 import { isToolOutcome } from './types';
 
 /**
- * 工具执行管线（design 002 5.1）——0.2.0 子集：
+ * 工具执行管线（design 002 5.1）——0.3.0 子集：
  *
- * ① Resolve → ② Validate → ⑤ Execute → ⑥ Normalize → ⑧ Record
+ * ① Resolve → ② Validate → ③ Authorize → ⑤ Execute → ⑥ Normalize → ⑧ Record
  *
- * 结构上预留两个插入点（本版为空实现，不执行）：
- * - ③ Authorize：0.3.0 在此接入 Permission 裁决；
+ * - ③ Authorize（T-033）：write / exec 工具经 ApprovalGate 审批（发 approval_request
+ *   阻塞等裁决）；deny → ok:false「被拒绝，别重试同样的操作」（002 5.3 第三类策略性
+ *   拒绝，明示模型不要反复触发审批）；read 不拦（0.3.0）。
  * - ④ PreToolUse / ⑦ PostToolUse：0.14.0 在此挂载 hooks。
  *
- * 失败不是异常（002 5.3 错误即数据）：参数错误 / 执行错误 / 超时全部归为
+ * 失败不是异常（002 5.3 错误即数据）：参数错误 / 权限拒绝 / 执行错误 / 超时全部归为
  * `ToolOutcome { ok: false, forModel: <可诊断文本> }` 回喂模型自纠；只有
  * 管线自身的不变量破坏（如重复注册）才以异常形式向上抛（内部错误，不回喂模型）。
  */
@@ -40,6 +43,12 @@ export interface ToolPipelineContext {
 
 export interface ToolPipelineOptions {
   readonly registry: ToolRegistry;
+  /**
+   * ③ Authorize：审批闸门（T-033）。write / exec 工具调用前经它审批；
+   * read 不拦。缺省 = 不拦截（0.2.0 及之前行为；headless 会注入策略闸门，
+   * 纯管线测试可注入自建闸门验证拦截行为）。
+   */
+  readonly authorize?: ApprovalGate;
   /** 执行超时（毫秒）。默认 60_000。超时归为失败结果回喂模型。 */
   readonly timeoutMs?: number;
   /** 外部中断信号：与超时合并后传给工具 ctx.signal。 */
@@ -103,6 +112,55 @@ function validationFailureOutcome(tool: Tool, error: z.ZodError): ToolOutcome {
   const usage = JSON.stringify(z.toJSONSchema(tool.schema));
   return failure(
     `参数校验失败（工具 "${tool.name}"）：入参不符合其声明的 schema。\n${issues}\n正确用法（JSON Schema）：\n${usage}\n请按正确用法修正参数后重试。`,
+  );
+}
+
+/**
+ * 构造审批请求输入（③ Authorize）：从工具名与已校验参数推导描述与记忆前缀。
+ * - bash：command 作为描述与记忆前缀（危险命令黑名单据此检测）；
+ * - 写 / 编辑工具：path 作为描述与记忆前缀；
+ * - 描述先过 redactSecrets：命令里可能夹带密钥（`echo sk-…`），不能原样
+ *   进 approval_request 事件流 / 会话日志（002 5.4 密钥脱敏）。
+ */
+function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
+  let command: string | undefined;
+  let prefix: string | undefined;
+  let description: string;
+
+  if (typeof args === 'object' && args !== null) {
+    const record = args as Record<string, unknown>;
+    if (typeof record.command === 'string') {
+      command = record.command;
+      prefix = record.command;
+      description = `执行命令：${redactSecrets(record.command)}`;
+    } else if (typeof record.path === 'string') {
+      prefix = record.path;
+      description = `写入/编辑文件：${redactSecrets(record.path)}`;
+    } else {
+      description = `调用工具 ${tool.name}（risk: ${tool.risk}）`;
+    }
+  } else {
+    description = `调用工具 ${tool.name}（risk: ${tool.risk}）`;
+  }
+
+  return {
+    toolName: tool.name,
+    risk: tool.risk,
+    description,
+    ...(command !== undefined ? { command } : {}),
+    ...(prefix !== undefined ? { prefix } : {}),
+  };
+}
+
+/**
+ * 策略性拒绝的可诊断文本（002 5.3 第三类「权限拒绝」）：
+ * 必须明示「被拒绝，别重试同样的操作」，否则模型会换个写法反复触发审批把用户烦死。
+ */
+function denialOutcome(tool: Tool): ToolOutcome {
+  return failure(
+    `工具 "${tool.name}" 的调用被拒绝（权限审批，${tool.risk} 级操作需经审批）。` +
+      `被拒绝，别重试同样的操作；也不要换写法反复触发审批——` +
+      `如需继续，请向用户说明你要做什么，等待用户明确同意后再调用。`,
   );
 }
 
@@ -284,7 +342,23 @@ export async function runToolPipeline(
     return outcome;
   }
 
-  // ③ Authorize —— 0.3.0 在此插入 Permission 裁决（design 002 5.1）
+  // ③ Authorize（T-033）：write / exec 工具经审批闸门；read 不拦（0.3.0）。
+  // deny → 策略性拒绝（「被拒绝，别重试」），不再进入执行；事件流：
+  // tool_call → approval_request → approval_resolved → tool_result（ok:false）。
+  if (
+    options.authorize !== undefined &&
+    (tool.risk === 'write' || tool.risk === 'exec')
+  ) {
+    const decision = await options.authorize.requestApproval(
+      buildApprovalInput(tool, parsed.data),
+      emit,
+    );
+    if (decision === 'deny') {
+      const outcome = denialOutcome(tool);
+      emitToolResult(emit, call.id, outcome);
+      return outcome;
+    }
+  }
   // ④ PreToolUse —— 0.14.0 在此挂载钩子（design 002 5.1）
 
   // ⑤ Execute：带超时 + 组合 AbortSignal

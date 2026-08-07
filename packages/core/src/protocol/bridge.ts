@@ -12,18 +12,20 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
 /**
  * Runtime 内部事件 → 协议事件 的纯映射（bridge）。
  *
- * 0.1.0 映射表：
- * | RuntimeEvent     | 协议事件                            |
- * |------------------|-------------------------------------|
- * | turn_start       | turn_start（轮次开始）              |
- * | text_delta       | text_delta                          |
- * | thinking_delta   | thinking_delta                      |
- * | tool_use         | tool_call                           |
- * | tool_result      | tool_result（工具管线执行结果）     |
- * | usage            | usage                               |
- * | error            | error（ProviderError → ErrorData）  |
- * | turn_end         | turn_end（带终止原因）              |
- * | tool_feedback    | notice（warn）：模型调用了未知工具   |
+ * 0.3.0 映射表：
+ * | RuntimeEvent       | 协议事件                            |
+ * |--------------------|-------------------------------------|
+ * | turn_start         | turn_start（轮次开始）              |
+ * | text_delta         | text_delta                          |
+ * | thinking_delta     | thinking_delta                      |
+ * | tool_use           | tool_call                           |
+ * | tool_result        | tool_result（工具管线执行结果）     |
+ * | approval_request   | approval_request（③ Authorize 弹窗）|
+ * | approval_resolved  | approval_resolved（裁决收尾）       |
+ * | usage              | usage                               |
+ * | error              | error（ProviderError → ErrorData）  |
+ * | turn_end           | turn_end（带终止原因）              |
+ * | tool_feedback      | notice（warn）：模型调用了未知工具   |
  *
  * `tool_result` 何时产生（T-051）：loop 在 tool_use 分支调用 runToolPipeline，
  * 管线 ⑧ Record 发出的 tool_result 协议事件由 loop 转成同形 RuntimeEvent，
@@ -32,7 +34,6 @@ import type { Envelope, ErrorData, ProtocolEvent } from './events';
  *
  * TODO（本版不产生，不映射）：
  * - `tool_progress`：等长命令实时输出（bash 工具落地时）；
- * - `approval_request` / `approval_resolved`：等审批（0.3.0）落地；
  * - `context_state` / `compaction`：等上下文核算与压缩（0.6.0）落地。
  */
 export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
@@ -72,6 +73,31 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
               ? { forModel: event.forModel }
               : {}),
             ...(event.payload !== undefined ? { payload: event.payload } : {}),
+          },
+        },
+      ];
+    case 'approval_request':
+      // 审批请求（T-033 ③ Authorize）：与协议 approval_request 同形，直接映射
+      return [
+        {
+          type: 'approval_request',
+          data: {
+            id: event.id,
+            description: event.description,
+            risk: event.risk,
+            options: event.options,
+          },
+        },
+      ];
+    case 'approval_resolved':
+      // 审批裁决收尾：弹窗关闭的依据
+      return [
+        {
+          type: 'approval_resolved',
+          data: {
+            id: event.id,
+            decision: event.decision,
+            source: event.source,
           },
         },
       ];

@@ -1,9 +1,12 @@
 import {
+  ApprovalGate,
   buildSystemPrompt,
   defaultReadonlyTools,
   runAgentTurnStreaming,
+  type ApprovalDecision,
   type Envelope,
   type ModelProvider,
+  type PendingApprovalRequest,
   type ProviderError,
   type ProviderErrorKind,
   type RetryOptions,
@@ -56,6 +59,20 @@ export interface HeadlessOptions {
   readonly cwd?: string;
   /** 供应商错误的退避重试参数（缺省用默认值；测试注入 0 延迟）。 */
   readonly retry?: RetryOptions;
+  /**
+   * 审批策略：autoApprove = true 时自动允许一切 write / exec 工具调用
+   * （自用 / 评测）。**危险命令（rm -rf 等黑名单）即使 autoApprove 也逐次
+   * 走审批流程**（见 buildApprovalGate 注释）。缺省 false = 默认拒绝
+   * （无人值守安全默认：write / exec 调用一律被拦下）。
+   */
+  readonly autoApprove?: boolean;
+  /**
+   * 审批裁决注入（测试用）：对每次审批请求返回裁决（allow_once / allow_always /
+   * deny），source 记 user。提供时优先于 autoApprove。
+   */
+  readonly approve?: (
+    request: PendingApprovalRequest,
+  ) => Promise<ApprovalDecision> | ApprovalDecision;
   /** stdout 写入器（默认 process.stdout.write；测试注入收集器）。 */
   readonly write?: (chunk: string) => void;
   /** stderr 写入器（默认 process.stderr.write；测试注入收集器）。 */
@@ -130,6 +147,35 @@ function renderClosingLines(result: TurnResult): string {
   return lines.join('\n');
 }
 
+/**
+ * 装配 headless 的审批闸门（T-033）。优先级：
+ * 1. 显式 `approve` 回调（测试注入）→ 逐请求裁决，source 记 user；
+ * 2. `autoApprove: true` → 一律自动允许（allow_once，source 记 policy）；
+ * 3. 缺省 → 一律拒绝（deny，source 记 policy）——无人值守安全默认。
+ *
+ * 注意：危险命令（rm -rf、git push --force 等黑名单）无论哪种策略都在
+ * ApprovalGate 内强制逐次确认（自动裁决也会逐次发 approval_request /
+ * approval_resolved 事件对），不会因 autoApprove 走 allow_always 记忆捷径。
+ */
+function buildApprovalGate(options: HeadlessOptions): ApprovalGate {
+  const approve = options.approve;
+  if (approve !== undefined) {
+    return new ApprovalGate({
+      decider: async (request) => ({
+        decision: await approve(request),
+        source: 'user',
+      }),
+    });
+  }
+  if (options.autoApprove === true) {
+    return new ApprovalGate({
+      decider: async () => ({ decision: 'allow_once', source: 'policy' }),
+    });
+  }
+  // 默认拒绝（ApprovalGate 未注入 decider 时即一律 deny）
+  return new ApprovalGate();
+}
+
 export async function runHeadless(
   options: HeadlessOptions,
 ): Promise<HeadlessResult> {
@@ -151,8 +197,10 @@ export async function runHeadless(
         retry: options.retry,
       },
       tools,
+      // 审批闸门：默认拒绝 / autoApprove / approve 注入（见 buildApprovalGate）。
       // 会话级已读集合：缺省新建空集合；loop 内部复制并跨轮次维护。
       // cwd 缺省 process.cwd()：相对路径在工具里相对它解析。
+      approval: buildApprovalGate(options),
       readFiles: options.readFiles ?? new Set<string>(),
       cwd: options.cwd ?? process.cwd(),
     },

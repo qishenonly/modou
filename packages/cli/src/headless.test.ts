@@ -353,6 +353,8 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
         provider: stub,
         prompt: '读文件并修改',
         tools: defaultWriteTools(),
+        // T-033：write/exec 工具默认要审批；本测试聚焦防盲写链路，显式放行
+        autoApprove: true,
         write: () => {},
         writeError: () => {},
       });
@@ -370,6 +372,187 @@ describe('runHeadless（`modou -p` 的 headless 输出）', () => {
       expect(readFileSync(filePath, 'utf8')).toBe('const value = 2;\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 审批策略（T-033）：默认拒绝 / autoApprove / approve 注入。
+// ---------------------------------------------------------------------------
+
+describe('headless 审批策略（T-033）', () => {
+  test('默认拒绝：exec 工具调用被拦下（无人值守安全默认）', async () => {
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'c1',
+          name: 'bash',
+          input: { command: 'echo hi' },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '已停止。' },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const { envelopes } = await runHeadless({
+      provider: stub,
+      prompt: '跑一下',
+      tools: defaultWriteTools(),
+      write: () => {},
+      writeError: () => {},
+    });
+
+    // approval_request + approval_resolved 配对；工具结果 ok:false「被拒绝」
+    expect(envelopes.some((e) => e.type === 'approval_request')).toBe(true);
+    expect(envelopes.some((e) => e.type === 'approval_resolved')).toBe(true);
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'c1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(false);
+      expect(toolResult.data.forModel).toContain('被拒绝');
+    }
+  });
+
+  test('autoApprove：exec 工具调用放行并执行', async () => {
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'c1',
+          name: 'bash',
+          input: { command: 'echo hi' },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '完成。' },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const { envelopes } = await runHeadless({
+      provider: stub,
+      prompt: '跑一下',
+      tools: defaultWriteTools(),
+      autoApprove: true,
+      write: () => {},
+      writeError: () => {},
+    });
+
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'c1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(true);
+    }
+  });
+
+  test('危险命令即使 autoApprove 也逐次强制确认：每次都发 approval_request', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-headless-danger-'));
+    const target = join(dir, 'x');
+    try {
+      const stub = new StubProvider([
+        [
+          {
+            type: 'tool_use',
+            id: 'c1',
+            name: 'bash',
+            input: { command: `rm -rf ${target}` },
+          },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        [
+          { type: 'text_delta', delta: '完成。' },
+          { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+          { type: 'finish', reason: 'stop' },
+        ],
+      ]);
+      const { envelopes } = await runHeadless({
+        provider: stub,
+        prompt: '删掉',
+        tools: defaultWriteTools(),
+        autoApprove: true,
+        write: () => {},
+        writeError: () => {},
+      });
+
+      const request = envelopes.find((e) => e.type === 'approval_request');
+      expect(request).toBeDefined();
+      if (request?.type === 'approval_request') {
+        // 危险命令的可选项不含「始终允许此前缀」
+        expect(request.data.options.some((o) => o.id === 'allow_always')).toBe(
+          false,
+        );
+        expect(request.data.description).toContain('rm -rf');
+      }
+      // autoApprove 策略逐次裁决放行，工具实际执行（rm 一个不存在的路径，退出码 0）
+      const toolResult = envelopes.find(
+        (e) => e.type === 'tool_result' && e.data.id === 'c1',
+      );
+      expect(toolResult?.type).toBe('tool_result');
+      if (toolResult?.type === 'tool_result') {
+        expect(toolResult.data.ok).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('approve 回调注入：按回调裁决（source user），优先于 autoApprove', async () => {
+    const seen: string[] = [];
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'c1',
+          name: 'bash',
+          input: { command: 'echo hi' },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '完成。' },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const { envelopes } = await runHeadless({
+      provider: stub,
+      prompt: '跑一下',
+      tools: defaultWriteTools(),
+      autoApprove: false,
+      approve: (request) => {
+        seen.push(request.toolName);
+        return Promise.resolve('allow_once' as const);
+      },
+      write: () => {},
+      writeError: () => {},
+    });
+
+    expect(seen).toContain('bash');
+    const resolved = envelopes.find((e) => e.type === 'approval_resolved');
+    expect(resolved?.type).toBe('approval_resolved');
+    if (resolved?.type === 'approval_resolved') {
+      expect(resolved.data.decision).toBe('allow_once');
+      expect(resolved.data.source).toBe('user');
+    }
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'c1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(true);
     }
   });
 });

@@ -15,6 +15,12 @@ import type {
   StreamFinishReason,
   TokenUsage,
 } from '../provider/types';
+import type { ApprovalGate } from '../permission/approval';
+import type {
+  ApprovalDecision,
+  ApprovalOption,
+  RiskLevel,
+} from '../protocol/events';
 import { runToolPipeline } from '../tools/pipeline';
 import { redactValue } from '../tools/redact';
 import type { ToolRegistry } from '../tools/registry';
@@ -68,6 +74,12 @@ export interface RunAgentTurnInput {
   readonly readFiles?: ReadonlySet<string>;
   /** 工作目录：传给工具 ctx.cwd（相对路径以此解析）。缺省 process.cwd()。 */
   readonly cwd?: string;
+  /**
+   * 审批闸门（T-033）：提供时，管线 ③ Authorize 对 write / exec 工具调用它
+   * （发 approval_request 阻塞等裁决，deny → 策略性拒绝回喂）。read 不拦。
+   * 缺省 = 管线不拦截（0.2.0 及之前行为）。headless 按策略装配并注入。
+   */
+  readonly approval?: ApprovalGate;
   readonly options: TurnOptions;
 }
 
@@ -125,6 +137,19 @@ export type RuntimeEvent =
       readonly forModel?: string;
       readonly payload?: unknown;
     }
+  | {
+      readonly type: 'approval_request';
+      readonly id: string;
+      readonly description: string;
+      readonly risk: RiskLevel;
+      readonly options: readonly ApprovalOption[];
+    }
+  | {
+      readonly type: 'approval_resolved';
+      readonly id: string;
+      readonly decision: ApprovalDecision;
+      readonly source: 'user' | 'rule' | 'policy';
+    }
   | { readonly type: 'usage'; readonly usage: TokenUsage }
   | { readonly type: 'error'; readonly error: ProviderError }
   | {
@@ -173,6 +198,7 @@ export async function runAgentTurn(
     options,
     readFiles: initialReadFiles,
     cwd: inputCwd,
+    approval,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -308,6 +334,9 @@ export async function runAgentTurn(
       {
         registry: tools,
         abortSignal,
+        // ③ Authorize（T-033）：write / exec 工具经审批闸门（read 不拦）。
+        // 缺省不拦截（调用方未注入时保持 0.2.0 行为）。
+        authorize: approval,
         // 执行上下文：cwd 供相对路径解析；readFiles 供 Write/Edit 防盲写检查；
         // onFileRead 是已读集合的唯一生产者——read 工具成功读到一个文件后
         // 回调，loop 据此把该文件（realpath 已由 read 工具解析）加入会话集合，
@@ -330,6 +359,20 @@ export async function runAgentTurn(
               ...(forModel !== undefined ? { forModel } : {}),
               ...(payload !== undefined ? { payload } : {}),
             });
+          } else if (pipelineEvent.type === 'approval_request') {
+            // 审批请求事件：bridge 据此映射为协议 approval_request（弹窗等裁决）
+            const { id, description, risk, options } = pipelineEvent.data;
+            emit({
+              type: 'approval_request',
+              id,
+              description,
+              risk,
+              options,
+            });
+          } else if (pipelineEvent.type === 'approval_resolved') {
+            // 审批裁决收尾：bridge 据此映射为协议 approval_resolved（关闭弹窗）
+            const { id, decision, source } = pipelineEvent.data;
+            emit({ type: 'approval_resolved', id, decision, source });
           }
         },
       },

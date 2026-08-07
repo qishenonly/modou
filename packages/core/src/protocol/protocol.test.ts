@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
+import { ApprovalGate } from '../permission/approval';
 import type { ProviderCapabilities } from '../provider/capabilities';
 import { ProviderError } from '../provider/errors';
 import type { ModelProvider, StreamEvent } from '../provider/types';
@@ -218,6 +219,47 @@ describe('bridge 映射', () => {
       },
     ]);
   });
+
+  test('approval_request / approval_resolved → 协议事件（T-033）', () => {
+    expect(
+      mapRuntimeEvent({
+        type: 'approval_request',
+        id: 'req-1',
+        description: '执行命令：npm run test',
+        risk: 'exec',
+        options: [
+          { id: 'allow_once', label: '允许本次' },
+          { id: 'deny', label: '拒绝' },
+        ],
+      }),
+    ).toEqual([
+      {
+        type: 'approval_request',
+        data: {
+          id: 'req-1',
+          description: '执行命令：npm run test',
+          risk: 'exec',
+          options: [
+            { id: 'allow_once', label: '允许本次' },
+            { id: 'deny', label: '拒绝' },
+          ],
+        },
+      },
+    ]);
+    expect(
+      mapRuntimeEvent({
+        type: 'approval_resolved',
+        id: 'req-1',
+        decision: 'allow_once',
+        source: 'user',
+      }),
+    ).toEqual([
+      {
+        type: 'approval_resolved',
+        data: { id: 'req-1', decision: 'allow_once', source: 'user' },
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -372,6 +414,119 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
       'usage',
       'tool_result',
     ]);
+  });
+
+  test('write 工具经审批闸门放行：approval_request/resolved 信封配对，工具执行', async () => {
+    const registry = new ToolRegistry().register({
+      name: 'write-stub',
+      description: '写入（测试用）',
+      risk: 'write',
+      schema: z.object({ path: z.string() }),
+      execute: async () => ({ ok: true, forModel: '已写入（stub）' }),
+    });
+    const gate = new ApprovalGate({
+      decider: async () => ({ decision: 'allow_once', source: 'user' }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use' as const,
+          id: 'call-1',
+          name: 'write-stub',
+          input: { path: '/a.ts' },
+        },
+        { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish' as const, reason: 'tool_use' as const },
+      ],
+      textRound('好的'),
+    ]);
+    const { envelopes, result } = await runTurnWithProtocol({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      approval: gate,
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+    expect(result.turns).toBe(2);
+
+    const request = envelopes.find((e) => e.type === 'approval_request');
+    const resolved = envelopes.find((e) => e.type === 'approval_resolved');
+    expect(request).toBeDefined();
+    expect(resolved).toBeDefined();
+    if (
+      request?.type === 'approval_request' &&
+      resolved?.type === 'approval_resolved'
+    ) {
+      // 配对：同一请求 id
+      expect(resolved.data.id).toBe(request.data.id);
+      expect(request.data.risk).toBe('write');
+      expect(request.data.description).toContain('/a.ts');
+      expect(resolved.data.decision).toBe('allow_once');
+    }
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'call-1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(true);
+    }
+  });
+
+  test('write 工具被闸门拒绝：策略性拒绝回喂，工具不执行', async () => {
+    const registry = new ToolRegistry().register({
+      name: 'write-stub',
+      description: '写入（测试用）',
+      risk: 'write',
+      schema: z.object({ path: z.string() }),
+      execute: async () => ({ ok: true, forModel: '不应执行' }),
+    });
+    const gate = new ApprovalGate({
+      decider: async () => ({ decision: 'deny', source: 'user' }),
+    });
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use' as const,
+          id: 'call-1',
+          name: 'write-stub',
+          input: { path: '/a.ts' },
+        },
+        { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish' as const, reason: 'tool_use' as const },
+      ],
+      textRound('好的'),
+    ]);
+    const { envelopes } = await runTurnWithProtocol({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      approval: gate,
+      options: { maxTurns: 5 },
+    });
+
+    const toolResult = envelopes.find(
+      (e) => e.type === 'tool_result' && e.data.id === 'call-1',
+    );
+    expect(toolResult?.type).toBe('tool_result');
+    if (toolResult?.type === 'tool_result') {
+      expect(toolResult.data.ok).toBe(false);
+      expect(toolResult.data.forModel).toContain('被拒绝');
+    }
+    // 事件配对顺序：approval_request → approval_resolved → tool_result(ok:false)
+    const requestIdx = envelopes.findIndex(
+      (e) => e.type === 'approval_request',
+    );
+    const resolvedIdx = envelopes.findIndex(
+      (e) => e.type === 'approval_resolved',
+    );
+    const resultIdx = envelopes.findIndex(
+      (e) => e.type === 'tool_result' && e.data.id === 'call-1',
+    );
+    expect(requestIdx).toBeGreaterThan(-1);
+    expect(resolvedIdx).toBeGreaterThan(requestIdx);
+    expect(resultIdx).toBeGreaterThan(resolvedIdx);
   });
 
   test('tool_use 入参含密钥：协议 tool_call 信封里被脱敏', async () => {
