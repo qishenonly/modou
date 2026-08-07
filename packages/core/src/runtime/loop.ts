@@ -34,6 +34,7 @@ import {
   type LoopState,
   type LoopTransitionName,
 } from './state';
+import type { SessionLog } from '../session/log';
 
 export interface TurnOptions {
   /** 轮次上限：允许发起的最大模型请求数，超限即终止并标记 halted */
@@ -80,6 +81,12 @@ export interface RunAgentTurnInput {
    * 缺省 = 管线不拦截（0.2.0 及之前行为）。headless 按策略装配并注入。
    */
   readonly approval?: ApprovalGate;
+  /**
+   * 会话日志（T-060）：提供时，本轮把 user 消息、assistant 回复、tool 调用与
+   * 结果、usage、turn_start/end 追加进日志（旁路记录）。日志写失败由
+   * SessionLog 自行经 onError 报告，不改变返回值 / 事件流语义；缺省不记录。
+   */
+  readonly session?: SessionLog;
   readonly options: TurnOptions;
 }
 
@@ -168,6 +175,19 @@ function toProviderError(error: unknown): ProviderError {
 }
 
 /**
+ * 提取 AI SDK user 消息的文本：content 为 string 时原样取，为 parts 数组时
+ * 拼接全部 text part（附件等非文本 part 不入日志正文）。
+ */
+function extractUserText(message: ModelMessage): string {
+  if (typeof message.content === 'string') return message.content;
+  const parts: string[] = [];
+  for (const part of message.content) {
+    if (part.type === 'text') parts.push(part.text);
+  }
+  return parts.join('\n');
+}
+
+/**
  * Agent loop 内核（002 4.2 / 4.3）：`while(tool_use)` 裸循环。
  *
  * 主流程：
@@ -199,6 +219,7 @@ export async function runAgentTurn(
     readFiles: initialReadFiles,
     cwd: inputCwd,
     approval,
+    session,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -220,9 +241,25 @@ export async function runAgentTurn(
   let finishReason: StreamFinishReason | null = null;
   let error: ProviderError | undefined;
   let interruptedReason: unknown;
+  /** 最近一轮产出的文本（跨循环存活，供末轮收尾补记 assistant 条目）。 */
+  let roundText = '';
+  /** 最近一轮是否已随 feedBackToolRound 记入日志（纯文本轮需在收尾补记）。 */
+  let roundLogged = false;
 
   /** 追加写的消息线程。绝不修改调用方的 messages。 */
   const thread: ModelMessage[] = [...messages];
+
+  // —— 会话日志旁路：把本轮入参里的 user 消息追加进日志（唯一真相）。
+  // 0.6.0 会话每次新建，messages 通常为「本轮用户输入」单条（TUI 每轮传
+  // `[{ role: 'user', content: text }]`）；将来 resume 传入完整历史时由调用方
+  // 保证只传新增段，避免重复记录历史里的 user 消息。
+  if (session !== undefined) {
+    for (const message of messages) {
+      if (message.role === 'user') {
+        await session.appendUser(extractUserText(message));
+      }
+    }
+  }
 
   /** 状态机迁移守卫：非法迁移是不变量破坏，正常路径不会触发。 */
   const move = (transition: LoopTransitionName): LoopState => {
@@ -280,6 +317,23 @@ export async function runAgentTurn(
       });
     }
     thread.push({ role: 'assistant', content: assistantContent });
+    roundLogged = true;
+    if (session !== undefined) {
+      // assistant 条目：本轮文本 + 工具调用（入参脱敏后再入日志——不能让
+      // 密钥落到磁盘上的会话文件里，002 5.4「脱敏发生在入日志之前」）。
+      await session.appendAssistant({
+        text: roundText,
+        ...(toolUses.length > 0
+          ? {
+              calls: toolUses.map((call) => ({
+                id: call.id,
+                name: call.name,
+                input: redactValue(call.input),
+              })),
+            }
+          : {}),
+      });
+    }
 
     const results: ToolResultPart[] = [];
     for (const call of toolUses) {
@@ -377,6 +431,16 @@ export async function runAgentTurn(
         },
       },
     );
+    if (session !== undefined) {
+      // tool_result 条目：一次工具执行的结果（forModel 回喂模型 / payload 给人）。
+      await session.appendToolResult({
+        callId: call.id,
+        ok: outcome.ok,
+        forModel: outcome.forModel,
+        ...(outcome.summary !== undefined ? { summary: outcome.summary } : {}),
+        ...(outcome.payload !== undefined ? { payload: outcome.payload } : {}),
+      });
+    }
     return {
       type: 'tool-result',
       toolCallId: call.id,
@@ -387,7 +451,7 @@ export async function runAgentTurn(
     };
   };
 
-  const finalize = (): TurnResult => {
+  const finalize = async (): Promise<TurnResult> => {
     const result: TurnResult = {
       text,
       usage,
@@ -401,6 +465,23 @@ export async function runAgentTurn(
         : {}),
     };
     emit({ type: 'turn_end', turn, termination });
+    if (session !== undefined) {
+      // 末轮若未随 feedBackToolRound 记入（纯文本轮 / 中断 / 错误的部分回复），
+      // 收尾补记 assistant 文本——002 4.4：已产出的文本照常入日志，不残留。
+      if (roundLogged === false && roundText.length > 0) {
+        await session.appendAssistant({ text: roundText });
+      }
+      // 终止为 error 时补记 error 条目（可诊断的审计记录）。
+      if (error !== undefined) {
+        await session.appendError({
+          category: error.category,
+          kind: error.kind,
+          recoverable: error.retryable,
+          message: error.message,
+        });
+      }
+      await session.appendTurnEnd(turn, termination);
+    }
     return result;
   };
 
@@ -422,12 +503,14 @@ export async function runAgentTurn(
 
     turn += 1;
     emit({ type: 'turn_start', turn });
+    await session?.appendTurnStart(turn);
+    roundText = '';
+    roundLogged = false;
 
     // assemble --request_started--> streaming
     move('request_started');
 
     const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
-    let roundText = '';
     let roundError: ProviderError | undefined;
     let aborted = false;
 
@@ -478,6 +561,7 @@ export async function runAgentTurn(
           case 'usage':
             accumulateUsage(event.usage);
             emit({ type: 'usage', usage: event.usage });
+            await session?.appendUsage(event.usage);
             break;
           case 'finish':
             finishReason = event.reason;
