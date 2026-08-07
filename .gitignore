@@ -3,6 +3,8 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+*.tgz
+*.bun-build
 
 # 运行时与本地状态
 .env

@@ -9,6 +9,10 @@
     "target": "esnext",
     "declaration": true,
     "skipLibCheck": true,
-    "types": ["node", "bun"]
+    "types": ["node", "bun"],
+    "baseUrl": ".",
+    "paths": {
+      "react-devtools-core": ["./scripts/stubs/react-devtools-core.ts"]
+    }
   }
 }

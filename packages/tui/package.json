@@ -5,6 +5,12 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/*.snap"
+  ],
   "bin": {
     "modou": "./src/main.ts",
     "mo": "./src/main.ts"
