@@ -15,6 +15,7 @@ import type {
   StreamFinishReason,
   TokenUsage,
 } from '../provider/types';
+import { computeCacheHitRate } from '../provider/vercel';
 import type { ApprovalGate } from '../permission/approval';
 import type {
   ApprovalDecision,
@@ -403,12 +404,21 @@ export async function runAgentTurn(
       b: number | undefined,
     ): number | undefined =>
       a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+    const cacheReadTokens = plus(
+      usage.cacheReadTokens,
+      partial.cacheReadTokens,
+    );
+    const noCacheTokens = plus(usage.noCacheTokens, partial.noCacheTokens);
+    // 累计命中率（T-071）：以累计 cacheRead/noCache 计算（跨多轮工具循环的
+    // 汇总口径，而非单轮比例的简单平均）；供应商未上报缓存分项时为 undefined。
+    const cacheHitRate = computeCacheHitRate(cacheReadTokens, noCacheTokens);
     usage = {
       inputTokens: plus(usage.inputTokens, partial.inputTokens),
       outputTokens: plus(usage.outputTokens, partial.outputTokens),
-      noCacheTokens: plus(usage.noCacheTokens, partial.noCacheTokens),
-      cacheReadTokens: plus(usage.cacheReadTokens, partial.cacheReadTokens),
+      noCacheTokens,
+      cacheReadTokens,
       cacheWriteTokens: plus(usage.cacheWriteTokens, partial.cacheWriteTokens),
+      ...(cacheHitRate === undefined ? {} : { cacheHitRate }),
     };
   };
 

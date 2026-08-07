@@ -18,6 +18,14 @@ export interface TokenUsage {
   readonly cacheReadTokens?: number;
   /** 写入缓存的输入 token 数 */
   readonly cacheWriteTokens?: number;
+  /**
+   * 本次请求的缓存命中率（0~1；T-071 命中率上报）。
+   *
+   * 定义 = cacheRead / (cacheRead + noCache)（002 3.2「usage：缓存命中」），
+   * 供应商上报了 cacheRead 与 noCache 两者时才可计算；缺任一字段时保持
+   * undefined。跨请求的累计命中率由 BudgetLedger.cacheHitRate() 提供。
+   */
+  readonly cacheHitRate?: number;
 }
 
 /**

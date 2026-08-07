@@ -17,6 +17,8 @@ export type { ProviderErrorKind } from './errors';
 
 export { VercelModelProvider } from './vercel';
 export type { CreateModel, VercelModelProviderOptions } from './vercel';
+export { applyCacheBreakpoints, computeCacheHitRate } from './vercel';
+export type { CacheBreakpointHints } from './vercel';
 
 export { createAnthropicProvider } from './anthropic';
 export type { AnthropicProviderConfig } from './anthropic';

@@ -210,6 +210,18 @@ export class BudgetLedger {
     };
   }
 
+  /**
+   * 累计缓存命中率（T-071 命中率上报）：cacheRead / (cacheRead + noCache)，
+   * 0~1。对供应商上报过缓存分项的请求按累计口径计算——压缩（T-070）改写摘要
+   * 块后，该块从 cacheRead 转为 cacheWrite / noCache，累计命中率随之下降，
+   * 反映「稳定前缀变化」；没有任何缓存分项上报时返回 undefined。
+   */
+  cacheHitRate(): number | undefined {
+    const total = this.cacheReadTokens + this.noCacheTokens;
+    if (total <= 0) return undefined;
+    return this.cacheReadTokens / total;
+  }
+
   /** 当前账本快照（跨会话重建 / 序列化 / 状态栏种子的载体）。 */
   snapshot(): BudgetLedgerState {
     return {

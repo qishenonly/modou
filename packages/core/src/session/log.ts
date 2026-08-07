@@ -70,13 +70,18 @@ export interface ToolResultEntryData {
   readonly payload?: unknown;
 }
 
-/** usage 条目负载：一次模型请求的 token 分项（与 provider TokenUsage 同形）。 */
+/**
+ * usage 条目负载：一次模型请求的 token 分项（与 provider TokenUsage 同形）。
+ * `cacheHitRate`（T-071）为单次请求命中率，供应商上报了缓存分项才存在；
+ * /resume 重建账本（BudgetLedger.rebuild）仍以 cacheRead/noCache 累计为准。
+ */
 export interface UsageEntryData {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly noCacheTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheWriteTokens?: number;
+  readonly cacheHitRate?: number;
 }
 
 /** turn_start 条目负载：轮次号。 */

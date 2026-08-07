@@ -121,13 +121,18 @@ export interface ApprovalResolvedData {
   readonly source: 'user' | 'rule' | 'policy';
 }
 
-/** usage：token 分项、缓存命中。0.1.0 只报 token，`totalCost` 留待费用核算。 */
+/**
+ * usage：token 分项、缓存命中。0.1.0 只报 token，`totalCost` 留待费用核算。
+ * `cacheHitRate`（T-071 命中率上报）= cacheRead / (cacheRead + noCache)，
+ * 供应商上报了两者才可计算；缺省 undefined。
+ */
 export interface UsageData {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly noCacheTokens?: number;
   readonly cacheReadTokens?: number;
   readonly cacheWriteTokens?: number;
+  readonly cacheHitRate?: number;
   readonly totalCost?: number;
 }
 

@@ -1,5 +1,11 @@
 import { streamText } from 'ai';
-import type { LanguageModel, LanguageModelUsage } from 'ai';
+import type {
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
+  SystemModelMessage,
+  ToolSet,
+} from 'ai';
 import type { ProviderCapabilities } from './capabilities';
 import { ProviderError, normalizeProviderError } from './errors';
 import type {
@@ -45,15 +51,178 @@ function mapFinishReason(reason: string): StreamFinishReason {
   return AI_SDK_REASON_TO_STREAM[reason] ?? 'other';
 }
 
-/** AI SDK 的 LanguageModelUsage → 统一 TokenUsage。 */
+/**
+ * 缓存命中率（T-071）：cacheRead / (cacheRead + noCache)，0~1。
+ *
+ * 供应商上报了 cacheRead 与 noCache 两者（都非 undefined）且总和 > 0 时才
+ * 可计算，否则返回 undefined（尽力而为，不因缺失字段破坏上报）。
+ */
+export function computeCacheHitRate(
+  cacheRead: number | undefined,
+  noCache: number | undefined,
+): number | undefined {
+  if (cacheRead === undefined || noCache === undefined) return undefined;
+  const total = cacheRead + noCache;
+  if (total <= 0) return undefined;
+  return cacheRead / total;
+}
+
+/** AI SDK 的 LanguageModelUsage → 统一 TokenUsage（含缓存命中率，T-071）。 */
 function toTokenUsage(usage: LanguageModelUsage): TokenUsage {
+  const cacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
+  const noCacheTokens = usage.inputTokenDetails?.noCacheTokens;
+  const cacheHitRate = computeCacheHitRate(cacheReadTokens, noCacheTokens);
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    noCacheTokens: usage.inputTokenDetails?.noCacheTokens,
-    cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens,
+    noCacheTokens,
+    cacheReadTokens,
     cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens,
+    ...(cacheHitRate === undefined ? {} : { cacheHitRate }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 缓存断点注入（design 002 §7.1 分段投影 + §8.1 能力描述；T-071）
+//
+// 002 7.1 把请求上下文切成稳定前缀（system + tools + instructions）、
+// 半稳定（压缩摘要块）与易变区（历史 / 工具输出 / 当前输入），缓存断点打在
+// 稳定前缀之后（断点 ①）与摘要块之后（断点 ②）。本层按供应商机制把断点
+// 落到请求里：
+//
+// - 断点 ①（稳定前缀）：Anthropic 以 `cache_control: {type:'ephemeral'}`
+//   标记一段前缀缓存。system + tools 在请求里排在 messages 之前，把断点打
+//   在最后一个工具定义上即缓存整个稳定前缀；无工具时打在 system 上。
+// - 断点 ②（半稳定摘要块）：压缩投影把摘要块作为一条 system 角色消息放进
+//   messages（context/compact.ts 的 buildSummaryBlock），把断点打在这条
+//   消息上。摘要变化只失效 ② 的缓存前缀，稳定前缀 ① 仍命中。
+//
+// 能力描述 `cacheBreakpoints=false` 的模型（如 OpenAI 兼容端点：自动缓存、
+// 不支持显式断点）不注入任何 providerOptions。注入形态与 AI SDK v7 对齐：
+// 在消息 / 工具 / system 上挂 `providerOptions.<sdkKey>.cacheControl`，
+// 供应商适配层据此产出各自的缓存标记。
+// ---------------------------------------------------------------------------
+
+/** Anthropic 的临时缓存断点值（`cache_control: {type:'ephemeral'}`）。 */
+const EPHEMERAL_CACHE: { readonly type: 'ephemeral' } = {
+  type: 'ephemeral',
+};
+
+/**
+ * provider 适配层 id → AI SDK 供应商的 providerOptions 键。
+ *
+ * 只有声明 `cacheBreakpoints: true` 的供应商才会命中注入（默认仅 anthropic）；
+ * openai-compat 映射到 `openai`，其 @ai-sdk/openai 不支持显式断点，设置后
+ * 会被适配层忽略（能力描述 `cacheBreakpoints` 缺省即 false，正常不注入）。
+ * 未登记 id 回落为 id 本身（尽力而为，避免未知供应商被漏掉）。
+ */
+const PROVIDER_OPTIONS_KEY: Readonly<Record<string, string>> = {
+  anthropic: 'anthropic',
+  'openai-compat': 'openai',
+};
+
+/** 取供应商 providerOptions 键（未登记时回落为 id 本身）。 */
+function providerOptionsKey(id: string): string {
+  return PROVIDER_OPTIONS_KEY[id] ?? id;
+}
+
+/** 在 system 上挂断点（无工具时的断点 ①）：system 转为 SystemModelMessage。 */
+function systemWithBreakpoint(
+  system: string,
+  key: string,
+): SystemModelMessage[] {
+  return [
+    {
+      role: 'system',
+      content: system,
+      providerOptions: { [key]: { cacheControl: EPHEMERAL_CACHE } },
+    },
+  ];
+}
+
+/** 在最后一个工具定义上挂断点 ①（覆盖 system + 全部工具定义）。 */
+function toolsWithBreakpoint(tools: ToolSet, key: string): ToolSet {
+  const names = Object.keys(tools);
+  if (names.length === 0) return tools;
+  const lastName = names[names.length - 1];
+  const last = tools[lastName];
+  if (last === undefined) return tools;
+  return {
+    ...tools,
+    [lastName]: {
+      ...last,
+      providerOptions: {
+        ...last.providerOptions,
+        [key]: { cacheControl: EPHEMERAL_CACHE },
+      },
+    },
+  };
+}
+
+/**
+ * 在 messages 中最后一条 system 角色消息上挂断点 ②（压缩摘要块）。
+ *
+ * 压缩投影（context/compact.ts）把摘要块作为 system 消息放在 messages 里
+ * （allowSystemInMessages 放行）；任何其他 system 消息同样按「半稳定区」处理。
+ * 没有 system 消息（未压缩 / 无摘要）时保持原数组不变。
+ */
+function messagesWithBreakpoint(
+  messages: readonly ModelMessage[],
+  key: string,
+): ModelMessage[] {
+  let lastSystemIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === 'system') lastSystemIndex = index;
+  }
+  if (lastSystemIndex < 0) return [...messages];
+  return messages.map((message, index) =>
+    index === lastSystemIndex
+      ? {
+          ...message,
+          providerOptions: {
+            ...message.providerOptions,
+            [key]: { cacheControl: EPHEMERAL_CACHE },
+          },
+        }
+      : message,
+  );
+}
+
+/** 缓存断点注入的产物（streamChat 组装 streamText 入参用）。 */
+export interface CacheBreakpointHints {
+  /** 挂断点 ① 后的 system（无工具时为 SystemModelMessage 数组）。 */
+  readonly system: string | SystemModelMessage[] | undefined;
+  /** 挂断点 ① 后的工具集（最后一个工具带 providerOptions）。 */
+  readonly tools: StreamChatInput['tools'];
+  /** 挂断点 ② 后的消息（最后一条 system 消息带 providerOptions）。 */
+  readonly messages: ModelMessage[];
+}
+
+/**
+ * 为一次请求装配缓存断点（T-071；仅在能力描述 cacheBreakpoints=true 时调用）。
+ *
+ * - 断点 ①：有工具 → 打在最后一个工具定义上（缓存 system + 全部工具）；
+ *   无工具 → 打在 system 上；
+ * - 断点 ②：messages 里最后一条 system 角色消息（压缩摘要块）。
+ *
+ * 纯函数：不修改入参，返回全新对象。
+ */
+export function applyCacheBreakpoints(
+  id: string,
+  input: StreamChatInput,
+): CacheBreakpointHints {
+  const key = providerOptionsKey(id);
+  const hasTools =
+    input.tools !== undefined && Object.keys(input.tools).length > 0;
+
+  // 断点 ① 落点：工具存在打在最后一个工具，否则打在 system（system 非空时）
+  const system =
+    !hasTools && input.system !== undefined && input.system.length > 0
+      ? systemWithBreakpoint(input.system, key)
+      : input.system;
+  const tools = hasTools ? toolsWithBreakpoint(input.tools!, key) : input.tools;
+  const messages = messagesWithBreakpoint(input.messages, key);
+  return { system, tools, messages };
 }
 
 /** 流中 abort 部分的 reason 字符串 → 归一错误（timeout 需要区分开）。 */
@@ -153,16 +322,27 @@ export class VercelModelProvider implements ModelProvider {
   }
 
   async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
+    // T-071 缓存断点：能力描述 cacheBreakpoints=true 时按 002 7.1 分段装配
+    // （断点 ① 稳定前缀 + 断点 ② 摘要块）；false 的模型不设（OpenAI 兼容端点
+    // 走自动缓存，无需显式断点）。注入对调用方透明——loop 只传
+    // system / messages / tools，不感知供应商机制（002 8.1 能力描述）。
+    const hints = this.capabilities.cacheBreakpoints
+      ? applyCacheBreakpoints(this.id, input)
+      : null;
+
     const result = streamText({
       model: this.createModel(this.modelId),
-      system: input.system,
-      messages: input.messages,
+      system: hints?.system ?? input.system,
+      messages: hints?.messages ?? input.messages,
       // T-070 /compact：压缩投影会把摘要块作为 system 角色消息放进 messages
       // 数组（早期轮次的占位，见 context/compact.ts）。AI SDK 默认不允许
       // system 消息出现在 messages 中，这里显式放行；供应商适配层负责把
       // system 消息转换为各自的 system prompt 语义（Anthropic / OpenAI 均支持）。
       allowSystemInMessages: true,
-      ...(input.tools === undefined ? {} : { tools: input.tools }),
+      // 工具定义随请求发给模型（注册表缺失时不传——模型没有工具可用）。
+      ...((hints?.tools ?? input.tools) === undefined
+        ? {}
+        : { tools: hints?.tools ?? input.tools }),
       abortSignal: input.abortSignal,
       maxRetries: input.maxRetries ?? 2,
       // 错误统一归一后由本层抛出、loop 负责展示；抑制 SDK 默认的 console.error 噪音
