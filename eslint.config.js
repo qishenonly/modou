@@ -7,7 +7,7 @@ export default tseslint.config(
     ignores: ['node_modules/**', '**/dist/**', 'bun.lock', 'eslint.config.js'],
   },
   {
-    files: ['packages/**/*.ts'],
+    files: ['packages/**/*.{ts,tsx}'],
     extends: [...tseslint.configs.recommended],
   },
   eslintConfigPrettier,

@@ -4,7 +4,10 @@
   "compilerOptions": {
     "composite": true,
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    // Ink（React for CLI）：TSX 走 React 18 自动运行时，Box/Text 是普通组件，
+    // 无需 Ink 的 JSX 命名空间增强，标准 react-jsx 即可。
+    "jsx": "react-jsx"
   },
   "include": ["src"]
 }
