@@ -10,7 +10,7 @@
     "declaration": true,
     "skipLibCheck": true,
     "types": ["node", "bun"],
-    "baseUrl": ".",
+    // paths 相对本 tsconfig 解析（TS 5+ 无需 baseUrl；baseUrl 已在 TS6 弃用）
     "paths": {
       "react-devtools-core": ["./scripts/stubs/react-devtools-core.ts"]
     }
