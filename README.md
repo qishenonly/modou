@@ -28,10 +28,11 @@ modou is named after the carpenter's ink line — _墨斗_, a marking tool attri
 - **Permissions you can tune — safe by default.** Three sandbox scopes (read-only / workspace-write / full-access) × three approval policies (untrusted / on-request / never), stacked allow/deny rules, and a hard directory boundary. Safety is the default; autonomy is opt-in.
 - **Sessions that never forget.** Persistent session logs, `/resume`, incremental context compaction (no context collapse), prompt caching, and per-section token accounting via `/context`.
 - **Knows your project.** Reads `AGENTS.md` (with `CLAUDE.md` compatibility), stacked global → project → subdirectory.
+- **Skills — how-to knowledge, loaded on demand.** Follows the [Agent Skills](https://agentskills.io) open standard: drop a `SKILL.md` directory into any of three layers and it just works. Only name + description live in context; the body is injected only when the model triggers it.
 
 ### Roadmap
 
-Planned (not yet in this build): MCP tools, SKILL.md skills, lifecycle hooks, custom slash commands, custom agents, and an OS-level sandbox (see [Security Model](#security-model--limitations)).
+Planned (not yet in this build): MCP tools, lifecycle hooks, custom agents, and an OS-level sandbox (see [Security Model](#security-model--limitations)).
 
 ## Requirements
 
@@ -164,6 +165,18 @@ The model's working rules come from instruction files, collected from the workin
 - `<project>/AGENTS.md` (or `CLAUDE.md` as a compatible fallback) — project root and each subdirectory
 
 They are concatenated in the order **global → project root → subdirectory**; rules closer to your working directory take effect later (and win). The total is capped at 32 KB — if the cap is hit, truncation is announced rather than silent.
+
+### Skills (`SKILL.md`)
+
+Skills are **how-to-do-a-kind-of-task** procedures, complementary to project instructions: `AGENTS.md` is always-applicable context, a skill is only relevant to a specific task (code review, writing tests, debugging…). modou follows the [Agent Skills](https://agentskills.io) open standard — drop an unmodified third-party skill directory (one containing `SKILL.md`) into a layer and it works.
+
+Skills are discovered from three layers (a later layer overrides an earlier one with the same name):
+
+1. Built-in `skills/` shipped with the package — lowest priority
+2. Global `~/.modou/skills/`
+3. Project `<project>/.modou/skills/` — highest priority
+
+**Progressive disclosure.** Only each skill's `name` + one-line `description` live in the system prompt (near-zero token cost); the body and accompanying files are injected only when the model decides a task hits a skill and calls the `skill` tool. The model makes the trigger call, not keyword matching.
 
 ## How It Works
 
