@@ -24,6 +24,7 @@ import type {
   ModelProvider,
   SessionRecord,
 } from '@modou/core';
+import type { CostTotals, DayCostTotals } from '@modou/core';
 
 // ---------------------------------------------------------------------------
 // 命令表（/help 的数据源；新命令先加在这里，再在 dispatchSlash 加一行）
@@ -103,6 +104,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     description:
       '以图片输入发起一轮：文件路径或 URL 作为多模态附件（不支持图片的模型会降级说明）',
   },
+  {
+    name: 'cost',
+    usage: '/cost',
+    description:
+      '成本统计：本会话与按天的 token / 费用（按当前模型定价，未知模型只报 token）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -141,6 +148,65 @@ export function customToCommandInfo(
 }
 
 // ---------------------------------------------------------------------------
+// /cost（T-134）：成本报告渲染
+// ---------------------------------------------------------------------------
+
+/** token 数 → 可读（K / M 后缀；小数一位）。 */
+export function formatCostTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return String(tokens);
+}
+
+/** 费用（USD）→ 可读（$ 前缀；未定价时返回 '$?'）。 */
+export function formatCostMoney(cost: number | undefined): string {
+  if (cost === undefined) return '$?';
+  // 小额显示 4 位小数，大额保留整数级精度
+  const text = cost > 0 && cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2);
+  return `$${text}`;
+}
+
+/** /cost 报告渲染（纯函数，可离线测试）。 */
+export function renderCostReport(options: {
+  readonly modelId: string;
+  readonly sessionId: string;
+  readonly session: CostTotals;
+  readonly byDay: readonly DayCostTotals[];
+}): string {
+  const lines = [`成本统计（模型 ${options.modelId}）：`];
+  const priceNote = options.session.priced
+    ? ''
+    : '（当前模型无定价——只报 token，费用按供应商账单为准）';
+  const session = options.session;
+  lines.push(
+    `  本会话 ${options.sessionId}：${session.requests} 次请求 · ` +
+      `in ${formatCostTokens(session.inputTokens)} / ` +
+      `out ${formatCostTokens(session.outputTokens)} tokens · ` +
+      `${formatCostMoney(session.totalCost)}${priceNote}`,
+  );
+  if (options.byDay.length > 0) {
+    lines.push('  按天：');
+    for (const day of options.byDay) {
+      lines.push(
+        `    ${day.day}：${day.requests} 次请求 · ` +
+          `in ${formatCostTokens(day.inputTokens)} / ` +
+          `out ${formatCostTokens(day.outputTokens)} tokens · ` +
+          `${formatCostMoney(day.totalCost)}`,
+      );
+    }
+    const totalCost = options.byDay.reduce<number | undefined>(
+      (sum, day) =>
+        day.totalCost === undefined ? sum : (sum ?? 0) + day.totalCost,
+      undefined,
+    );
+    lines.push(`  全部会话合计：${formatCostMoney(totalCost)}`);
+  } else {
+    lines.push('  按天：尚无用量记录');
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // 分发器
 // ---------------------------------------------------------------------------
 
@@ -159,6 +225,8 @@ export interface SlashHandlers {
   readonly init: () => void;
   /** /image（T-133）：以图片输入发起一轮（文件路径 / URL 作为多模态附件）。 */
   readonly image: (args?: string) => void;
+  /** /cost（T-134）：成本统计（本会话 + 按天；按当前模型定价）。 */
+  readonly cost: () => void;
   /**
    * 自定义命令处理器（T-114）：dispatchSlash 未命中内置命令时，在 customCommands
    * 表中查找并回调（runTui 负责展开占位 / 工具白名单 / 默认模型）。缺省不提供。
@@ -217,6 +285,9 @@ export function dispatchSlash(
       return true;
     case 'image':
       handlers.image(args);
+      return true;
+    case 'cost':
+      handlers.cost();
       return true;
     default: {
       // T-114 自定义斜杠命令：未命中内置 → 在命令表中查找，命中回调 handlers.custom

@@ -1,4 +1,4 @@
-export const version = '0.12.0';
+export const version = '0.13.0';
 
 export * from './provider';
 export * from './runtime';
@@ -15,3 +15,4 @@ export * from './plan';
 export * from './logging';
 export * from './init';
 export * from './multimodal';
+export * from './cost';

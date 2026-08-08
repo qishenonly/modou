@@ -83,9 +83,7 @@ export interface ImageInputResult {
  * 读取失败（文件不存在 / 不可读）返回 null——调用方以 notice 说明并跳过该图，
  * 不因单张图失败而中断整个消息构造（错误即数据，002 5.3）。
  */
-export async function toImageFileParts(
-  images: readonly string[],
-): Promise<{
+export async function toImageFileParts(images: readonly string[]): Promise<{
   parts: readonly ModelMessageUserFilePart[];
   failed: readonly string[];
 }> {

@@ -39,12 +39,8 @@ if (import.meta.main) {
   // 明确报错并提示改用程序化 API（runAgentTurnJson + readStdinPrompt），
   // 绝不假装能渲染、也不静默吞掉输入。退出码 2（用法错误类）。
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
-    console.error(
-      '[modou] 检测到非 TTY 环境：交互式 TUI 需要真实终端。',
-    );
-    console.error(
-      '  请改用程序化 API（脚本 / CI 友好）：',
-    );
+    console.error('[modou] 检测到非 TTY 环境：交互式 TUI 需要真实终端。');
+    console.error('  请改用程序化 API（脚本 / CI 友好）：');
     console.error(
       '    import { runAgentTurnJson, readStdinPrompt } from "@modou/core";',
     );

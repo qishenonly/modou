@@ -82,9 +82,7 @@ export interface PermissionLogEntry {
 
 /** 结构化日志的条目联合（判别联合：type 首字段）。 */
 export type StructuredLogEntry =
-  | RequestLogEntry
-  | ToolLogEntry
-  | PermissionLogEntry;
+  RequestLogEntry | ToolLogEntry | PermissionLogEntry;
 
 // ---------------------------------------------------------------------------
 // StructuredLogger：JSONL 追加写
@@ -266,7 +264,8 @@ export class EnvelopeLogAdapter {
           this.pendingOperations.get(envelope.data.id) ?? '未知操作';
         const risk = this.pendingRisks.get(envelope.data.id) ?? 'unknown';
         const turn = this.pendingTurns.get(envelope.data.id) ?? envelope.turn;
-        const agent = this.pendingAgents.get(envelope.data.id) ?? envelope.agent;
+        const agent =
+          this.pendingAgents.get(envelope.data.id) ?? envelope.agent;
         this.pendingOperations.delete(envelope.data.id);
         this.pendingRisks.delete(envelope.data.id);
         this.pendingTurns.delete(envelope.data.id);

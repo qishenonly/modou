@@ -16,10 +16,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Envelope } from '../protocol/events';
-import {
-  EnvelopeLogAdapter,
-  StructuredLogger,
-} from './structured';
+import { EnvelopeLogAdapter, StructuredLogger } from './structured';
 
 /** 构造一个测试信封（公共字段齐全，data 按需）。 */
 function envelope(
@@ -70,14 +67,40 @@ describe('StructuredLogger（T-131 JSONL 追加写）', () => {
   test('append 落盘为可解析的 JSONL，行序与调用顺序一致', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    await logger.append({ type: 'request', ts: 1, turn: 1, agent: 'main', provider: 'stub', model: 'm', inputTokens: 10, outputTokens: 5 });
-    await logger.append({ type: 'tool_call', ts: 2, turn: 1, agent: 'main', id: 'c1', tool: 'bash', ok: true, summary: 'done' });
+    await logger.append({
+      type: 'request',
+      ts: 1,
+      turn: 1,
+      agent: 'main',
+      provider: 'stub',
+      model: 'm',
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+    await logger.append({
+      type: 'tool_call',
+      ts: 2,
+      turn: 1,
+      agent: 'main',
+      id: 'c1',
+      tool: 'bash',
+      ok: true,
+      summary: 'done',
+    });
     await logger.flush();
 
     const entries = readEntries(join(dir, 'test.jsonl'));
     expect(entries).toHaveLength(2);
-    expect(entries[0]).toMatchObject({ type: 'request', model: 'm', inputTokens: 10 });
-    expect(entries[1]).toMatchObject({ type: 'tool_call', tool: 'bash', ok: true });
+    expect(entries[0]).toMatchObject({
+      type: 'request',
+      model: 'm',
+      inputTokens: 10,
+    });
+    expect(entries[1]).toMatchObject({
+      type: 'tool_call',
+      tool: 'bash',
+      ok: true,
+    });
     // 每条都带 ts（logger 注入）且可整体 JSON 化
     expect(entries.every((entry) => typeof entry.ts === 'number')).toBe(true);
     expect(() => JSON.stringify(entries)).not.toThrow();
@@ -95,7 +118,14 @@ describe('StructuredLogger（T-131 JSONL 追加写）', () => {
     // 先建同名目录：appendFile 写目录必失败
     const fs = await import('node:fs');
     fs.mkdirSync(join(dir, 'subdir'), { recursive: true });
-    await logger.append({ type: 'request', ts: 1, turn: 1, agent: 'main', provider: 'stub', model: 'm' });
+    await logger.append({
+      type: 'request',
+      ts: 1,
+      turn: 1,
+      agent: 'main',
+      provider: 'stub',
+      model: 'm',
+    });
     expect(errors.length).toBeGreaterThan(0);
     expect(JSON.stringify(errors[0])).toContain('EISDIR');
   });
@@ -103,9 +133,24 @@ describe('StructuredLogger（T-131 JSONL 追加写）', () => {
   test('close 后丢弃新条目', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    await logger.append({ type: 'request', ts: 1, turn: 1, agent: 'main', provider: 'stub', model: 'm' });
+    await logger.append({
+      type: 'request',
+      ts: 1,
+      turn: 1,
+      agent: 'main',
+      provider: 'stub',
+      model: 'm',
+    });
     await logger.close();
-    await logger.append({ type: 'tool_call', ts: 2, turn: 1, agent: 'main', id: 'x', tool: 'bash', ok: false });
+    await logger.append({
+      type: 'tool_call',
+      ts: 2,
+      turn: 1,
+      agent: 'main',
+      id: 'x',
+      tool: 'bash',
+      ok: false,
+    });
     await logger.flush();
     const entries = readEntries(join(dir, 'test.jsonl'));
     expect(entries).toHaveLength(1);
@@ -117,7 +162,10 @@ describe('EnvelopeLogAdapter（T-131 事件流 → 日志条目）', () => {
   test('usage → request（token 分项 + provider/model）', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    const adapter = new EnvelopeLogAdapter(logger, { provider: 'openai-compat', model: 'deepseek-v4-flash' });
+    const adapter = new EnvelopeLogAdapter(logger, {
+      provider: 'openai-compat',
+      model: 'deepseek-v4-flash',
+    });
 
     adapter.consume(
       envelope('usage', {
@@ -148,10 +196,17 @@ describe('EnvelopeLogAdapter（T-131 事件流 → 日志条目）', () => {
   test('tool_call + tool_result → tool_call（工具名跨事件关联）', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    const adapter = new EnvelopeLogAdapter(logger, { provider: 'stub', model: 'm' });
+    const adapter = new EnvelopeLogAdapter(logger, {
+      provider: 'stub',
+      model: 'm',
+    });
 
-    adapter.consume(envelope('tool_call', { id: 'c1', name: 'bash', input: { cmd: 'ls' } }));
-    adapter.consume(envelope('tool_result', { id: 'c1', ok: false, summary: '失败' }));
+    adapter.consume(
+      envelope('tool_call', { id: 'c1', name: 'bash', input: { cmd: 'ls' } }),
+    );
+    adapter.consume(
+      envelope('tool_result', { id: 'c1', ok: false, summary: '失败' }),
+    );
     await logger.flush();
 
     const entries = readEntries(join(dir, 'test.jsonl'));
@@ -170,7 +225,10 @@ describe('EnvelopeLogAdapter（T-131 事件流 → 日志条目）', () => {
   test('approval_request + approval_resolved → permission（裁决 + 依据）', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    const adapter = new EnvelopeLogAdapter(logger, { provider: 'stub', model: 'm' });
+    const adapter = new EnvelopeLogAdapter(logger, {
+      provider: 'stub',
+      model: 'm',
+    });
 
     adapter.consume(
       envelope(
@@ -204,7 +262,10 @@ describe('EnvelopeLogAdapter（T-131 事件流 → 日志条目）', () => {
   test('未匹配事件类型直接跳过（非错误）', async () => {
     const dir = tempDir();
     const logger = new StructuredLogger({ dir, filename: 'test.jsonl' });
-    const adapter = new EnvelopeLogAdapter(logger, { provider: 'stub', model: 'm' });
+    const adapter = new EnvelopeLogAdapter(logger, {
+      provider: 'stub',
+      model: 'm',
+    });
     adapter.consume(envelope('text_delta', { delta: '你好' }));
     adapter.consume(envelope('turn_end', { turn: 1, termination: 'end_turn' }));
     await logger.flush();

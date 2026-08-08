@@ -53,6 +53,7 @@ import {
   customToCommandInfo,
   dispatchSlash,
   lastModelSwitchTo,
+  renderCostReport,
   renderHelpText,
   type SlashHandlers,
 } from './slash';
@@ -239,7 +240,7 @@ function readAllSessionLines(homeDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('dispatchSlash（T-082 分发器）', () => {
-  test('十个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
+  test('十一个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
     const called: string[] = [];
     const handlers: SlashHandlers = {
       help: () => called.push('help'),
@@ -253,6 +254,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
       plan: (args) => called.push(`plan:${args ?? ''}`),
       init: () => called.push('init'),
       image: (args) => called.push(`image:${args ?? ''}`),
+      cost: () => called.push('cost'),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -293,6 +295,9 @@ describe('dispatchSlash（T-082 分发器）', () => {
     expect(dispatchSlash('image', 'shot.png', handlers, onUnimplemented)).toBe(
       true,
     );
+    expect(dispatchSlash('cost', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -309,13 +314,14 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'plan:重构',
       'init',
       'image:shot.png',
+      'cost',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image、/cost', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -328,6 +334,7 @@ describe('/help（T-082）', () => {
       'plan',
       'init',
       'image',
+      'cost',
     ]);
   });
 
@@ -338,6 +345,75 @@ describe('/help（T-082）', () => {
       expect(text).toContain(command.usage);
       expect(text).toContain(command.description);
     }
+  });
+});
+
+describe('renderCostReport（T-134 /cost 展示）', () => {
+  test('会话 + 按天合计，含费用；token 格式化 K/M', () => {
+    const text = renderCostReport({
+      modelId: 'gpt-4o',
+      sessionId: 'sess-1',
+      session: {
+        requests: 3,
+        inputTokens: 1_200_000,
+        outputTokens: 4_000,
+        noCacheTokens: 600_000,
+        cacheReadTokens: 600_000,
+        cacheWriteTokens: 0,
+        totalCost: 1.5,
+        priced: true,
+      },
+      byDay: [
+        {
+          day: '2026-08-08',
+          requests: 2,
+          inputTokens: 1_000_000,
+          outputTokens: 3_000,
+          noCacheTokens: 500_000,
+          cacheReadTokens: 500_000,
+          cacheWriteTokens: 0,
+          totalCost: 1.2,
+          priced: true,
+        },
+        {
+          day: '2026-08-09',
+          requests: 1,
+          inputTokens: 200_000,
+          outputTokens: 1_000,
+          noCacheTokens: 100_000,
+          cacheReadTokens: 100_000,
+          cacheWriteTokens: 0,
+          totalCost: 0.3,
+          priced: true,
+        },
+      ],
+    });
+    expect(text).toContain('成本统计（模型 gpt-4o）');
+    expect(text).toContain('sess-1');
+    expect(text).toContain('3 次请求');
+    expect(text).toContain('1.2M'); // input tokens 格式化
+    expect(text).toContain('4.0K'); // output tokens 格式化
+    expect(text).toContain('2026-08-08');
+    expect(text).toContain('全部会话合计：$1.50');
+  });
+
+  test('未知模型：费用标 ?、注明只报 token（不假装知道价格）', () => {
+    const text = renderCostReport({
+      modelId: 'unknown-model',
+      sessionId: 'sess-2',
+      session: {
+        requests: 1,
+        inputTokens: 10,
+        outputTokens: 5,
+        noCacheTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        priced: false,
+      },
+      byDay: [],
+    });
+    expect(text).toContain('无定价');
+    expect(text).toContain('$?');
   });
 });
 
@@ -638,6 +714,7 @@ describe('自定义斜杠命令分发（T-114）', () => {
       plan: () => called.push('plan'),
       init: () => called.push('init'),
       image: (args) => called.push(`image:${args ?? ''}`),
+      cost: () => called.push('cost'),
       custom: (command, args) =>
         called.push(`custom:${command.name}:${args ?? ''}`),
     };

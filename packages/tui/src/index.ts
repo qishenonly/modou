@@ -1,6 +1,8 @@
 import { createElement, type ReactElement } from 'react';
 import { render, type Instance } from 'ink';
 import {
+  aggregateByDay,
+  aggregateCost,
   attachImagesToUserMessage,
   buildContextState,
   buildSystemPrompt,
@@ -37,6 +39,7 @@ import {
   SnapshotStore,
   ToolRegistry,
   toOnFileWrite,
+  usageEntriesFromRecords,
   WriteConflictDetector,
 } from '@modou/core';
 import type {
@@ -52,9 +55,11 @@ import type {
   NoticeLevel,
   ResumeCandidate,
   RewindPreview,
+  SessionRecord,
   SnapshotPoint,
   StructuredPlan,
   SummaryState,
+  TimestampedUsage,
   TodoState,
 } from '@modou/core';
 import { App } from './app';
@@ -67,6 +72,7 @@ import {
   describeError,
   dispatchSlash,
   lastModelSwitchTo,
+  renderCostReport,
   renderHelpText,
   SUPPORTED_SLASH_LIST,
 } from './slash';
@@ -75,7 +81,7 @@ import { derivePermissionMode, type TokenTotals } from './status';
 import { createEventChannel } from './stream';
 import { assembleTuiStartup, type TuiOptions } from './startup';
 
-export const version = '0.12.0';
+export const version = '0.13.0';
 
 /** runTui 的产出。 */
 export interface TuiResult {
@@ -604,6 +610,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       plan: handleSlashPlan,
       init: handleSlashInit,
       image: handleSlashImage,
+      cost: () => {
+        void handleSlashCost();
+      },
       // T-114 自定义斜杠命令：.modou/commands/*.md 注册的命令
       custom: handleCustomCommand,
     };
@@ -672,6 +681,52 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     startTurn(`请查看并处理这张图片：${target}`, {
       attachments: [{ uri: target }],
     });
+  };
+
+  /**
+   * /cost（T-134）：成本统计。
+   * 数据源是会话日志的 usage 条目：本会话合计 + 本项目全部会话按天合计，
+   * 均按当前模型定价（未知模型只报 token、费用标 '?'——绝不假装知道价格）。
+   * 会话日志为空 / 读取失败时以 notice 说明，不抛。
+   */
+  const handleSlashCost = async (): Promise<void> => {
+    if (sessionLog === null) {
+      pushNotice(
+        'info',
+        '尚无会话（先发起一轮对话后再 /cost——用量记录来自会话日志）',
+      );
+      return;
+    }
+    try {
+      const project = projectHash(cwd);
+      const current = await sessionStore.read(project, sessionLog.sessionId);
+      const records: readonly SessionRecord[] = current?.records ?? [];
+      const sessionTotals = aggregateCost(
+        usageEntriesFromRecords(records),
+        provider.modelId,
+      );
+      // 按天：遍历本项目全部会话，收集全部 usage 条目
+      const allUsage: TimestampedUsage[] = [];
+      const summaries = await sessionStore.list(project);
+      for (const summary of summaries) {
+        const read = await sessionStore.read(project, summary.sessionId);
+        if (read !== null) {
+          allUsage.push(...usageEntriesFromRecords(read.records));
+        }
+      }
+      const byDay = aggregateByDay(allUsage, provider.modelId);
+      pushNotice(
+        'info',
+        renderCostReport({
+          modelId: provider.modelId,
+          sessionId: sessionLog.sessionId,
+          session: sessionTotals,
+          byDay,
+        }),
+      );
+    } catch (caught) {
+      pushNotice('warn', `成本统计失败：${describeError(caught)}`);
+    }
   };
 
   // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
