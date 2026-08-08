@@ -22,8 +22,9 @@
  *     PostToolUse      { decision: 'continue', reason? }
  *
  * 进程模型（ADR 0005 同款）：每次调用独立子进程（detached 进程组 + kill(-pid)
- * 终止整组，避免超时留下孤儿）；win32 用 taskkill /T /F。单流输出上限
- * （默认 64 KiB 字符）内内存有界。
+ * 终止整组，避免超时留下孤儿）；win32 用 taskkill /T /F。外部中断（abort
+ * 信号）同样终止整组，并按 failBehavior 降级（reason 说明「收到中断信号」）。
+ * 单流输出上限（默认 64 KiB 字符）内内存有界。
  */
 
 import { spawn } from 'node:child_process';
@@ -295,6 +296,7 @@ export async function runHookProcess(
       const stderrAcc = createAcc(HOOK_OUTPUT_CAP_CHARS);
       let settled = false;
       let timedOut = false;
+      let aborted = false;
       let spawnFailed:
         { readonly code?: string; readonly message: string } | undefined;
 
@@ -340,6 +342,7 @@ export async function runHookProcess(
 
       const onAbort = (): void => {
         if (settled) return;
+        aborted = true;
         terminateGroup();
       };
 
@@ -372,6 +375,22 @@ export async function runHookProcess(
         if (settled) return;
         const stderrSummary = summarizeStderr(stderrAcc);
 
+        // 外部中断（abort）：进程组已被终止，按 failBehavior 降级（reason 说明
+        // 是中断而非钩子自身故障——用户能看到「钩子被打断」而不是无声降级）。
+        if (aborted) {
+          settle({
+            result: degradedDecision(
+              point,
+              failBehavior,
+              '收到外部中断信号（abort），已终止进程组',
+            ),
+            degraded: true,
+            degradedReason: '收到外部中断信号（abort），已终止进程组',
+            exitCode,
+            error: stderrSummary,
+          });
+          return;
+        }
         // 超时 / spawn 失败 / 非零退出 → 降级
         if (timedOut) {
           settle({
@@ -505,6 +524,9 @@ export function processHook(
   options: HookProcessOptions,
 ): Hook {
   return async (context: HookContext): Promise<HookResult> => {
+    // 外部中断信号：运行期透传的 context.signal（turn 的 abortSignal，经
+    // HookBus.run 注入）优先，回落到注册时注入的 options.signal。
+    const signal = context.signal ?? options.signal;
     const invocation = await runHookProcess(
       context.point,
       projectInput(context.point, context),
@@ -512,7 +534,7 @@ export function processHook(
       {
         hookId: options.hookId,
         ...(options.log !== undefined ? { log: options.log } : {}),
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        ...(signal !== undefined ? { signal } : {}),
         cwd: options.cwd ?? context.cwd,
         ...(context.sessionId !== undefined
           ? { sessionId: context.sessionId }

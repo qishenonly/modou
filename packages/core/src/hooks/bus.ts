@@ -42,6 +42,12 @@ export interface HookRegistrationOptions {
 export interface HookRunOptions {
   /** 并发度（缺省串行：注册顺序逐个 await）。 */
   readonly concurrency?: HookConcurrency;
+  /**
+   * 外部中断信号（透传给本批次每个钩子，进入 HookContext.signal）：进程钩子
+   * 收到 abort 时终止进程组并按 failBehavior 降级，内联钩子可监听做协作式取消。
+   * 缺省不注入（0.13.0 及之前行为）。
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** 自增注册 ID 计数器（保证同一总线内 ID 唯一且有序）。 */
@@ -121,6 +127,8 @@ export class HookBus {
    * - 匹配：PreToolUse / PostToolUse 按 context.toolName 与注册匹配器比对，
    *   不命中跳过；其余点全部执行；
    * - 并发度：run 选项优先，否则总线构造时的缺省；
+   * - 中断：run 选项的 `signal` 透传给本批次每个钩子（HookContext.signal）——
+   *   进程钩子 abort 时终止进程组并按 failBehavior 降级；
    * - 崩溃兜底：钩子抛异常被捕获记入 `outcome.error`，批次继续（内联钩子的
    *   降级裁决由聚合函数 run.ts 按保守策略做；进程钩子已在执行器层降级）。
    */
@@ -143,7 +151,12 @@ export class HookBus {
       registration: HookRegistration,
     ): Promise<HookOutcome> => {
       try {
-        const result = await registration.hook({ ...context, point });
+        const result = await registration.hook({
+          ...context,
+          point,
+          // 外部中断信号注入（options.signal → HookContext.signal）
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        });
         return { registration, result };
       } catch (error) {
         return { registration, error };

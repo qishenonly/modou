@@ -169,6 +169,27 @@ describe('runPreToolUse：deny 阻止与理由回喂', () => {
       '钩子未说明理由（deny 无 reason，按拦截处理）',
     ]);
   });
+
+  test('runPreToolUse 的 signal 透传给钩子（ctx.signal 可读，进程钩子据此 abort）', async () => {
+    const bus = new HookBus();
+    let seen: AbortSignal | undefined;
+    bus.register(
+      'PreToolUse',
+      async (ctx) => {
+        seen = ctx.signal;
+        return { decision: 'allow' };
+      },
+      { id: 'sig', matcher: { tools: ['echo'] } },
+    );
+    const controller = new AbortController();
+    const aggregate = await runPreToolUse(bus, {
+      toolName: 'echo',
+      toolInput: { text: 'hi' },
+      signal: controller.signal,
+    });
+    expect(aggregate.decision).toBe('allow');
+    expect(seen).toBe(controller.signal); // turn 的 abortSignal 一路透传进 HookContext
+  });
 });
 
 // ---------------------------------------------------------------------------

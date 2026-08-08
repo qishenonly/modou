@@ -36,6 +36,13 @@ export interface HookContext {
   readonly sessionId?: string;
   /** 工作目录（相对路径以此解析；缺省由执行器回落 process.cwd()）。 */
   readonly cwd?: string;
+  /**
+   * 外部中断信号（内部字段，不进 JSON 契约）：由 HookBus.run 的
+   * `options.signal` 注入（调用方 turn 的 abortSignal 透传）。进程钩子
+   * （processHook）收到 abort 时终止进程组并按 failBehavior 降级；内联钩子
+   * 可自行监听做协作式取消。
+   */
+  readonly signal?: AbortSignal;
   // —— 工具点（PreToolUse / PostToolUse）——
   /** 工具名（工具点的匹配依据）。 */
   readonly toolName?: string;

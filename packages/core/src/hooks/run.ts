@@ -46,19 +46,27 @@ export async function runPreToolUse(
   context: {
     readonly sessionId?: string;
     readonly cwd?: string;
+    /** 外部中断信号（透传进总线：进程钩子 abort 时终止进程组并按 failBehavior 降级）。 */
+    readonly signal?: AbortSignal;
     readonly toolName: string;
     readonly toolInput: unknown;
   },
 ): Promise<PreToolUseAggregate> {
-  const outcomes = await bus.run('PreToolUse', {
-    point: 'PreToolUse',
-    ...(context.sessionId !== undefined
-      ? { sessionId: context.sessionId }
-      : {}),
-    ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
-    toolName: context.toolName,
-    toolInput: context.toolInput,
-  });
+  const outcomes = await bus.run(
+    'PreToolUse',
+    {
+      point: 'PreToolUse',
+      ...(context.sessionId !== undefined
+        ? { sessionId: context.sessionId }
+        : {}),
+      ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
+      toolName: context.toolName,
+      toolInput: context.toolInput,
+    },
+    {
+      ...(context.signal !== undefined ? { signal: context.signal } : {}),
+    },
+  );
   return aggregatePreToolUse(outcomes);
 }
 
@@ -127,21 +135,29 @@ export async function runPostToolUse(
   context: {
     readonly sessionId?: string;
     readonly cwd?: string;
+    /** 外部中断信号（透传进总线：进程钩子 abort 时终止进程组并按 failBehavior 降级）。 */
+    readonly signal?: AbortSignal;
     readonly toolName: string;
     readonly toolInput: unknown;
     readonly toolResult: { readonly ok: boolean; readonly forModel?: string };
   },
 ): Promise<PostToolUseAggregate> {
-  const outcomes = await bus.run('PostToolUse', {
-    point: 'PostToolUse',
-    ...(context.sessionId !== undefined
-      ? { sessionId: context.sessionId }
-      : {}),
-    ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
-    toolName: context.toolName,
-    toolInput: context.toolInput,
-    toolResult: context.toolResult,
-  });
+  const outcomes = await bus.run(
+    'PostToolUse',
+    {
+      point: 'PostToolUse',
+      ...(context.sessionId !== undefined
+        ? { sessionId: context.sessionId }
+        : {}),
+      ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
+      toolName: context.toolName,
+      toolInput: context.toolInput,
+      toolResult: context.toolResult,
+    },
+    {
+      ...(context.signal !== undefined ? { signal: context.signal } : {}),
+    },
+  );
   const errors: unknown[] = [];
   for (const outcome of outcomes) {
     if (outcome.error !== undefined) errors.push(outcome.error);
@@ -166,16 +182,27 @@ export interface UserPromptSubmitAggregate {
 export async function runUserPromptSubmit(
   bus: HookBus,
   prompt: string,
-  context: { readonly sessionId?: string; readonly cwd?: string } = {},
+  context: {
+    readonly sessionId?: string;
+    readonly cwd?: string;
+    /** 外部中断信号（透传进总线：进程钩子 abort 时终止进程组并按 failBehavior 降级）。 */
+    readonly signal?: AbortSignal;
+  } = {},
 ): Promise<UserPromptSubmitAggregate> {
-  const outcomes = await bus.run('UserPromptSubmit', {
-    point: 'UserPromptSubmit',
-    ...(context.sessionId !== undefined
-      ? { sessionId: context.sessionId }
-      : {}),
-    ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
-    prompt,
-  });
+  const outcomes = await bus.run(
+    'UserPromptSubmit',
+    {
+      point: 'UserPromptSubmit',
+      ...(context.sessionId !== undefined
+        ? { sessionId: context.sessionId }
+        : {}),
+      ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
+      prompt,
+    },
+    {
+      ...(context.signal !== undefined ? { signal: context.signal } : {}),
+    },
+  );
   const injected: string[] = [];
   const errors: unknown[] = [];
   for (const outcome of outcomes) {
@@ -231,15 +258,26 @@ export interface SessionStartAggregate {
 /** 执行 SessionStart 钩子并聚合：任一 block → block（首个理由）。 */
 export async function runSessionStart(
   bus: HookBus,
-  context: { readonly sessionId?: string; readonly cwd?: string } = {},
+  context: {
+    readonly sessionId?: string;
+    readonly cwd?: string;
+    /** 外部中断信号（透传进总线：进程钩子 abort 时终止进程组并按 failBehavior 降级）。 */
+    readonly signal?: AbortSignal;
+  } = {},
 ): Promise<SessionStartAggregate> {
-  const outcomes = await bus.run('SessionStart', {
-    point: 'SessionStart',
-    ...(context.sessionId !== undefined
-      ? { sessionId: context.sessionId }
-      : {}),
-    ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
-  });
+  const outcomes = await bus.run(
+    'SessionStart',
+    {
+      point: 'SessionStart',
+      ...(context.sessionId !== undefined
+        ? { sessionId: context.sessionId }
+        : {}),
+      ...(context.cwd !== undefined ? { cwd: context.cwd } : {}),
+    },
+    {
+      ...(context.signal !== undefined ? { signal: context.signal } : {}),
+    },
+  );
   const errors: unknown[] = [];
   for (const outcome of outcomes) {
     if (outcome.error !== undefined) {

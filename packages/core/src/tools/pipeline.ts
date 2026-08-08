@@ -448,6 +448,11 @@ export async function runToolPipeline(
       ...(options.context?.sessionId !== undefined
         ? { sessionId: options.context.sessionId }
         : {}),
+      // 外部中断信号透传：turn 的 abortSignal → 钩子进程（abort 时终止进程组
+      // 并按 failBehavior 降级，见 executor.ts）
+      ...(options.abortSignal !== undefined
+        ? { signal: options.abortSignal }
+        : {}),
       toolName: tool.name,
       toolInput: parsed.data,
     });
@@ -493,6 +498,10 @@ export async function runToolPipeline(
         : {}),
       ...(options.context?.sessionId !== undefined
         ? { sessionId: options.context.sessionId }
+        : {}),
+      // 外部中断信号透传：turn 的 abortSignal → 钩子进程（同 ④ PreToolUse）
+      ...(options.abortSignal !== undefined
+        ? { signal: options.abortSignal }
         : {}),
       toolName: tool.name,
       toolInput: args,

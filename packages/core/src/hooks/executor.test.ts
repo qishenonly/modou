@@ -79,7 +79,10 @@ function specFor(
 /** 运行一次钩子进程的便捷封装（省去手写 input）。 */
 function runPreToolUse(
   script: string,
-  options: { spec?: Partial<HookProcessSpec> } = {},
+  options: {
+    spec?: Partial<HookProcessSpec>;
+    signal?: AbortSignal;
+  } = {},
 ) {
   return runHookProcess(
     'PreToolUse',
@@ -90,7 +93,10 @@ function runPreToolUse(
       toolInput: { command: 'ls' },
     },
     specFor(script, options.spec),
-    { hookId: 'test-hook' },
+    {
+      hookId: 'test-hook',
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    },
   );
 }
 
@@ -184,6 +190,79 @@ describe('执行器：超时', () => {
     expect(invocation.degraded).toBe(true);
     expect(invocation.result.decision).toBe('allow');
     expect(invocation.result.reason).toContain('fail-open');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 外部中断（abort 信号）
+// ---------------------------------------------------------------------------
+
+describe('执行器：外部中断（abort）', () => {
+  test('abort 触发时终止进程组并按 failBehavior 降级（reason 说明中断）', async () => {
+    const dir = makeTempDir('abort');
+    const script = writeHookScript(
+      dir,
+      'sleep-forever.mjs',
+      '  setTimeout(() => {}, 100_000);',
+    );
+    const controller = new AbortController();
+    const pending = runPreToolUse(script, {
+      spec: { failBehavior: 'fail-open' },
+      signal: controller.signal,
+    });
+    // 等一小会确保钩子进程已 spawn（再 abort——终止整组）
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    controller.abort();
+    const invocation = await pending;
+    expect(invocation.degraded).toBe(true);
+    expect(invocation.result.decision).toBe('allow'); // fail-open 降级放行
+    expect(invocation.result.reason).toContain('abort');
+    expect(invocation.result.reason).toContain('fail-open');
+  });
+
+  test('abort + PreToolUse 缺省 fail-closed → deny 拦截', async () => {
+    const dir = makeTempDir('abort-closed');
+    const script = writeHookScript(
+      dir,
+      'sleep-forever.mjs',
+      '  setTimeout(() => {}, 100_000);',
+    );
+    const controller = new AbortController();
+    const pending = runPreToolUse(script, { signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    controller.abort();
+    const invocation = await pending;
+    expect(invocation.degraded).toBe(true);
+    expect(invocation.result.decision).toBe('deny');
+    expect(invocation.result.reason).toContain('abort');
+  });
+
+  test('abort 信号经 HookBus.run 注入 → processHook 透传 → 降级', async () => {
+    const dir = makeTempDir('bus-abort');
+    const script = writeHookScript(
+      dir,
+      'sleep-forever.mjs',
+      '  setTimeout(() => {}, 100_000);',
+    );
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      processHook(specFor(script), { hookId: 'abortable' }),
+      { id: 'abortable' },
+    );
+    const controller = new AbortController();
+    const pending = bus.run(
+      'PreToolUse',
+      { point: 'PreToolUse', toolName: 'bash', toolInput: { command: 'ls' } },
+      { signal: controller.signal },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    controller.abort();
+    const outcomes = await pending;
+    expect(outcomes).toHaveLength(1);
+    // PreToolUse 缺省 fail-closed → deny；reason 点名中断
+    expect(outcomes[0].result).toMatchObject({ decision: 'deny' });
+    expect(outcomes[0].result?.reason).toContain('abort');
   });
 });
 
