@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import {
   defaultBuiltinSkillsDir,
   discoverSkills,
+  findBuiltinSkillsDir,
   type DiscoveredSkill,
 } from './discover';
 
@@ -270,5 +271,67 @@ describe('discoverSkills（三级发现与同名覆盖）', () => {
     expect(defaultBuiltinSkillsDir().endsWith('/skills')).toBe(true);
     // 该目录应存在（仓库内置 skills/；至少在 dev 工作树下如此）
     expect(statSync(defaultBuiltinSkillsDir()).isDirectory()).toBe(true);
+  });
+
+  test('findBuiltinSkillsDir 在 npm 嵌套布局下上退多级找到内置技能（0.15.0 打包修复）', () => {
+    // 模拟安装后的嵌套布局：node_modules/modou/node_modules/@modou/core/src/skills/
+    // 是 discover.ts 所在位置，内置技能在 node_modules/modou/skills/（相距六级）。
+    const root = mkdtempSync(join(tmpdir(), 'modou-skill-nested-'));
+    try {
+      const modouDir = join(root, 'node_modules', 'modou');
+      const coreSkills = join(
+        modouDir,
+        'node_modules',
+        '@modou',
+        'core',
+        'src',
+        'skills',
+      );
+      mkdirSync(coreSkills, { recursive: true });
+      // 沿途的「假 skills」：core 的源码 skills 目录（无 SKILL.md 子目录，
+      // 不该被当作内置技能）——对应源码树里 packages/core/src/skills
+      writeFileSync(join(coreSkills, 'parse.ts'), '// 占位源码\n');
+      // 真实内置技能：node_modules/modou/skills/code-review/SKILL.md
+      makeSkill(
+        join(modouDir, 'skills'),
+        'code-review',
+        '---\nname: code-review\ndescription: 内置的代码审查技能\n---\n',
+        '# 代码审查\n\n逐文件审查。',
+      );
+      makeSkill(
+        join(modouDir, 'skills'),
+        'write-tests',
+        '---\nname: write-tests\ndescription: 内置的写测试技能\n---\n',
+        '# 写测试\n\n按三明治写。',
+      );
+
+      // 从嵌套布局的 discover.ts 所在目录出发，应退到 node_modules/modou/skills
+      const builtin = findBuiltinSkillsDir(coreSkills);
+      expect(builtin).toBe(join(modouDir, 'skills'));
+      expect(statSync(builtin).isDirectory()).toBe(true);
+
+      // 经 discoverSkills 缺省内置目录 = 上述查找结果：两层技能都可发现
+      const home = mkdtempSync(join(tmpdir(), 'modou-skill-nested-home-'));
+      const project = mkdtempSync(
+        join(tmpdir(), 'modou-skill-nested-project-'),
+      );
+      try {
+        const discovered = discoverSkills({
+          homeDir: home,
+          projectRoot: project,
+          builtinDir: builtin,
+        });
+        expect(discovered.map((s) => s.name).sort()).toEqual([
+          'code-review',
+          'write-tests',
+        ]);
+        expect(discovered.every((s) => s.level === 'builtin')).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(project, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

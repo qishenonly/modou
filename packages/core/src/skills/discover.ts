@@ -70,15 +70,71 @@ function isDirectory(path: string): boolean {
 }
 
 /**
- * 内置技能目录的缺省位置：本模块在 packages/core/src/skills/，上四级
- * （../../../../）即仓库根，仓库根的 skills/ 即内置技能。
+ * 判断一个目录是否真的承载内置技能：存在至少一个「含 SKILL.md 的子目录」。
  *
- * 说明：modou 以源码形态发布（根包 files 白名单含 skills/），此路径在安装后的
- * node_modules/modou/skills/ 下同样成立；编译单文件形态（bun build）需要把
- * skills/ 随产物分发——这是打包面的事，发现逻辑不感知。
+ * 为什么要「真的承载」：上退查找沿途可能路过既有的 `skills/` 目录（例如
+ * 本模块自身所在的 `src/skills/` 是源码目录，不是技能仓库），只有含
+ * SKILL.md 子目录的 `skills/` 才是发布形态的技能目录。
+ */
+function containsSkill(dir: string): boolean {
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      try {
+        statSync(join(dir, entry.name, 'SKILL.md'));
+        return true;
+      } catch {
+        // 该子目录无 SKILL.md（不是技能目录），继续看下一个
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * 从任意起始目录向上查找内置技能目录：第一个「子级含 skills/ 且该 skills/
+ * 承载技能」的祖先。
+ *
+ * 需要向上多退的原因——两种发布布局下本模块的深度不同：
+ * - 源码/工作区布局：`packages/core/src/skills/` → 上四级即仓库根，其 skills/
+ *   即内置技能；
+ * - npm 嵌套安装布局：根包 modou 以 bundleDependencies 内嵌 @modou/core，
+ *   实际路径是 `node_modules/modou/node_modules/@modou/core/src/skills/` →
+ *   需要上退 **六级** 才到 `node_modules/modou/`，其 skills/ 才是随包发布的
+ *   内置技能。固定退四级的旧实现会退到 `node_modules/` 下的 `skills/`（不存在），
+ *   内置技能安装后不可发现——本函数用「上退 + 存在性探测」同时覆盖两种布局。
+ *
+ * 上退有界（12 层）：防止在异常的文件系统布局下一直退到根目录；找不到时回落
+ * 源码布局的四级上退路径（可能不存在，discoverSkills 对不存在的目录静默跳过）。
+ *
+ * @param startDir 起始目录（缺省场景 = 本模块所在目录，即 import.meta.dir）。
+ */
+export function findBuiltinSkillsDir(startDir: string): string {
+  let dir = startDir;
+  for (let depth = 0; depth < 12; depth += 1) {
+    const candidate = join(dir, 'skills');
+    if (isDirectory(candidate) && containsSkill(candidate)) return candidate;
+    const parent = join(dir, '..');
+    if (parent === dir) break; // 已到文件系统根
+    dir = parent;
+  }
+  // 兜底：源码布局的四级上退（dev 工作树）。路径不存在时 discoverSkills 跳过。
+  return join(startDir, '..', '..', '..', '..', 'skills');
+}
+
+/**
+ * 内置技能目录的缺省位置：从本模块所在目录向上查找第一个承载技能的 skills/。
+ *
+ * 说明：modou 以源码形态发布（根包 files 白名单含 skills/），安装后的内置技能
+ * 位于 `node_modules/modou/skills/`——与 `import.meta.dir`（内嵌 core 的
+ * `node_modules/modou/node_modules/@modou/core/src/skills/`）相距六级，固定上退
+ * 四级会失配，故用 findBuiltinSkillsDir 探测。编译单文件形态（bun build）需要
+ * 把 skills/ 随产物分发——这是打包面的事，发现逻辑不感知。
  */
 export function defaultBuiltinSkillsDir(): string {
-  return join(import.meta.dir, '..', '..', '..', '..', 'skills');
+  return findBuiltinSkillsDir(import.meta.dir);
 }
 
 /**
