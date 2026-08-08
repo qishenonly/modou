@@ -92,6 +92,14 @@ export class McpClient {
     return this.state === 'connected';
   }
 
+  /**
+   * tools/call 请求超时（毫秒）：注入工具用它声明工具级执行超时
+   * （Tool.timeoutMs，使管线不把远程调用切短在 60s 兜底内）。
+   */
+  get callTimeoutMs(): number {
+    return this.options.callTimeoutMs;
+  }
+
   /** 握手产物（connected 之后可用；未连接为 null）。 */
   get connectionInfo(): McpConnectionInfo | null {
     return this.info;

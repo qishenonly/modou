@@ -108,6 +108,10 @@ export function createMcpTool(
     risk: options.risk ?? 'network',
     // 模型看到的 JSON Schema = 服务器 inputSchema 原文（registry.toJsonSchema 直通）
     jsonSchema: normalizeInputSchema(descriptor.inputSchema),
+    // 工具级执行超时 = 服务器 callTimeoutMs（管线据此延长，不被 60s 兜底切短）；
+    // origin = 服务器名——审批描述在 command/path 分支带「[MCP <server>]」前缀
+    timeoutMs: client.callTimeoutMs,
+    origin: serverName,
     execute: (args, ctx) =>
       executeMcpTool(client, serverName, descriptor.name, args, ctx),
   };

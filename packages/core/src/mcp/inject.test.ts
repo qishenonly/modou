@@ -91,6 +91,16 @@ describe('MCP 工具注入（T-162）', () => {
     expect(tool.description).toContain('服务器未提供描述');
   });
 
+  test('createMcpTool：timeoutMs = 服务器 callTimeoutMs；origin = 服务器名（0.16.0 minor）', async () => {
+    const client = await connectClient(); // callTimeoutMs: 2000
+    const tool = createMcpTool('minimal', minimalDescriptors[0], client);
+    // 工具级执行超时随服务器配置（管线不把它切短在 60s 兜底内）
+    expect(tool.timeoutMs).toBe(2000);
+    // 审批描述来源前缀
+    expect(tool.origin).toBe('minimal');
+    await client.close();
+  });
+
   test('registerMcpTools：批量注册成功；命名冲突抛错（防静默覆盖）', async () => {
     const client = await connectClient();
     const registry = new ToolRegistry();

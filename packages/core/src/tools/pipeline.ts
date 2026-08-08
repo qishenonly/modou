@@ -184,25 +184,29 @@ function hookRewriteValidationOutcome(
  * - args 原样透传：decidePermission（T-050/T-051）据 args.command 判危险、据
  *   args.path 做目录边界 realpath 归一（跟随符号链接 / 解析 `..` / 展开 `~`）；
  * - 描述先过 redactSecrets：命令里可能夹带密钥（`echo sk-…`），不能原样
- *   进 approval_request 事件流 / 会话日志（002 5.4 密钥脱敏）。
+ *   进 approval_request 事件流 / 会话日志（002 5.4 密钥脱敏）；
+ * - 来源前缀（0.16.0 minor）：MCP 注入工具声明 origin（服务器名）时，command /
+ *   path 分支描述加「[MCP <origin>] 」前缀——让「这是远程 MCP server 的命令 /
+ *   路径操作」在审批弹窗一目了然，与本地 bash / 文件操作可区分。
  */
 function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
   let command: string | undefined;
   let prefix: string | undefined;
   let description: string;
+  const originPrefix = tool.origin !== undefined ? `[MCP ${tool.origin}] ` : '';
 
   if (typeof args === 'object' && args !== null) {
     const record = args as Record<string, unknown>;
     if (typeof record.command === 'string') {
       command = record.command;
       prefix = record.command;
-      description = `执行命令：${redactSecrets(record.command)}`;
+      description = `${originPrefix}执行命令：${redactSecrets(record.command)}`;
     } else if (typeof record.path === 'string') {
       prefix = record.path;
       description =
         tool.risk === 'read'
-          ? `读取文件：${redactSecrets(record.path)}`
-          : `写入/编辑文件：${redactSecrets(record.path)}`;
+          ? `${originPrefix}读取文件：${redactSecrets(record.path)}`
+          : `${originPrefix}写入/编辑文件：${redactSecrets(record.path)}`;
     } else {
       description = `调用工具 ${tool.name}（risk: ${tool.risk}）`;
     }
@@ -495,11 +499,12 @@ export async function runToolPipeline(
     }
   }
 
-  // ⑤ Execute：带超时 + 组合 AbortSignal
+  // ⑤ Execute：带超时 + 组合 AbortSignal。工具级 timeoutMs（MCP 注入工具 =
+  // 服务器 callTimeoutMs）优先，缺省回落管线 timeoutMs（60s 兜底）。
   const rawOutcome = await executeWithTimeout(
     tool,
     args,
-    timeoutMs,
+    tool.timeoutMs ?? timeoutMs,
     options.abortSignal,
     options.context ?? {},
   );

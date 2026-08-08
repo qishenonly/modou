@@ -594,6 +594,34 @@ describe('MCP 配置（T-163 mcp 键）', () => {
     }
   });
 
+  test('command / url 互斥：同时声明报错（0.16.0 minor）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(home, '.modou', {
+        mcp: {
+          servers: {
+            ambiguous: {
+              command: '/bin/server',
+              url: 'https://example.com/mcp',
+            },
+          },
+        },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.field).toContain('mcp.servers.ambiguous');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
   test('mcp 服务器未知字段报错（拼写错误可见，不静默）', () => {
     const home = makeTempDir('home');
     const project = makeTempDir('proj');

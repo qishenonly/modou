@@ -280,6 +280,66 @@ describe('runToolPipeline × PermissionConfig（T-050 接入）', () => {
     }
   });
 
+  test('MCP 工具审批描述带 server 身份前缀（origin，0.16.0 minor）', async () => {
+    const mcpFs: Tool = {
+      name: 'mcp_filesystem_write_file',
+      description: '写文件（MCP filesystem）',
+      risk: 'network',
+      origin: 'filesystem',
+      schema: z.object({ path: z.string().min(1) }),
+      execute: async () => ({ ok: true, forModel: 'ok' }),
+    };
+    const mcpExec: Tool = {
+      name: 'mcp_github_exec',
+      description: '执行（MCP github）',
+      risk: 'network',
+      origin: 'github',
+      schema: z.object({ command: z.string().min(1) }),
+      execute: async () => ({ ok: true, forModel: 'ok' }),
+    };
+    const registry = new ToolRegistry().register(mcpFs).register(mcpExec);
+    let calls = 0;
+    const gate = new ApprovalGate({
+      decider: async () => {
+        calls += 1;
+        return { decision: 'allow_once', source: 'user' };
+      },
+      permission: defaultPermissionConfig('/repo'), // workspace-write + on-request
+    });
+    const { events, emit } = collectEvents();
+    await runToolPipeline(
+      {
+        id: 'c-fs',
+        name: 'mcp_filesystem_write_file',
+        input: { path: '/repo/a.ts' },
+      },
+      { registry, authorize: gate, emit },
+    );
+    await runToolPipeline(
+      {
+        id: 'c-ex',
+        name: 'mcp_github_exec',
+        input: { command: 'create issue' },
+      },
+      { registry, authorize: gate, emit },
+    );
+    expect(calls).toBe(2);
+    const requests = approvalEvents(events).filter(
+      (e) => e.type === 'approval_request',
+    );
+    expect(requests).toHaveLength(2);
+    if (requests[0].type === 'approval_request') {
+      expect(requests[0].data.description).toContain(
+        '[MCP filesystem] 写入/编辑文件：/repo/a.ts',
+      );
+    }
+    if (requests[1].type === 'approval_request') {
+      expect(requests[1].data.description).toContain(
+        '[MCP github] 执行命令：create issue',
+      );
+    }
+  });
+
   test('默认组合 workspace-write + on-request：read 直通、write 经审批', async () => {
     let calls = 0;
     const gate = new ApprovalGate({

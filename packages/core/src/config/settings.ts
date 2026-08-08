@@ -190,11 +190,14 @@ const ConfigMcpServerSchema = z
     callTimeoutMs: z.number().int().positive().optional(),
   })
   .strict()
+  // command / url 互斥（0.16.0 design-checker minor）：stdio / Streamable HTTP
+  // 两种传输形态由「有 command」还是「有 url」唯一决定——二者不得同时出现，
+  // 也必须出现其一（transport 判定不再有歧义）。
   .refine(
-    (server) => server.command !== undefined || server.url !== undefined,
+    (server) => (server.command !== undefined) !== (server.url !== undefined),
     {
       message:
-        'MCP 服务器必须声明 command（stdio）或 url（Streamable HTTP），二者至少其一',
+        'MCP 服务器必须声明 command（stdio）或 url（Streamable HTTP），二者必居其一且不得同时出现',
       path: ['command'],
     },
   );

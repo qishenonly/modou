@@ -312,6 +312,33 @@ describe('runToolPipeline', () => {
     expect(outcome.forModel).toContain('超时');
   });
 
+  test('工具级 timeoutMs：优先于管线缺省（不被 60s 兜底切短 / 不被拉长）', async () => {
+    const registry = new ToolRegistry().register({
+      name: 'slow-remote',
+      description: '永不返回的工具（带工具级超时）',
+      risk: 'network',
+      schema: z.object({}),
+      // 0.16.0 minor：MCP 注入工具声明此字段（= callTimeoutMs）
+      timeoutMs: 60,
+      execute: async () => {
+        await new Promise<void>(() => {});
+        return { ok: true, forModel: 'done' };
+      },
+    });
+    const started = performance.now();
+    // 未传管线 timeoutMs（缺省 60s 兜底）——工具级 60ms 应胜出
+    const outcome = await runToolPipeline(
+      { id: 'call-timeout-1', name: 'slow-remote', input: {} },
+      { registry },
+    );
+    const elapsed = performance.now() - started;
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('超时');
+    expect(outcome.forModel).toContain('60ms');
+    expect(elapsed).toBeGreaterThan(40); // 确实在工具级时限裁决
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   test('外部 abort：ok=false 并写明中断', async () => {
     const registry = new ToolRegistry().register({
       name: 'wait',

@@ -224,6 +224,20 @@ export interface Tool<
    */
   readonly jsonSchema?: unknown;
   /**
+   * 工具级执行超时（毫秒，0.16.0 design-checker minor）：覆盖管线缺省的 60s
+   * 兜底。MCP 注入工具设为服务器的 callTimeoutMs（settings.json
+   * mcp.servers.<name>.callTimeoutMs，缺省 120s）——使远程工具的调用时限遵循
+   * 配置而非被管线默认切短；本地工具缺省不设（管线 60s 兜底不变）。
+   */
+  readonly timeoutMs?: number;
+  /**
+   * 来源标识（0.16.0 design-checker minor）：MCP 注入工具填服务器名，审批描述
+   * 在 command/path 分支加「[MCP <origin>]」前缀——谁的工具在请求什么一目了然
+   * （远程 server 的命令/路径操作与本地 bash/file 可区分）。缺省无（本地工具
+   * 不受影响）。
+   */
+  readonly origin?: string;
+  /**
    * 并发执行标记（T-123 子代理）：标为 true 的工具在同一轮被多次调用时由 loop
    * 并行执行（Promise.all 派发、结果按调用顺序聚合）——适用于互不共享状态、
    * 无文件写副作用的工具（如 task 子代理派发，ADR 0011 默认只读因此并行安全）。
