@@ -80,6 +80,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     usage: '/snapshots [--cleanup]',
     description: '查看快照占用与保留策略（--cleanup 触发一次过期清理）',
   },
+  {
+    name: 'plan',
+    usage: '/plan [请求]',
+    description:
+      '进入计划模式（只读研究 → 结构化计划 → 批准/修改/拒绝；批准后切执行模式）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -114,6 +120,7 @@ export interface SlashHandlers {
   readonly clear: () => void;
   readonly rewind: () => void;
   readonly snapshots: (args?: string) => void;
+  readonly plan: (args?: string) => void;
 }
 
 /**
@@ -155,6 +162,9 @@ export function dispatchSlash(
       return true;
     case 'snapshots':
       handlers.snapshots(args);
+      return true;
+    case 'plan':
+      handlers.plan(args);
       return true;
     default:
       onUnimplemented(name, args);

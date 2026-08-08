@@ -28,6 +28,7 @@ import {
 import { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolContext } from '../tools/types';
 import { ApprovalGate } from '../permission/approval';
+import { planReadonlyRegistry } from '../plan/policy';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
 import { BudgetLedger } from '../context/budget';
@@ -1463,5 +1464,84 @@ describe('TodoWrite 接线（T-110 loop → 清单状态）', () => {
       () => {},
     );
     expect(result.todoState).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan Mode 只读白名单强制（T-112）
+// ---------------------------------------------------------------------------
+
+describe('Plan Mode 只读白名单强制（T-112）', () => {
+  test('plan 注册表下写工具被拒：未知工具 ok:false，零文件改动，轮次照常推进', async () => {
+    const provider = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'w1',
+          name: 'write',
+          input: { path: 'x.ts', content: 'x' },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('好的，我不写文件。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: planReadonlyRegistry(defaultWriteTools()),
+        options: { maxTurns: 4 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 写工具调用被拒绝（注册表里没有 write → 未知工具），且零文件改动
+    const toolResult = events.filter((e) => e.type === 'tool_result');
+    expect(toolResult).toHaveLength(1);
+    if (toolResult[0]?.type === 'tool_result') {
+      expect(toolResult[0].ok).toBe(false);
+      expect(toolResult[0].forModel).toContain('未知工具');
+    }
+    // 模型收到拒绝后改出纯文本，轮次正常收尾
+    expect(result.termination).toBe('end_turn');
+    expect(result.text).toContain('我不写文件');
+  });
+
+  test('plan 注册表下只读工具正常放行：read 成功执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-plan-'));
+    try {
+      const file = join(dir, 'a.ts');
+      writeFileSync(file, 'export const a = 1;\n', 'utf8');
+      const provider = new StubProvider([
+        [
+          { type: 'tool_use', id: 'r1', name: 'read', input: { path: file } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('已读取。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      await runAgentTurn(
+        {
+          provider,
+          messages: [userMsg],
+          tools: planReadonlyRegistry(defaultWriteTools()),
+          cwd: dir,
+          options: { maxTurns: 4 },
+        },
+        (event) => {
+          events.push(event);
+        },
+      );
+      const toolResult = events.filter((e) => e.type === 'tool_result');
+      expect(toolResult).toHaveLength(1);
+      if (toolResult[0]?.type === 'tool_result') {
+        expect(toolResult[0].ok).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -10,8 +10,12 @@ import {
   createProviderFromConfig,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  isEmptyPlan,
   listSessionsForResume,
   loadInstructions,
+  parseStructuredPlan,
+  PLAN_MODE_INSTRUCTION,
+  planReadonlyRegistry,
   projectHash,
   projectMessages,
   rebuildReadFiles,
@@ -19,6 +23,7 @@ import {
   rebuildTodoState,
   resumeSession,
   runAgentTurnStreaming,
+  serializeStructuredPlan,
   SessionLog,
   SessionStore,
   SnapshotStore,
@@ -35,6 +40,7 @@ import type {
   ResumeCandidate,
   RewindPreview,
   SnapshotPoint,
+  StructuredPlan,
   SummaryState,
   TodoState,
 } from '@modou/core';
@@ -146,8 +152,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 看到自己哪份指令文件没生效。
   const instructions =
     options.system === undefined ? loadInstructions({ homeDir, cwd }) : null;
-  const system =
+  // 基准系统提示词（正常执行模式的稳定前缀）；T-112 Plan Mode 进入/退出时
+  // 在 system 与 baseSystem 之间切换（let 供切换）。
+  const baseSystem =
     options.system ?? buildSystemPrompt({ tools, extra: instructions?.text });
+  let system = baseSystem;
   const readFiles = new Set(options.readFiles ?? []);
   const channel = createEventChannel();
   const emitter = options.signalEmitter ?? process;
@@ -247,6 +256,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // TurnResult.todoState 返回，此处接续为下一轮的种子；/resume 时从会话日志
   // 重建并推合成 todo_update 信封回填 App（清单跨会话保留）。
   let todoState: TodoState | undefined = undefined;
+  // —— Plan Mode（T-112）：只读研究 → 结构化计划 → 批准/修改/拒绝 ——
+  // planMode：true = 工具集收窄到只读（read/grep/glob）+ 系统提示词追加计划指令；
+  // planProposal：计划轮结束后解析出的结构化计划（非空 = App 显示计划面板）。
+  let planMode = false;
+  let planProposal: StructuredPlan | null = null;
 
   // 合成 notice 信封（runTui 侧提示：/resume 结果等；App 是事件流纯消费者，
   // 直接经 channel 推信封即可展示——与 core 发出的 notice 同构）。
@@ -374,7 +388,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           provider,
           system,
           messages,
-          tools,
+          // T-112 Plan Mode：计划模式下工具集收窄到只读白名单（read/grep/glob），
+          // 写/执行工具从注册表拿掉——模型即使发出 write 调用也被管线拒绝，
+          // 拒绝 = 零文件改动由只读白名单保证。退出计划模式后恢复完整工具集。
+          tools: planMode ? planReadonlyRegistry(tools) : tools,
           readFiles,
           cwd,
           // 审批闸门（T-044/T-050）：注入的 gate 先按 permission 矩阵裁决
@@ -411,6 +428,23 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           // T-110：模型更新过的待办清单随 TurnResult 演进，接续为下一轮种子。
           if (result.todoState !== undefined) {
             todoState = result.todoState;
+          }
+          // T-112 Plan Mode：计划轮结束后解析模型输出为结构化计划，打开计划面板
+          // 等用户批准/修改/拒绝。解析失败 → 退出计划模式并发 notice（不静默）。
+          if (planMode && result.text.trim().length > 0) {
+            const parsed = parseStructuredPlan(result.text);
+            if (parsed !== null && !isEmptyPlan(parsed)) {
+              planProposal = parsed;
+            } else {
+              planProposal = null;
+              planMode = false;
+              system = baseSystem;
+              pushNotice(
+                'warn',
+                'Plan Mode 未能解析出结构化计划（期望五段：目标/涉及文件/分步改动/验证方式/风险点）。已退出计划模式，请重试。',
+              );
+            }
+            rerender();
           }
         })
         .catch(() => {
@@ -471,6 +505,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       snapshots: (args) => {
         void handleSlashSnapshots(args);
       },
+      plan: handleSlashPlan,
     };
     dispatchSlash(name, args, handlers, (unimplemented) => {
       pushNotice(
@@ -483,6 +518,95 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   /** /help（T-082）：列出全部命令与用法（BUILTIN_SLASH_COMMANDS 渲染）。 */
   const handleSlashHelp = (): void => {
     pushNotice('info', renderHelpText());
+  };
+
+  // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
+
+  /** 构造 Plan Mode 的系统提示词（只读工具集 + 计划指令；用户显式 system 时追加）。 */
+  const enterPlanModePrompt = (): string => {
+    if (options.system !== undefined) {
+      return `${options.system}\n\n${PLAN_MODE_INSTRUCTION}`;
+    }
+    return buildSystemPrompt({
+      tools: planReadonlyRegistry(tools),
+      extra: [instructions?.text, PLAN_MODE_INSTRUCTION]
+        .filter((part) => part !== undefined && part.length > 0)
+        .join('\n\n'),
+    });
+  };
+
+  /**
+   * /plan：进入 / 退出计划模式。
+   * - 已处于计划模式 → 退出（工具集恢复）；
+   * - `/plan`（无参）→ 进入计划模式，等用户描述任务；
+   * - `/plan <请求>` → 进入计划模式并立即以该请求启动一轮只读研究。
+   */
+  const handleSlashPlan = (args?: string): void => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /plan（等当前轮次结束后再试）');
+      return;
+    }
+    if (planMode) {
+      planMode = false;
+      system = baseSystem;
+      planProposal = null;
+      rerender();
+      pushNotice('info', '已退出计划模式（工具集恢复为完整集合）。');
+      return;
+    }
+    planMode = true;
+    planProposal = null;
+    system = enterPlanModePrompt();
+    rerender();
+    const request = (args ?? '').trim();
+    pushNotice(
+      'info',
+      request.length > 0
+        ? '已进入计划模式（只读）。正在研究现状并产出结构化计划…'
+        : '已进入计划模式（只读）。请描述要规划的任务；模型将只读研究并产出结构化计划（目标/涉及文件/分步改动/验证方式/风险点）。',
+    );
+    if (request.length > 0) startTurn(request);
+  };
+
+  /** 批准计划：切回执行模式，把计划回填为 user 消息开始实施。 */
+  const approvePlan = (): void => {
+    const proposal = planProposal;
+    planProposal = null;
+    planMode = false;
+    system = baseSystem;
+    rerender();
+    if (proposal === null) return;
+    // 计划回填上下文（002 4.1：批准后的计划是执行的输入，入日志可重建）
+    const text =
+      `计划已批准，开始执行。请严格按照以下计划实施，不要擅自扩大范围：\n\n` +
+      serializeStructuredPlan(proposal);
+    startTurn(text);
+  };
+
+  /** 拒绝计划：切回执行模式，零文件改动（Plan Mode 只读白名单保证）。 */
+  const rejectPlan = (): void => {
+    planProposal = null;
+    planMode = false;
+    system = baseSystem;
+    rerender();
+    pushNotice(
+      'info',
+      '计划已拒绝，未做任何改动（Plan Mode 只读，工作区零文件改动）。',
+    );
+  };
+
+  /** 修改计划：关闭面板、保留计划模式，回显计划 markdown 供用户编辑后重新提交。 */
+  const editPlan = (): void => {
+    const proposal = planProposal;
+    planProposal = null;
+    rerender();
+    if (proposal !== null) {
+      pushNotice('info', serializeStructuredPlan(proposal));
+      pushNotice(
+        'info',
+        '计划已回显为 markdown。请复制到编辑器修改后重新提交，或直接输入修改意见（仍在计划模式，只读研究）。',
+      );
+    }
   };
 
   /**
@@ -922,8 +1046,20 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         break;
       case 'slash':
         // T-082 斜杠命令框架：dispatchSlash 分发（/help /model /compact /
-        // /resume /context /clear；未实现发 notice）。输入框已支持 slash 发送（T-041）。
+        // /resume /context /clear /plan；未实现发 notice）。输入框已支持 slash 发送（T-041）。
         handleSlash(command.name, command.args);
+        break;
+      case 'plan_approve':
+        // T-112 Plan Mode：用户从计划面板批准 → 切回执行模式并按计划实施
+        approvePlan();
+        break;
+      case 'plan_reject':
+        // 拒绝 → 切回执行模式，零文件改动（只读白名单保证）
+        rejectPlan();
+        break;
+      case 'plan_modify':
+        // 修改 → 关闭面板、保留计划模式、回显计划文本供用户编辑
+        editPlan();
         break;
       default:
         // steer：后续任务接线
@@ -946,6 +1082,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       // （含写/执行工具 =「写/执行需审批」，只读工具集 =「只读」，见 status.tsx）
       modelName: provider.modelId,
       permissionMode: derivePermissionMode(tools),
+      // T-112 Plan Mode：计划模式指示 + 待评审计划（裁决经 Command 回传）
+      planMode,
+      planProposal,
       // /resume（T-061）：非空时 App 显示会话选择器并隐藏输入行
       resumeCandidates,
       onResumeSelect: (sessionId) => {
@@ -1065,6 +1204,8 @@ export { ModelPicker } from './model';
 export type { ModelPickerProps } from './model';
 export { SnapshotPicker } from './rewind';
 export type { SnapshotPickerProps } from './rewind';
+export { PlanPanel, formatPlanLines } from './planpanel';
+export type { PlanPanelProps } from './planpanel';
 export * from './slash';
 export type { CreateProvider } from './startup';
 export {

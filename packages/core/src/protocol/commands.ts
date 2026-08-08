@@ -39,4 +39,16 @@ export type Command =
       /** 斜杠命令名（`/model`、`/compact`、`/resume`…） */
       readonly name: string;
       readonly args?: string;
+    }
+  | {
+      readonly type: 'plan_approve';
+      /** 批准当前计划：切换回执行模式并按计划开始执行。 */
+    }
+  | {
+      readonly type: 'plan_reject';
+      /** 拒绝当前计划：切换回执行模式，零文件改动（只读白名单保证）。 */
+    }
+  | {
+      readonly type: 'plan_modify';
+      /** 修改当前计划：关闭计划面板，保留计划模式继续迭代（用户输入修改意见）。 */
     };

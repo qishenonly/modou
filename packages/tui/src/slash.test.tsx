@@ -213,6 +213,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
       clear: () => called.push('clear'),
       rewind: () => called.push('rewind'),
       snapshots: (args) => called.push(`snapshots:${args ?? ''}`),
+      plan: (args) => called.push(`plan:${args ?? ''}`),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -246,6 +247,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
     expect(
       dispatchSlash('snapshots', '--cleanup', handlers, onUnimplemented),
     ).toBe(true);
+    expect(dispatchSlash('plan', '重构', handlers, onUnimplemented)).toBe(true);
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -259,13 +261,14 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'clear',
       'rewind',
       'snapshots:--cleanup',
+      'plan:重构',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含 0.8.0 六个命令与 0.10.0 /rewind /snapshots', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令与 0.11.0 /plan', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -275,6 +278,7 @@ describe('/help（T-082）', () => {
       'clear',
       'rewind',
       'snapshots',
+      'plan',
     ]);
   });
 

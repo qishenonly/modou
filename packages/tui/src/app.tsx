@@ -8,6 +8,7 @@ import type {
   ResumeCandidate,
   RewindPreview,
   SnapshotPoint,
+  StructuredPlan,
   TodoItemData,
 } from '@modou/core';
 import { ApprovalModal } from './approval';
@@ -15,6 +16,7 @@ import { ContextPanel } from './context';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import { ModelPicker } from './model';
+import { PlanPanel } from './planpanel';
 import { ResumePicker } from './resume';
 import { SnapshotPicker } from './rewind';
 import { TodoList } from './todolist';
@@ -98,6 +100,17 @@ export interface AppProps {
   readonly onRewindConfirm?: () => void;
   /** /rewind：用户取消 / 返回（runTui 关选择器或退回列表态）。 */
   readonly onSnapshotCancel?: () => void;
+  /**
+   * 计划模式（T-112 Plan Mode）：true = 只读研究 → 结构化计划（runTui 注入）。
+   * 面板打开时输入行隐藏；状态栏显示「计划模式」段。
+   */
+  readonly planMode?: boolean;
+  /**
+   * 待评审的结构化计划（runTui 在计划轮结束后解析模型输出并注入；非空 = 显示
+   * 计划面板，阻塞输入提交，等待批准/修改/拒绝——裁决经 `plan_approve` /
+   * `plan_reject` / `plan_modify` Command 回传 runTui）。
+   */
+  readonly planProposal?: StructuredPlan | null;
 }
 
 /**
@@ -141,6 +154,8 @@ export function App(props: AppProps): ReactElement {
     onSnapshotSelect,
     onRewindConfirm,
     onSnapshotCancel,
+    planMode,
+    planProposal,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -217,6 +232,11 @@ export function App(props: AppProps): ReactElement {
   const snapshotOpen = (snapshotCandidates?.length ?? 0) > 0;
   const snapshotOpenRef = useRef(snapshotOpen);
   snapshotOpenRef.current = snapshotOpen;
+  // 计划面板（T-112 Plan Mode）：runTui 注入解析出的计划；非空即打开（模态）。
+  // 打开时输入行隐藏，全局 Esc 让给面板（拒绝），不打断任何轮次（计划轮已结束）。
+  const planOpen = planProposal !== undefined && planProposal !== null;
+  const planOpenRef = useRef(planOpen);
+  planOpenRef.current = planOpen;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -314,7 +334,8 @@ export function App(props: AppProps): ReactElement {
       approvalOpenRef.current ||
       resumeOpenRef.current ||
       modelOpenRef.current ||
-      snapshotOpenRef.current
+      snapshotOpenRef.current ||
+      planOpenRef.current
     ) {
       if (key.ctrl && _text === 'c') {
         onExit?.();
@@ -419,6 +440,7 @@ export function App(props: AppProps): ReactElement {
         totals={totals}
         running={running}
         turn={lastTurn}
+        planMode={planMode}
       />
 
       {/* 审批弹窗（T-044）：approval_request 打开，approval_resolved 关闭；
@@ -430,6 +452,17 @@ export function App(props: AppProps): ReactElement {
           onApprove={(requestId, decision) =>
             send({ type: 'approve', requestId, decision })
           }
+        />
+      )}
+
+      {/* 计划面板（T-112 Plan Mode）：runTui 注入解析出的计划；非空即显示（模态）。
+          打开期间隐藏输入行，a 批准 / e 修改 / r/Esc 拒绝（拒绝 = 零文件改动） */}
+      {planProposal !== undefined && planProposal !== null && (
+        <PlanPanel
+          plan={planProposal}
+          onApprove={() => send({ type: 'plan_approve' })}
+          onReject={() => send({ type: 'plan_reject' })}
+          onEdit={() => send({ type: 'plan_modify' })}
         />
       )}
 
@@ -479,6 +512,7 @@ export function App(props: AppProps): ReactElement {
         !resumeOpen &&
         !modelOpen &&
         !snapshotOpen &&
+        !planOpen &&
         contextState === undefined && (
           <Box>
             <Text color="cyan">&gt; </Text>

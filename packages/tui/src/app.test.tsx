@@ -450,3 +450,61 @@ describe('App /todo_update（T-111 待办清单）', () => {
     unmount();
   });
 });
+
+describe('App /plan（T-112 Plan Mode）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  const PLAN = {
+    goal: '把重复的字段挑选逻辑抽取为共享函数',
+    files: ['src/orders.ts'],
+    steps: ['读取现状', '新增 pickOrderFields', '改为复用'],
+    verification: ['bun test tests/regression.test.ts 保持通过'],
+    risks: ['保持对外行为不变'],
+  };
+
+  test('planProposal 非空：显示计划面板（五段结构），输入行隐藏', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} planProposal={PLAN} />,
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('计划提案');
+    expect(frame).toContain('## 目标');
+    expect(frame).toContain('把重复的字段挑选逻辑抽取为共享函数');
+    expect(frame).toContain('## 涉及文件');
+    expect(frame).toContain('- src/orders.ts');
+    expect(frame).toContain('## 分步改动');
+    expect(frame).toContain('- 读取现状');
+    expect(frame).toContain('a 批准');
+    unmount();
+  });
+
+  test('键盘 a：发 plan_approve Command；r：plan_reject；e：plan_modify', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    const send = (command: Command): void => {
+      calls.push(command);
+    };
+    const { stdin, unmount } = render(
+      <App stream={stream} send={send} planProposal={PLAN} />,
+    );
+    await flush();
+
+    stdin.write('a');
+    expect(calls).toEqual([{ type: 'plan_approve' }]);
+    unmount();
+  });
+
+  test('planMode 为 true：状态栏显示「计划模式」段', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} planMode />,
+    );
+    await flush();
+    expect(lastFrame() ?? '').toContain('计划模式');
+    unmount();
+  });
+});
