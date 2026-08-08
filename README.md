@@ -29,10 +29,11 @@ modou is named after the carpenter's ink line — _墨斗_, a marking tool attri
 - **Sessions that never forget.** Persistent session logs, `/resume`, incremental context compaction (no context collapse), prompt caching, and per-section token accounting via `/context`.
 - **Knows your project.** Reads `AGENTS.md` (with `CLAUDE.md` compatibility), stacked global → project → subdirectory.
 - **Skills — how-to knowledge, loaded on demand.** Follows the [Agent Skills](https://agentskills.io) open standard: drop a `SKILL.md` directory into any of three layers and it just works. Only name + description live in context; the body is injected only when the model triggers it.
+- **MCP — bring your own tools.** Model Context Protocol servers (stdio or Streamable HTTP) plug in as tools: they flow through the **same permission pipeline** as built-ins (approval required by default — `network` risk), with per-server `risk` / tool filtering / timeouts. See `/mcp` for connection status and `/context` for their token footprint.
 
 ### Roadmap
 
-Planned (not yet in this build): MCP tools, lifecycle hooks, custom agents, and an OS-level sandbox (see [Security Model](#security-model--limitations)).
+Planned (not yet in this build): lifecycle hooks, custom agents, and an OS-level sandbox (see [Security Model](#security-model--limitations)).
 
 ## Requirements
 
@@ -88,6 +89,7 @@ See [Configuration](#configuration) for `settings.json`, `MODOU_*` environment v
 | `/init`                  | Probe the repository and draft an `AGENTS.md` (preview, then write; never overwrites an existing one)            |
 | `/image <path \| URL>`   | Start a turn with an image attachment (multi-modal; unsupported models degrade with a notice)                    |
 | `/cost`                  | Cost report: session + per-day tokens / fees, priced by current model                                            |
+| `/mcp`                   | Inspect MCP server connection status (connected / reconnecting / failed, per-server)                             |
 
 ## Configuration
 
@@ -119,24 +121,38 @@ Files are schema-validated; unknown fields or wrong types produce a friendly err
       { "effect": "deny", "match": "git push", "tool": "bash" }
     ]
   },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+        "risk": "read"
+      },
+      "remote": {
+        "url": "https://example.com/mcp",
+        "headers": { "Authorization": "Bearer ..." }
+      }
+    }
+  },
   "maxTurns": 10,
   "keepTurns": 6,
   "homeDir": "/absolute/path/to/home"
 }
 ```
 
-| Field                | Meaning                                                         |
-| -------------------- | --------------------------------------------------------------- |
-| `provider`           | `anthropic` or `openai-compat` (default `openai-compat`)        |
-| `model`              | Model ID (falls back to environment variables)                  |
-| `baseURL`            | Endpoint prefix (required for `openai-compat`)                  |
-| `permission.sandbox` | `read-only` · `workspace-write` (default) · `full-access`       |
-| `permission.policy`  | `untrusted` · `on-request` (default) · `never`                  |
-| `permission.addDirs` | Extra directories the agent may write to (absolute paths)       |
-| `permission.rules`   | `allow` / `deny` prefix rules, optional `tool` filter           |
-| `maxTurns`           | Turn limit per task (default 10)                                |
-| `keepTurns`          | Recent turns kept verbatim after compaction (default 6)         |
-| `homeDir`            | modou data root (sessions / logs live under `<homeDir>/.modou`) |
+| Field                | Meaning                                                                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`           | `anthropic` or `openai-compat` (default `openai-compat`)                                                                                     |
+| `model`              | Model ID (falls back to environment variables)                                                                                               |
+| `baseURL`            | Endpoint prefix (required for `openai-compat`)                                                                                               |
+| `permission.sandbox` | `read-only` · `workspace-write` (default) · `full-access`                                                                                    |
+| `permission.policy`  | `untrusted` · `on-request` (default) · `never`                                                                                               |
+| `permission.addDirs` | Extra directories the agent may write to (absolute paths)                                                                                    |
+| `permission.rules`   | `allow` / `deny` prefix rules, optional `tool` filter                                                                                        |
+| `mcp.servers`        | MCP server table: `<name>.command` (stdio) xor `<name>.url` (Streamable HTTP); `risk`, `tools`, `connectTimeoutMs`, `callTimeoutMs` optional |
+| `maxTurns`           | Turn limit per task (default 10)                                                                                                             |
+| `keepTurns`          | Recent turns kept verbatim after compaction (default 6)                                                                                      |
+| `homeDir`            | modou data root (sessions / logs live under `<homeDir>/.modou`)                                                                              |
 
 ### Environment variables
 
@@ -195,6 +211,7 @@ All side effects flow through a single tool pipeline — the one choke point whe
 - **Approval policies:** untrusted · on-request · never
 - **Rules:** stacked allow/deny prefixes plus a built-in danger-command blacklist (e.g. `rm -rf`, force-push). Dangerous commands force confirmation even under the `never` policy — trusting the agent is not the same as approving `rm -rf /`.
 - **Path boundary:** real paths are resolved (symlinks followed, `..` expanded) before any check — no string-prefix tricks.
+- **MCP tools run outside the sandbox boundary.** They default to approval-required (`network` risk) and are clearly prefixed in approval prompts (e.g. `[MCP filesystem]`); declare `risk: "read"` only for servers you trust to be read-only. A remote tool call's timeout follows `callTimeoutMs` (default 120s) rather than the 60s local-tool cap. HTTP crash detection is best-effort (a server that does not keep its stream open may only surface as a failed call, not an immediate reconnect).
 
 **Honest limitations.** Shell-command prefix matching can be bypassed: `bash -c "rm -rf x"`, `eval $(echo cm0... | base64 -d)`, `;`-chaining, aliases — static string matching cannot stop a deliberate attacker. The rules table is therefore a **defense-in-depth layer against accidents and model recklessness, not a security boundary**. Real isolation depends on an OS-level sandbox (Seatbelt / Landlock / container), which is planned for 1.0.0; until that ships, this disclaimer stays. In other words: only run modou in directories whose contents you are willing to lose, and review approval prompts that write files or execute commands outside your working directory.
 

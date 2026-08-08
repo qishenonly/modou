@@ -29,10 +29,11 @@ modou 的名字取自木工的**墨斗**——相传由鲁班发明的弹线工�
 - **会话永不失忆。** 会话日志持久化、`/resume` 续聊、增量压缩（不塌缩上下文）、prompt caching，以及 `/context` 的分项 token 核算。
 - **懂你的项目。** 读取 `AGENTS.md`（兼容 `CLAUDE.md`），按 全局 → 项目 → 子目录 三级叠加。
 - **技能——按需加载的「怎么做」知识。** 遵循 [Agent Skills](https://agentskills.io) 开放标准：把含 `SKILL.md` 的技能目录放进三层任一层即可生效；只有 name + description 常驻上下文，正文在模型命中时才注入。
+- **MCP——自带工具。** Model Context Protocol 服务器（stdio 或 Streamable HTTP）即插即用为工具：与内置工具走**同一条权限管线**（缺省 `network` 风险需审批），支持按 server 覆盖 `risk` / 工具过滤 / 超时。`/mcp` 查看连接状态，`/context` 单列其 token 占用。
 
 ### 路线图
 
-规划中（当前构建尚未包含）：MCP 工具、生命周期钩子、自定义 agent，以及 OS 级沙箱（见[安全模型与局限](#安全模型与局限)）。
+规划中（当前构建尚未包含）：生命周期钩子、自定义 agent，以及 OS 级沙箱（见[安全模型与局限](#安全模型与局限)）。
 
 ## 环境要求
 
@@ -88,6 +89,7 @@ modou
 | `/init`                  | 探测仓库结构，生成 `AGENTS.md` 初稿（预览后写入；已存在则不覆盖）                                        |
 | `/image <路径 \| URL>`   | 以图片输入发起一轮（多模态附件；不支持图片的模型会降级说明）                                             |
 | `/cost`                  | 成本统计：本会话与按天的 token / 费用（按当前模型定价）                                                  |
+| `/mcp`                   | 查看 MCP 服务器连接状态（每 server：已连接 / 重连中 / 连接失败）                                         |
 
 ## 配置
 
@@ -119,24 +121,38 @@ modou 把两套机制分开：**配置**（给程序读的结构化设置）与*
       { "effect": "deny", "match": "git push", "tool": "bash" }
     ]
   },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+        "risk": "read"
+      },
+      "remote": {
+        "url": "https://example.com/mcp",
+        "headers": { "Authorization": "Bearer ..." }
+      }
+    }
+  },
   "maxTurns": 10,
   "keepTurns": 6,
   "homeDir": "/绝对路径"
 }
 ```
 
-| 字段                 | 含义                                                   |
-| -------------------- | ------------------------------------------------------ |
-| `provider`           | `anthropic` 或 `openai-compat`（默认 `openai-compat`） |
-| `model`              | 模型 ID（缺省回落环境变量）                            |
-| `baseURL`            | 端点前缀（`openai-compat` 必需）                       |
-| `permission.sandbox` | `read-only` · `workspace-write`（默认）· `full-access` |
-| `permission.policy`  | `untrusted` · `on-request`（默认）· `never`            |
-| `permission.addDirs` | 额外允许写入的目录（绝对路径）                         |
-| `permission.rules`   | `allow` / `deny` 前缀规则，可选 `tool` 过滤            |
-| `maxTurns`           | 每任务轮次上限（默认 10）                              |
-| `keepTurns`          | 压缩后保留的近 N 轮原文（默认 6）                      |
-| `homeDir`            | modou 数据根（会话/日志在 `<homeDir>/.modou` 下）      |
+| 字段                 | 含义                                                                                                                                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`           | `anthropic` 或 `openai-compat`（默认 `openai-compat`）                                                                                        |
+| `model`              | 模型 ID（缺省回落环境变量）                                                                                                                   |
+| `baseURL`            | 端点前缀（`openai-compat` 必需）                                                                                                              |
+| `permission.sandbox` | `read-only` · `workspace-write`（默认）· `full-access`                                                                                        |
+| `permission.policy`  | `untrusted` · `on-request`（默认）· `never`                                                                                                   |
+| `permission.addDirs` | 额外允许写入的目录（绝对路径）                                                                                                                |
+| `permission.rules`   | `allow` / `deny` 前缀规则，可选 `tool` 过滤                                                                                                   |
+| `mcp.servers`        | MCP 服务器表：`<name>.command`（stdio）与 `<name>.url`（Streamable HTTP）二选一；可选 `risk` / `tools` / `connectTimeoutMs` / `callTimeoutMs` |
+| `maxTurns`           | 每任务轮次上限（默认 10）                                                                                                                     |
+| `keepTurns`          | 压缩后保留的近 N 轮原文（默认 6）                                                                                                             |
+| `homeDir`            | modou 数据根（会话/日志在 `<homeDir>/.modou` 下）                                                                                             |
 
 ### 环境变量
 
@@ -195,6 +211,7 @@ modou 把两套机制分开：**配置**（给程序读的结构化设置）与*
 - **审批策略：** 不信任 · 按需 · 从不
 - **规则表：** allow/deny 前缀匹配 + 内置危险命令黑名单（如 `rm -rf`、force-push）。危险命令即使在 `never` 策略下也**强制逐次确认**——「我信任这个 agent」不等于「我同意它执行 `rm -rf /`」。
 - **目录边界：** 先解析真实路径（跟随符号链接、展开 `..`）再校验，杜绝字符串前缀绕过。
+- **MCP 工具在沙箱边界之外运行。** 缺省 `network` 风险需审批，审批弹窗带明确前缀（如 `[MCP filesystem]`）；只对确信只读的服务器声明 `risk: "read"`。远程调用的超时遵循 `callTimeoutMs`（缺省 120s），不受本地工具的 60s 兜底限制。HTTP 崩溃检测是 best-effort：不保持长流的服务器可能要等下一次调用失败才暴露，而非立刻重连。
 
 **诚实记录的限制。** shell 命令的前缀匹配是可以绕过的：`bash -c "rm -rf x"`、`eval $(echo cm0... | base64 -d)`、`;` 串联、别名——静态字符串匹配挡不住有意的绕过。因此规则表只是**「防手滑、防模型莽撞」的深度防御一层，不是安全边界**。真正的隔离依赖 1.0.0 的 OS 级沙箱（Seatbelt / Landlock / 容器）；在它交付之前，这段免责声明一直保留。换句话说：只在你可以接受数据丢失的目录里运行 modou；对任何在工作目录之外写文件或执行命令的审批弹窗，多看一眼再点。
 
