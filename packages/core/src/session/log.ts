@@ -144,6 +144,23 @@ export interface SnapshotEntryData {
   readonly summary?: string;
 }
 
+/**
+ * todo_update 条目负载（design 002 §4.2 / ADR 0010；0.11.0 TodoWrite 落地）。
+ * TodoWrite 每次更新清单落一条**全量清单快照**（log 是唯一真相，002 4.1）——
+ * /resume 重建清单只需取最后一条 todo_update，无需重放全量历史。
+ * 条目结构复用 SummaryState.todo 的 SummaryItem（id / text / status / dependsOn）；
+ * 本模块不自知 context/summary（依赖方向：Session 不依赖 Context），落盘结构
+ * 由 context/todo.ts 的 rebuildTodoState 做运行时守卫。
+ */
+export interface TodoUpdateEntryData {
+  readonly items: readonly {
+    readonly id?: string;
+    readonly text: string;
+    readonly status?: 'pending' | 'in_progress' | 'done';
+    readonly dependsOn?: readonly string[];
+  }[];
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -157,6 +174,7 @@ export interface SessionEntryDataMap {
   compaction: CompactionEntryData;
   model_switch: ModelSwitchEntryData;
   snapshot: SnapshotEntryData;
+  todo_update: TodoUpdateEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -174,6 +192,7 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'compaction',
   'model_switch',
   'snapshot',
+  'todo_update',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -199,6 +218,7 @@ export type SessionRecord = {
   | { readonly kind: 'compaction'; readonly data: CompactionEntryData }
   | { readonly kind: 'model_switch'; readonly data: ModelSwitchEntryData }
   | { readonly kind: 'snapshot'; readonly data: SnapshotEntryData }
+  | { readonly kind: 'todo_update'; readonly data: TodoUpdateEntryData }
 );
 
 /**
@@ -470,6 +490,15 @@ export class SessionLog {
    */
   appendSnapshot(data: SnapshotEntryData): Promise<void> {
     return this.append('snapshot', data);
+  }
+
+  /**
+   * 追加 todo_update 条目（T-110 TodoWrite：一次清单更新的全量快照）。
+   * /resume 重建清单（rebuildTodoState）据此取最新快照；投影时忽略
+   * （不产生模型消息——清单状态经 TodoWrite 工具结果进上下文）。
+   */
+  appendTodoUpdate(data: TodoUpdateEntryData): Promise<void> {
+    return this.append('todo_update', data);
   }
 
   /**

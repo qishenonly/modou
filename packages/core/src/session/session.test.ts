@@ -213,6 +213,36 @@ describe('SessionLog 追加写（T-060）', () => {
     }
   });
 
+  test('appendTodoUpdate（T-110）：todo_update 条目全量清单落盘', async () => {
+    const home = tempHome();
+    try {
+      const cwd = join(home, 'proj');
+      mkdirSync(cwd, { recursive: true });
+      const log = new SessionLog({
+        homeDir: home,
+        cwd,
+        now: () => 1_700_000_000_000,
+      });
+      await log.appendTodoUpdate({
+        items: [
+          { id: 'a', text: '读取', status: 'done' },
+          { id: 'b', text: '实现', status: 'in_progress', dependsOn: ['a'] },
+        ],
+      });
+      const records = parseLines(log.path);
+      expect(records).toHaveLength(1);
+      expect(records[0].kind).toBe('todo_update');
+      expect(records[0].data).toEqual({
+        items: [
+          { id: 'a', text: '读取', status: 'done' },
+          { id: 'b', text: '实现', status: 'in_progress', dependsOn: ['a'] },
+        ],
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('写失败可诊断：onError 收到 SessionLogError（含路径/seq/kind），append 不抛出', async () => {
     const home = tempHome();
     try {

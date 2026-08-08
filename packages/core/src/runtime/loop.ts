@@ -43,8 +43,10 @@ import {
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
 } from '../context/compact';
 import type { CompactOptions } from '../context/compact';
-import type { SummaryState } from '../context/summary';
+import type { SummaryItem, SummaryState } from '../context/summary';
 import { createSummaryState } from '../context/summary';
+import type { TodoState } from '../context/todo';
+import { applyTodoWrite, createTodoState } from '../context/todo';
 import {
   canTransition,
   stopReasonToTransition,
@@ -127,6 +129,15 @@ export interface RunAgentTurnInput {
    */
   readonly summaryState?: SummaryState;
   /**
+   * 会话级待办清单状态（T-110 TodoWrite）：提供时，模型调用 todo_write 更新
+   * 的清单并入该状态，并随 `TurnResult.todoState` 返回（调用方跨轮次传入同一
+   * 演进状态即可持续累计）；/resume 可先用 `rebuildTodoState` 从会话日志的
+   * todo_update 条目重建后传入。缺省 = loop 在首次清单更新时自建（懒初始化），
+   * 结果随 TurnResult.todoState 返回。清单与压缩状态共用条目结构（ADR 0010），
+   * 压缩时清单不丢。
+   */
+  readonly todoState?: TodoState;
+  /**
    * 压缩配置（T-070 /compact）：提供时，loop 在每轮请求前做「触发 → 压缩 →
    * 投影」：上下文估算超 `thresholdTokens`、轮数超 `keepTurns` 且迟滞窗口已过
    * （`minTurnsBetweenCompactions`，缺省 5 轮）时调用 `generateDelta`（可注入；
@@ -160,6 +171,12 @@ export interface TurnResult {
    * 缺省 undefined（未启用压缩）。
    */
   readonly summaryState?: SummaryState;
+  /**
+   * 本轮结束后的待办清单状态（T-110 TodoWrite）：模型调用过 todo_write 时
+   * 存在（入参种子演进 / 首次更新自建）——调用方把它作为下一轮的种子传入。
+   * 缺省 undefined（本轮未触碰清单）。
+   */
+  readonly todoState?: TodoState;
   /** 最后一轮的 finish reason（未收到 finish 事件时为 null） */
   readonly finishReason: StreamFinishReason | null;
   readonly termination: TurnTermination;
@@ -227,6 +244,10 @@ export type RuntimeEvent =
   | {
       readonly type: 'compaction';
       readonly data: CompactionData;
+    }
+  | {
+      readonly type: 'todo_update';
+      readonly items: readonly SummaryItem[];
     }
   | {
       readonly type: 'notice';
@@ -348,6 +369,13 @@ export async function runAgentTurn(
   let summaryState: SummaryState | undefined =
     inputSummaryState ??
     (compactConfig === undefined ? undefined : createSummaryState());
+
+  /**
+   * 会话级待办清单状态（T-110 TodoWrite）：从入参复制（/resume 重建后的种子），
+   * 模型调用 todo_write 时经 applyTodoWrite 演进，随 `TurnResult.todoState`
+   * 返回给调用方。懒初始化：首次清单更新才自建（未启用清单的会话保持 undefined）。
+   */
+  let todoState: TodoState | undefined = input.todoState;
 
   let state: LoopState = 'idle';
   let termination: TurnTermination = 'end_turn';
@@ -537,6 +565,15 @@ export async function runAgentTurn(
           onFileRead: (path) => {
             readFiles.add(path);
           },
+          // T-110 TodoWrite：清单更新的唯一落点——演进会话级待办状态、
+          // 发出 todo_update 运行时事件（bridge → 协议 todo_update，前端渲染）、
+          // 落 todo_update 日志条目（/resume 重建依据）。
+          onTodoUpdate: (update) => {
+            if (todoState === undefined) todoState = createTodoState();
+            todoState = applyTodoWrite(todoState, update.items);
+            emit({ type: 'todo_update', items: update.items });
+            void session?.appendTodoUpdate({ items: update.items });
+          },
         },
         emit: (pipelineEvent) => {
           if (pipelineEvent.type === 'tool_result') {
@@ -593,6 +630,7 @@ export async function runAgentTurn(
       usage,
       budget: ledger,
       ...(summaryState !== undefined ? { summaryState } : {}),
+      ...(todoState !== undefined ? { todoState } : {}),
       finishReason,
       termination,
       turns: turn,

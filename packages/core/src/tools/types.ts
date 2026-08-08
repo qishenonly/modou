@@ -10,6 +10,24 @@ import { z } from 'zod';
 /** 工具风险分类（002 5.2）：给 Permission 裁决用的分类维度，不是自由文本。 */
 export type ToolRisk = 'read' | 'write' | 'exec' | 'network';
 
+/**
+ * TodoWrite 清单条目（与 context/summary 的 SummaryItem 结构共用——ADR 0010：
+ * 清单与压缩状态同一结构，压缩时清单不丢）。tools 边界内自持结构类型，
+ * 不 import context；运行时（loop）据此适配进会话结构化状态。
+ */
+export interface TodoWriteItem {
+  readonly id?: string;
+  readonly text: string;
+  readonly status: 'pending' | 'in_progress' | 'done';
+  /** 依赖的其他待办 id（可选）。 */
+  readonly dependsOn?: readonly string[];
+}
+
+/** 一次 TodoWrite 的清单更新（全量期望清单，模型每次带全部条目）。 */
+export interface TodoUpdate {
+  readonly items: readonly TodoWriteItem[];
+}
+
 /** 工具执行上下文。0.2.0 最小集：组合取消信号 + 工作目录。 */
 export interface ToolContext {
   /**
@@ -37,6 +55,14 @@ export interface ToolContext {
    * 不把 loop 与 read 工具的 payload 结构耦合在一起。
    */
   readonly onFileRead?: (path: string) => void;
+  /**
+   * 待办更新上报回调（TodoWrite 工具的持久化通道，T-110）：工具每次更新
+   * 清单后调用（全量期望清单），运行时据此把清单写入会话内结构化状态
+   * （TodoState）与会话日志（todo_update 条目，/resume 可重建）。回调同步、
+   * 缺省不调用——与 onFileRead 同一设计：写方自报更新，不把 loop 与工具的
+   * payload 结构耦合。
+   */
+  readonly onTodoUpdate?: (update: TodoUpdate) => void;
 }
 
 /**

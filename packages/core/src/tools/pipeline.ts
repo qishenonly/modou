@@ -6,7 +6,13 @@ import { redactSecrets, redactValue } from './redact';
 import type { ToolRegistry } from './registry';
 import { truncateOutput } from './truncate';
 import type { TruncationOptions } from './truncate';
-import type { Tool, ToolContext, ToolOutcome, TruncationInfo } from './types';
+import type {
+  Tool,
+  ToolContext,
+  TodoUpdate,
+  ToolOutcome,
+  TruncationInfo,
+} from './types';
 import { isToolOutcome } from './types';
 
 /**
@@ -40,6 +46,8 @@ export interface ToolPipelineContext {
   readonly readFiles?: ReadonlySet<string>;
   /** 已读文件上报回调：透传给工具 ctx.onFileRead（read 工具成功读后调用，运行时维护已读集合）。 */
   readonly onFileRead?: (path: string) => void;
+  /** 待办更新上报回调：透传给工具 ctx.onTodoUpdate（todo_write 更新清单后调用，运行时维护清单状态与日志）。 */
+  readonly onTodoUpdate?: (update: TodoUpdate) => void;
 }
 
 export interface ToolPipelineOptions {
@@ -237,6 +245,9 @@ function executeWithTimeout(
         : {}),
       ...(context.onFileRead !== undefined
         ? { onFileRead: context.onFileRead }
+        : {}),
+      ...(context.onTodoUpdate !== undefined
+        ? { onTodoUpdate: context.onTodoUpdate }
         : {}),
     };
 

@@ -1353,3 +1353,115 @@ describe('预算核算接线（T-062 loop → BudgetLedger）', () => {
     expect(result.budget).toBe(ledger); // TurnResult 返回同一实例
   });
 });
+
+// ---------------------------------------------------------------------------
+// TodoWrite 接线（T-110）：loop 维护会话级待办清单
+// ---------------------------------------------------------------------------
+
+describe('TodoWrite 接线（T-110 loop → 清单状态）', () => {
+  /** 模型第一轮调 todo_write 更新清单，第二轮纯文本收尾。 */
+  const todoRounds: StreamEvent[][] = [
+    [
+      {
+        type: 'tool_use',
+        id: 'todo-1',
+        name: 'todo_write',
+        input: {
+          list: [
+            { id: 'a', text: '读取项目结构', status: 'done' },
+            { id: 'b', text: '实现 TodoWrite', status: 'in_progress' },
+          ],
+        },
+      },
+      { type: 'finish', reason: 'tool_use' },
+    ],
+    textEvents('清单已建立。'),
+  ];
+
+  test('todo_write 更新清单：todoState 演进、todo_update 事件发出', async () => {
+    const provider = new StubProvider(todoRounds);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: defaultWriteTools(),
+        options: { maxTurns: 4 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 懒初始化：todoState 随首轮更新出现，条目演进
+    expect(result.todoState).toBeDefined();
+    expect(result.todoState!.items).toHaveLength(2);
+    expect(result.todoState!.items[0].status).toBe('done');
+    expect(result.todoState!.items[1].status).toBe('in_progress');
+
+    // todo_update 运行时事件（bridge → 协议 todo_update）
+    const updateEvents = events.filter((e) => e.type === 'todo_update');
+    expect(updateEvents).toHaveLength(1);
+    if (updateEvents[0]?.type === 'todo_update') {
+      expect(updateEvents[0].items).toHaveLength(2);
+    }
+
+    // 工具执行成功（tool_result ok）
+    const toolResult = events.filter((e) => e.type === 'tool_result');
+    expect(toolResult).toHaveLength(1);
+    if (toolResult[0]?.type === 'tool_result') {
+      expect(toolResult[0].ok).toBe(true);
+    }
+  });
+
+  test('todoState 种子传入：跨调用接续累计（/resume 种子语义）', async () => {
+    const provider = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'todo-2',
+          name: 'todo_write',
+          input: {
+            list: [
+              { id: 'a', text: '读取', status: 'done' },
+              { id: 'b', text: '实现', status: 'done' },
+            ],
+          },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const seed = {
+      items: [{ id: 'a', text: '读取', status: 'in_progress' as const }],
+    };
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: defaultWriteTools(),
+        todoState: seed,
+        options: { maxTurns: 4 },
+      },
+      () => {},
+    );
+
+    // 种子上的 a 被更新为 done，b 新增
+    expect(result.todoState!.items).toHaveLength(2);
+    expect(result.todoState!.items[0].status).toBe('done');
+    expect(result.todoState!.items[1].status).toBe('done');
+  });
+
+  test('未调用 todo_write 的轮次：todoState 不产生（缺省 undefined）', async () => {
+    const provider = new StubProvider([textEvents('纯文本回复')]);
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        options: { maxTurns: 4 },
+      },
+      () => {},
+    );
+    expect(result.todoState).toBeUndefined();
+  });
+});

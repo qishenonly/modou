@@ -69,6 +69,10 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
       // 压缩事件（T-070）：压缩前后 token、被折叠的轮次范围——前端据此
       // 告知用户「刚压缩过」（002 3.2 compaction 表）。
       return [{ type: 'compaction', data: event.data }];
+    case 'todo_update':
+      // 待办清单更新（T-110 TodoWrite）：一次清单快照——前端据此渲染
+      // 进度条 / 勾选（002 3.2 todo_update 表，T-111）。
+      return [{ type: 'todo_update', data: { items: event.items } }];
     case 'notice':
       // loop 侧提示（T-070：压缩跳过 / 压缩失败等），与协议 notice 同形
       return [

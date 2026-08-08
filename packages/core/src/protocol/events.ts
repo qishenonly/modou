@@ -25,6 +25,7 @@ export type EventType =
   | 'usage'
   | 'context_state'
   | 'compaction'
+  | 'todo_update'
   | 'notice'
   | 'error';
 
@@ -175,6 +176,19 @@ export interface CompactionData {
   readonly coveredTurns: readonly [number, number];
 }
 
+/** 待办清单条目（TodoWrite 复用 SummaryItem 结构，ADR 0010）。 */
+export interface TodoItemData {
+  readonly id?: string;
+  readonly text: string;
+  readonly status?: 'pending' | 'in_progress' | 'done';
+  readonly dependsOn?: readonly string[];
+}
+
+/** todo_update：一次 TodoWrite 后的全量清单快照（前端据此渲染进度条 / 勾选）。 */
+export interface TodoUpdateData {
+  readonly items: readonly TodoItemData[];
+}
+
 /** notice 级别。 */
 export type NoticeLevel = 'info' | 'warn' | 'error';
 
@@ -214,6 +228,7 @@ export type ProtocolEvent =
   | { readonly type: 'usage'; readonly data: UsageData }
   | { readonly type: 'context_state'; readonly data: ContextStateData }
   | { readonly type: 'compaction'; readonly data: CompactionData }
+  | { readonly type: 'todo_update'; readonly data: TodoUpdateData }
   | { readonly type: 'notice'; readonly data: NoticeData }
   | { readonly type: 'error'; readonly data: ErrorData };
 

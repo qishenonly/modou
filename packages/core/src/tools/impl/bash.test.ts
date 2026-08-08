@@ -256,7 +256,7 @@ describe('bashTool 装配', () => {
     expect(registry.has('bash')).toBe(true);
     expect(registry.find('bash')).toBe(bashTool);
     const again = defaultWriteTools(registry);
-    expect(again.size).toBe(6); // read / grep / glob / write / edit / bash
+    expect(again.size).toBe(7); // read / grep / glob / write / edit / bash / todo_write
     expect(again.find('bash')).toBe(bashTool);
   });
 

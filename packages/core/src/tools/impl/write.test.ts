@@ -110,7 +110,7 @@ describe('writeTool 基本形态', () => {
     );
   });
 
-  test('defaultWriteTools：注册 read / grep / glob / write / edit / bash 并幂等', () => {
+  test('defaultWriteTools：注册 read / grep / glob / write / edit / bash / todo_write 并幂等', () => {
     const registry = defaultWriteTools();
     expect(registry.has('read')).toBe(true);
     expect(registry.has('grep')).toBe(true);
@@ -118,11 +118,12 @@ describe('writeTool 基本形态', () => {
     expect(registry.has('write')).toBe(true);
     expect(registry.has('edit')).toBe(true);
     expect(registry.has('bash')).toBe(true);
+    expect(registry.has('todo_write')).toBe(true);
     expect(registry.find('write')).toBe(writeTool);
     expect(registry.find('edit')).toBe(editTool);
     // 幂等：再次装配不重复注册、不抛错
     const again = defaultWriteTools(registry);
-    expect(again.size).toBe(6);
+    expect(again.size).toBe(7);
     // 可继续在同一注册表上叠加其他工具
     const custom = new ToolRegistry();
     defaultWriteTools(custom);

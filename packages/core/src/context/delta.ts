@@ -144,10 +144,25 @@ function normalizeItems(value: unknown): readonly SummaryItem[] | null {
       typeof candidate.ts === 'number' && Number.isFinite(candidate.ts)
         ? candidate.ts
         : undefined;
+    // 0.11.0（ADR 0010）：TodoWrite 清单字段 status / dependsOn 随摘要条目
+    // 透传（压缩时清单不丢）——坏值丢弃、合法值保留。
+    const status =
+      candidate.status === 'pending' ||
+      candidate.status === 'in_progress' ||
+      candidate.status === 'done'
+        ? candidate.status
+        : undefined;
+    const dependsOn =
+      Array.isArray(candidate.dependsOn) &&
+      candidate.dependsOn.every((dep) => typeof dep === 'string')
+        ? [...candidate.dependsOn]
+        : undefined;
     items.push({
       text,
       ...(id !== undefined ? { id } : {}),
       ...(ts !== undefined ? { ts } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(dependsOn !== undefined ? { dependsOn } : {}),
     });
   }
   return items;
