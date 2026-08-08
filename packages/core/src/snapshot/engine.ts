@@ -497,7 +497,7 @@ export class SnapshotStore {
       { timeoutMs: limits.maxDurationMs },
     );
     if (!statusRes.ok) {
-      return this.degradedPoint(
+      return await this.degradedPoint(
         options.sessionId,
         'git status 失败，无法收集变更',
         0,
@@ -508,7 +508,7 @@ export class SnapshotStore {
 
     // 2) 上限检查：路径数
     if (entries.length > limits.maxChangedPaths) {
-      return this.degradedPoint(
+      return await this.degradedPoint(
         options.sessionId,
         `变更路径数 ${entries.length} 超过上限 ${limits.maxChangedPaths}`,
         entries.length,
@@ -522,7 +522,7 @@ export class SnapshotStore {
       if (st === null || !st.isFile()) continue;
       totalBytes += st.size;
       if (st.size > limits.maxSingleFileBytes) {
-        return this.degradedPoint(
+        return await this.degradedPoint(
           options.sessionId,
           `文件 ${entry.path}（${st.size} 字节）超过单文件上限 ${limits.maxSingleFileBytes}，为免影子仓库膨胀放弃快照`,
           entries.length,
@@ -530,7 +530,7 @@ export class SnapshotStore {
       }
     }
     if (totalBytes > limits.maxBytes) {
-      return this.degradedPoint(
+      return await this.degradedPoint(
         options.sessionId,
         `变更文件合计 ${totalBytes} 字节超过上限 ${limits.maxBytes}`,
         entries.length,
@@ -556,7 +556,7 @@ export class SnapshotStore {
       );
       const filtered = paths.filter((p) => !ignoredSet.has(p));
       if (filtered.length === 0) {
-        return this.degradedPoint(
+        return await this.degradedPoint(
           options.sessionId,
           '触碰路径全部被忽略（.gitignore / info/exclude），无可快照内容',
           entries.length,
@@ -567,7 +567,7 @@ export class SnapshotStore {
       });
     }
     if (!addRes.ok) {
-      return this.degradedPoint(
+      return await this.degradedPoint(
         options.sessionId,
         `git add 失败：${addRes.stderr.trim() || '未知错误'}`,
         entries.length,
@@ -586,7 +586,7 @@ export class SnapshotStore {
     if (!commitRes.ok) {
       // 「nothing to commit」（并发竞态）按无变更处理
       if (commitRes.stderr.includes('nothing to commit')) return null;
-      return this.degradedPoint(
+      return await this.degradedPoint(
         options.sessionId,
         `git commit 失败：${commitRes.stderr.trim() || '未知错误'}`,
         entries.length,
@@ -613,12 +613,16 @@ export class SnapshotStore {
     return point;
   }
 
-  /** 构造一个降级快照点（仅记录 diff 摘要，不入影子仓库）。 */
-  private degradedPoint(
+  /**
+   * 构造一个降级快照点（仅记录 diff 摘要，不入影子仓库）。
+   * 在 serialized 写链内被调用：await saveManifest 落盘后再返回，杜绝
+   * 未落盘就放行下一个写操作导致的 manifest 写竞态。
+   */
+  private async degradedPoint(
     sessionId: string | undefined,
     reason: string,
     filesChanged: number,
-  ): SnapshotPoint {
+  ): Promise<SnapshotPoint> {
     const point: SnapshotPoint = {
       id: null,
       ts: this.clock(),
@@ -631,7 +635,7 @@ export class SnapshotStore {
       reason,
     };
     this.entries.push(point);
-    void this.saveManifest();
+    await this.saveManifest();
     return point;
   }
 

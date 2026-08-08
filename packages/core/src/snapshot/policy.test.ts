@@ -13,7 +13,7 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectTouchedPaths, SessionRecord, SnapshotStore } from '@modou/core';
@@ -333,5 +333,24 @@ describe('上限降级（T-101：超限仅记录 diff 摘要并告警）', () =>
     expect(restored).not.toBeNull();
     expect(restored?.degraded).toBe(false);
     expect(restored?.filesChanged).toBe(1);
+  });
+
+  test('degraded 点返回前 manifest 已落盘（saveManifest await，写竞态修复）', async () => {
+    const { project, store } = makeIsolation();
+    writeFileSync(join(project, 'a.txt'), '1\n', 'utf8');
+    await store.snapshot();
+    writeFileSync(join(project, 'big.bin'), 'x'.repeat(5000), 'utf8');
+    const degraded = await store.snapshot({
+      limits: { maxSingleFileBytes: 100 },
+    });
+    expect(degraded?.degraded).toBe(true);
+    // 直接读 manifest 文件：degraded 点必须在 snapshot() 返回时已持久化
+    const manifest = JSON.parse(readFileSync(store.manifestPath, 'utf8')) as Array<{
+      id: string | null;
+      degraded: boolean;
+    }>;
+    expect(manifest).toHaveLength(2);
+    expect(manifest[1]?.degraded).toBe(true);
+    expect(manifest[1]?.id).toBeNull();
   });
 });
