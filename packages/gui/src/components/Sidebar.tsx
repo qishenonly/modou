@@ -1,106 +1,181 @@
 /**
- * 左侧会话侧栏（Claude Desktop 式）：新建会话 + 历史会话列表。
- * 会话来自 listSessions（当前项目的可恢复会话，时间倒序）。
+ * 左侧会话侧栏（Claude Desktop 式）：
+ * - 顶部：品牌标 + 项目切换（当前目录名 + 切换按钮，无项目时「选择项目目录」）；
+ * - 「+ 新对话」主按钮；
+ * - 会话历史列表（预览 + 时间；当前会话高亮；悬停可删除）；
+ * - 底部：模型选择器 + 设置。
  */
-import type { ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import type { ResumeCandidate } from '@modou/core';
 import { formatTime } from '../lib/format';
+import { LogoMark } from './LogoMark';
 
 export function Sidebar({
   projectName,
+  hasProject,
   currentSessionId,
   sessions,
   running,
+  modelName,
   onNewChat,
   onResume,
   onDelete,
+  onSelectDirectory,
+  onOpenModel,
   onOpenSettings,
 }: {
   readonly projectName: string;
+  readonly hasProject: boolean;
   readonly currentSessionId: string | null;
   readonly sessions: readonly ResumeCandidate[];
   readonly running: boolean;
+  readonly modelName: string;
   readonly onNewChat: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onDelete: (sessionId: string) => void;
+  readonly onSelectDirectory: () => void;
+  readonly onOpenModel: () => void;
   readonly onOpenSettings: () => void;
 }): ReactNode {
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">
-        <div className="brand-mark">墨</div>
-        <div className="brand-text">
-          <div className="brand-name">modou</div>
-          <div className="brand-project" title={projectName}>
-            {projectName}
-          </div>
+      <div className="sidebar-header">
+        <div className="sidebar-brand">
+          <LogoMark size={26} />
+          <span className="sidebar-brand-name">modou</span>
         </div>
+        <button
+          type="button"
+          className="project-picker"
+          onClick={onSelectDirectory}
+          title={hasProject ? '切换项目目录' : '选择项目目录'}
+        >
+          <svg viewBox="0 0 16 16" className="project-icon" aria-hidden="true">
+            <path
+              d="M1.75 3.5A1.75 1.75 0 0 1 3.5 1.75h2.586c.464 0 .91.184 1.238.513L8.56 3.5h3.94a1.75 1.75 0 0 1 1.75 1.75v6.5a1.75 1.75 0 0 1-1.75 1.75h-9.5A1.75 1.75 0 0 1 1.75 11.5v-8Z"
+              fill="currentColor"
+            />
+          </svg>
+          <span className="project-name" title={projectName}>
+            {hasProject ? projectName : '选择项目目录'}
+          </span>
+          <span className="project-chevron">▾</span>
+        </button>
       </div>
 
-      <button
-        type="button"
-        className="btn btn-new"
-        onClick={onNewChat}
-        disabled={running}
-        title={
-          running ? '任务运行中，结束后可新建会话' : '开启新会话（/clear）'
-        }
-      >
-        + 新建会话
-      </button>
+      <div className="sidebar-body">
+        <button
+          type="button"
+          className="btn btn-new"
+          onClick={onNewChat}
+          disabled={!hasProject || running}
+          title={
+            !hasProject
+              ? '先选择项目目录'
+              : running
+                ? '任务运行中，结束后可新建对话'
+                : '开启新对话'
+          }
+        >
+          <svg viewBox="0 0 16 16" className="btn-new-icon" aria-hidden="true">
+            <path
+              d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z"
+              fill="currentColor"
+            />
+          </svg>
+          新对话
+        </button>
 
-      <nav className="session-list">
-        {sessions.length === 0 && (
-          <div className="session-empty">还没有历史会话</div>
-        )}
-        {sessions.map((session) => {
-          const active = session.sessionId === currentSessionId;
-          return (
-            <div
-              key={session.sessionId}
-              className={`session-item${active ? ' session-active' : ''}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => onResume(session.sessionId)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  onResume(session.sessionId);
-                }
-              }}
-            >
-              <div className="session-preview" title={session.preview}>
-                {session.preview || '（空会话）'}
+        <nav className="session-list">
+          {sessions.length === 0 && hasProject && (
+            <div className="session-empty">还没有历史对话</div>
+          )}
+          {sessions.map((session) => {
+            const active = session.sessionId === currentSessionId;
+            return (
+              <div
+                key={session.sessionId}
+                className={`session-item${active ? ' session-active' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => onResume(session.sessionId)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onResume(session.sessionId);
+                  }
+                }}
+              >
+                <div className="session-preview" title={session.preview}>
+                  {session.preview || '（空会话）'}
+                </div>
+                <div className="session-meta">
+                  <span>{formatTime(session.lastTs)}</span>
+                  {!active && (
+                    <button
+                      type="button"
+                      className="session-delete"
+                      title="删除会话"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDelete(session.sessionId);
+                      }}
+                    >
+                      <svg
+                        viewBox="0 0 16 16"
+                        aria-hidden="true"
+                        className="session-delete-icon"
+                      >
+                        <path
+                          d="M6.5 2.5h3a.75.75 0 0 1 .75.75V4h-4.5v-.75a.75.75 0 0 1 .75-.75ZM4.75 5.5h6.5v6.5a1.75 1.75 0 0 1-1.75 1.75H6.5a1.75 1.75 0 0 1-1.75-1.75V5.5Zm1.5 1.25v5.5h1.5v-5.5h-1.5Zm2 0v5.5h1.5v-5.5h-1.5Z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="session-meta">
-                <span>{formatTime(session.lastTs)}</span>
-                <span className="session-count">{session.entryCount} 条</span>
-                {!active && (
-                  <button
-                    type="button"
-                    className="session-delete"
-                    title="删除会话"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDelete(session.sessionId);
-                    }}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </nav>
+            );
+          })}
+        </nav>
+      </div>
 
       <div className="sidebar-footer">
         <button
           type="button"
-          className="btn btn-ghost"
-          onClick={onOpenSettings}
+          className="model-pill"
+          onClick={onOpenModel}
+          disabled={!hasProject}
+          title="切换模型"
         >
-          ⚙ 设置
+          <span className="model-pill-name">{modelName || '未配置模型'}</span>
+          <svg
+            viewBox="0 0 16 16"
+            className="model-pill-chevron"
+            aria-hidden="true"
+          >
+            <path
+              d="M4.5 6.5 8 10l3.5-3.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onOpenSettings}
+          title="设置"
+        >
+          <svg viewBox="0 0 16 16" className="icon-gear" aria-hidden="true">
+            <path
+              d="M8 5.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 0 0 0-5.5Zm5.4 3.42c.03-.22.03-.45 0-.67l1.36-1.06a.32.32 0 0 0 .08-.41l-1.29-2.23a.32.32 0 0 0-.39-.14l-1.6.65a4.7 4.7 0 0 0-1.16-.67L9.97 2.6a.32.32 0 0 0-.32-.26H7.1a.32.32 0 0 0-.32.26l-.31 1.72a4.7 4.7 0 0 0-1.16.67l-1.6-.65a.32.32 0 0 0-.39.14L2.03 6.71a.32.32 0 0 0 .08.41l1.36 1.06c-.03.22-.03.45 0 .67L2.11 9.9a.32.32 0 0 0-.08.41l1.29 2.23c.08.14.24.2.39.14l1.6-.65c.35.28.74.5 1.16.67l.31 1.72c.03.15.16.26.32.26h2.59c.16 0 .29-.11.32-.26l.31-1.72a4.7 4.7 0 0 0 1.16-.67l1.6.65c.15.06.31 0 .39-.14l1.29-2.23a.32.32 0 0 0-.08-.41l-1.36-1.06Z"
+              fill="currentColor"
+            />
+          </svg>
         </button>
       </div>
     </aside>

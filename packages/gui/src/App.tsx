@@ -3,11 +3,10 @@
  *
  * 消费模型与 TUI App 完全一致：事件流是唯一输入（dispatch → reducer），
  * 用户输入转成 Command 经 sendCommand 回传 core（002 3.3 反向通道）。
- * 与 TUI 的差异只在「UI 模态」这一层：模型选择 / 会话选择 / 设置 / 上下文 /
- * 帮助都是渲染进程驱动的本地弹窗，拉取型数据走 invoke 查询。
+ * UI 模态（模型选择 / 设置 / 上下文 / 帮助）是渲染进程驱动的本地弹窗。
  *
- * 会话线程的来源：事件流增量推进（提交 / 流式 / 封存）+ resume/clear 后从
- * 主进程 getThread() 整体播种（T-061「日志是唯一真相」——显示是投影）。
+ * 项目目录：无项目时显示欢迎页（选择项目目录）；选定后 READY 携带 cwd，
+ * 切换项目时整体重置（app_reset）并重新拉取会话列表。
  */
 import {
   useCallback,
@@ -19,40 +18,41 @@ import {
 import type { ResumeCandidate } from '@modou/core';
 import type { ReadyPayload } from '../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../electron/status';
-import type { ChatMessage } from './lib/state';
 import { guiReducer, initialGuiState } from './lib/state';
-import type { ToolCallEntry } from './lib/tools';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
 import { HelpPanel } from './components/HelpPanel';
 import { InputBox } from './components/InputBox';
 import { ModelPicker } from './components/ModelPicker';
-import { ResumePicker } from './components/ResumePicker';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
+import { Welcome } from './components/Welcome';
 
-type ModalKind = 'none' | 'settings' | 'model' | 'resume' | 'context' | 'help';
+type ModalKind = 'none' | 'settings' | 'model' | 'context' | 'help';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
-  // 配置摘要（READY 通道 + 挂载时 getConfig 兜底）
+  // 配置摘要（READY 通道 + 挂载时 getConfig 兜底；null = 尚无项目目录）
   const [ready, setReady] = useState<ReadyPayload | null>(null);
   const [sessions, setSessions] = useState<readonly ResumeCandidate[]>([]);
   const [modal, setModal] = useState<ModalKind>('none');
 
   // 订阅事件流 + 配置摘要；挂载时用 getConfig 兜底初始状态（主进程启动期 READY
-  // 可能在渲染进程挂载前发出，漏掉也不影响——getConfig 与 READY 同源）
+  // 可能在渲染进程挂载前发出——getConfig 与 READY 同源，漏掉也不影响）
   useEffect(() => {
     const offEvent = window.modou.onEvent((envelope) =>
       dispatch({ type: 'envelope', envelope }),
     );
     const offReady = window.modou.onReady((payload) => {
       setReady((prev) => {
+        // 切换项目 / 恢复会话：线程整体替换 + 校准累计（T-061：显示是日志的投影）
+        const projectChanged = prev?.cwd !== payload.cwd;
         const sessionChanged = prev?.sessionId !== payload.sessionId;
-        if (sessionChanged) {
-          // resume / clear 后线程整体替换（T-061：显示是日志的投影）
+        if (projectChanged) {
+          dispatch({ type: 'app_reset' });
+        } else if (sessionChanged) {
           void window.modou.getThread().then((thread) => {
             if (thread !== null) {
               dispatch({ type: 'seed_thread', messages: thread });
@@ -81,13 +81,24 @@ export function App(): ReactNode {
     };
   }, []);
 
-  // 会话列表：挂载 + 运行状态变化（每轮结束）后刷新
+  // 会话列表：挂载 + 项目/运行状态变化后刷新
   const refreshSessions = useCallback(() => {
     void window.modou.listSessions().then((value) => setSessions(value));
   }, []);
   useEffect(() => {
     refreshSessions();
-  }, [refreshSessions, state.running]);
+  }, [refreshSessions, ready?.cwd, state.running]);
+
+  // ---- 项目目录 ----
+  const handleSelectDirectory = (): void => {
+    void window.modou.selectDirectory().then((result) => {
+      if (result.ok) {
+        setModal('none');
+        dispatch({ type: 'app_reset' });
+        refreshSessions(); // READY 会随后到达并更新 ready
+      }
+    });
+  };
 
   // ---- 输入提交（普通文本 → submit；/ 开头 → 斜杠命令 / 本地 UI 模态）----
   const handleSubmit = (raw: string): void => {
@@ -118,13 +129,6 @@ export function App(): ReactNode {
         }
         window.modou.sendCommand({ type: 'slash', name, args: args.trim() });
         return;
-      case 'resume':
-        if (args === undefined || args.trim().length === 0) {
-          setModal('resume');
-          return;
-        }
-        window.modou.sendCommand({ type: 'slash', name, args: args.trim() });
-        return;
       case 'context':
         setModal('context');
         return;
@@ -141,7 +145,7 @@ export function App(): ReactNode {
     }
   };
 
-  // ---- 侧栏 / 顶栏操作 ----
+  // ---- 侧栏操作 ----
   const handleNewChat = (): void => {
     if (state.running) return;
     window.modou.sendCommand({ type: 'slash', name: 'clear' });
@@ -160,80 +164,74 @@ export function App(): ReactNode {
     void window.modou.deleteSession(sessionId).then(() => refreshSessions());
   };
 
+  const hasProject = ready !== null;
   const modelName = ready?.modelName ?? '';
   const permissionMode = ready?.permissionMode;
   const projectName = ready?.projectName ?? '';
+  const isEmpty =
+    state.history.length === 0 && !state.running && state.error === null;
 
   return (
     <div className="app">
       <Sidebar
         projectName={projectName}
+        hasProject={hasProject}
         currentSessionId={ready?.sessionId ?? null}
         sessions={sessions}
         running={state.running}
+        modelName={modelName}
         onNewChat={handleNewChat}
         onResume={handleResume}
         onDelete={handleDeleteSession}
+        onSelectDirectory={handleSelectDirectory}
+        onOpenModel={() => setModal('model')}
         onOpenSettings={() => setModal('settings')}
       />
 
       <div className="main">
-        <header className="topbar">
-          <div className="topbar-title">
-            {projectName || 'modou'}
-            {state.running && <span className="topbar-running"> ● 运行中</span>}
-          </div>
-          <div className="topbar-right">
-            <button
-              type="button"
-              className="chip"
-              onClick={() => setModal('model')}
-              title="切换模型"
-            >
-              {modelName || '未配置模型'}
-            </button>
-            {permissionMode !== undefined && (
-              <span className="chip chip-muted">
-                {PERMISSION_MODE_LABEL[permissionMode]}
-              </span>
+        {!hasProject ? (
+          <Welcome
+            hasProject={false}
+            onSelectDirectory={handleSelectDirectory}
+            onSubmit={() => {}}
+          />
+        ) : (
+          <>
+            {isEmpty ? (
+              <Welcome
+                hasProject
+                onSelectDirectory={handleSelectDirectory}
+                onSubmit={handleSubmit}
+              />
+            ) : (
+              <ChatThread
+                history={state.history}
+                streamingText={state.streamingText}
+                thinking={state.thinking}
+                tools={state.tools}
+                notices={state.notices}
+                error={state.error}
+                running={state.running}
+              />
             )}
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setModal('settings')}
-              title="设置"
-            >
-              ⚙
-            </button>
-          </div>
-        </header>
-
-        <ChatThread
-          history={state.history}
-          streamingText={state.streamingText}
-          thinking={state.thinking}
-          tools={state.tools}
-          notices={state.notices}
-          error={state.error}
-        />
-
-        <InputBox
-          running={state.running}
-          onSubmit={handleSubmit}
-          onStop={() => window.modou.sendCommand({ type: 'interrupt' })}
-        />
-
-        <StatusBar
-          modelName={modelName}
-          permissionMode={
-            permissionMode !== undefined
-              ? PERMISSION_MODE_LABEL[permissionMode]
-              : undefined
-          }
-          totals={state.totals}
-          running={state.running}
-          turn={state.turn}
-        />
+            <InputBox
+              running={state.running}
+              onSubmit={handleSubmit}
+              onStop={() => window.modou.sendCommand({ type: 'interrupt' })}
+            />
+            <StatusBar
+              modelName={modelName}
+              permissionMode={
+                permissionMode !== undefined
+                  ? PERMISSION_MODE_LABEL[permissionMode]
+                  : undefined
+              }
+              totals={state.totals}
+              running={state.running}
+              turn={state.turn}
+            />
+          </>
+        )}
       </div>
 
       {/* 审批弹窗（模态；打开时其他交互让位） */}
@@ -247,18 +245,14 @@ export function App(): ReactNode {
       )}
 
       {modal === 'settings' && (
-        <SettingsPanel onClose={() => setModal('none')} />
+        <SettingsPanel
+          onClose={() => setModal('none')}
+          onSelectDirectory={handleSelectDirectory}
+        />
       )}
       {modal === 'model' && (
         <ModelPicker
           currentModel={modelName}
-          onClose={() => setModal('none')}
-        />
-      )}
-      {modal === 'resume' && (
-        <ResumePicker
-          sessions={sessions}
-          onSelect={(sessionId) => handleResume(sessionId)}
           onClose={() => setModal('none')}
         />
       )}
@@ -267,5 +261,3 @@ export function App(): ReactNode {
     </div>
   );
 }
-
-export type { ChatMessage, ToolCallEntry };

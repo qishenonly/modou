@@ -6,19 +6,22 @@
  * - `ipcMain.on(COMMAND)` 把 Command 交给 bridge.sendCommand；
  * - 桥的 emitEvent → webContents.send(EVENT)；emitReady → send(READY)。
  *
- * 窗口：Claude Desktop 式布局（宽窗口、左侧会话侧栏），production 加载
- * dist/renderer（vite build 产物，base './'，file:// 可加载），开发模式
- * 经 MODOU_GUI_DEV=1 加载 MODOU_GUI_DEV_URL（scripts/dev.mjs 注入）。
+ * 项目目录（= agent 的工作目录 / 沙箱边界）：
+ * - 启动时读取 `~/.modou/gui-state.json` 的 lastDirectory；存在且有效则在
+ *   该目录装配 bridge，否则桥置空（渲染进程显示「选择项目目录」欢迎页）；
+ * - 用户经 SELECT_DIRECTORY 选择目录后：持久化 → 重建 bridge（新 cwd）→
+ *   推 READY；切换目录同理（旧 bridge dispose，新 bridge 从零开始）。
  *
  * .env 加载：TUI 靠 bun 自动加载 .env，Electron 主进程不会——这里在装配
  * provider 前从 cwd 向上搜索 .env 并注入 process.env（已存在的变量不覆盖）。
  * 装配失败（如缺 API Key）时窗口照常打开、推一条 error notice 给渲染进程，
  * IPC handler 仍注册（空桥兜底），避免「No handler registered」刷屏。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { GuiBridge } from './bridge';
 import { IPC, type ReadyPayload } from './ipc';
 import type { Command, Envelope } from '@modou/core';
@@ -69,17 +72,50 @@ function loadEnvUpward(startDir: string): void {
 loadEnvUpward(process.cwd());
 
 // ---------------------------------------------------------------------------
+// GUI 本地状态（~/.modou/gui-state.json：最近使用的项目目录等）
+// ---------------------------------------------------------------------------
+
+const guiStateFile = join(homedir(), '.modou', 'gui-state.json');
+
+interface GuiStateFile {
+  readonly lastDirectory?: string;
+}
+
+function readGuiState(): GuiStateFile {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(guiStateFile, 'utf8'),
+    ) as GuiStateFile;
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGuiState(state: GuiStateFile): void {
+  try {
+    mkdirSync(dirname(guiStateFile), { recursive: true });
+    writeFileSync(guiStateFile, JSON.stringify(state, null, 2));
+  } catch (caught) {
+    console.warn(
+      '[modou-gui] 无法写 gui-state：',
+      caught instanceof Error ? caught.message : String(caught),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 窗口
 // ---------------------------------------------------------------------------
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 880,
+    width: 1240,
+    height: 820,
+    minWidth: 900,
     minHeight: 600,
     title: 'modou — 墨斗',
-    backgroundColor: '#faf9f7',
+    backgroundColor: '#FAF9F5',
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.mjs'),
@@ -123,14 +159,17 @@ function sendReady(payload: ReadyPayload): void {
 }
 
 // ---------------------------------------------------------------------------
-// 桥接线
+// 桥装配 / 切换
 // ---------------------------------------------------------------------------
 
-function wireBridge(): void {
-  // 装配失败（如缺 API Key）不崩溃：窗口保持打开并展示错误，桥置空。
+/** 在指定目录装配桥（缺省 undefined = 尚无项目，桥置空）；失败不崩溃。 */
+function createBridge(cwd?: string): void {
+  bridge?.dispose();
+  bridge = null;
+  if (cwd === undefined) return;
   try {
     bridge = new GuiBridge(
-      {},
+      { cwd },
       {
         emitEvent: sendEvent,
         emitReady: sendReady,
@@ -153,8 +192,33 @@ function wireBridge(): void {
       },
     });
   }
+}
 
-  // IPC handler 无论如何都注册（bridge 可能为 null，各查询已有 ?? 兜底）
+/** 打开系统目录选择器，选定后持久化并重建桥（返回结果给渲染进程）。 */
+async function handleSelectDirectory(): Promise<{
+  readonly ok: boolean;
+  readonly cwd: string | null;
+}> {
+  if (mainWindow === null) return { ok: false, cwd: null };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: '选择项目目录',
+    buttonLabel: '在此目录启动 modou',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ok: false, cwd: null };
+  }
+  const dir = result.filePaths[0];
+  writeGuiState({ lastDirectory: dir });
+  createBridge(dir);
+  return { ok: true, cwd: dir };
+}
+
+// ---------------------------------------------------------------------------
+// IPC 接线（handler 无论桥是否存在都注册，查询侧有 ?? 兜底）
+// ---------------------------------------------------------------------------
+
+function registerIpc(): void {
   ipcMain.on(IPC.COMMAND, (_event, command: Command) => {
     bridge?.sendCommand(command);
   });
@@ -167,6 +231,7 @@ function wireBridge(): void {
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,
   );
+  ipcMain.handle(IPC.SELECT_DIRECTORY, () => handleSelectDirectory());
   ipcMain.handle(IPC.QUIT, () => {
     bridge?.dispose();
     app.quit();
@@ -175,7 +240,14 @@ function wireBridge(): void {
 
 app.whenReady().then(() => {
   createWindow();
-  wireBridge();
+  registerIpc();
+
+  // 启动：恢复最近使用的项目目录（存在且有效），否则等待用户选择
+  const saved = readGuiState();
+  const lastDirectory = saved.lastDirectory;
+  if (lastDirectory !== undefined && existsSync(lastDirectory)) {
+    createBridge(lastDirectory);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

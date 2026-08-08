@@ -1,6 +1,6 @@
 /**
- * 模型选择器（模态）：列出 /model 候选（listModels），点击即切换
- * （发送 /model <id>，上下文延续）。当前模型高亮。
+ * 模型选择器（Claude Desktop 式模态）：列出 /model 候选，当前模型带对勾。
+ * 选中即发送 /model <id>（上下文延续），关闭弹窗。
  */
 import { useEffect, useState, type ReactNode } from 'react';
 
@@ -30,19 +30,40 @@ export function ModelPicker({
       >
         <div className="modal-title">切换模型</div>
         <div className="picker-list">
-          {models.map((model) => (
-            <button
-              key={model}
-              type="button"
-              className={`picker-item${model === currentModel ? ' picker-current' : ''}`}
-              onClick={() => select(model)}
-            >
-              {model}
-              {model === currentModel && (
-                <span className="picker-tag">当前</span>
-              )}
-            </button>
-          ))}
+          {models.length === 0 && (
+            <div className="modal-hint">没有可用模型</div>
+          )}
+          {models.map((model) => {
+            const current = model === currentModel;
+            return (
+              <button
+                key={model}
+                type="button"
+                className={`picker-item${current ? ' picker-current' : ''}`}
+                onClick={() => select(model)}
+              >
+                <span className="picker-radio" aria-hidden="true">
+                  {current && (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="picker-check"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M3.5 8.5 6.6 11.5l5.9-7"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </span>
+                <span className="picker-name">{model}</span>
+              </button>
+            );
+          })}
         </div>
         <div className="modal-hint">切换后上下文延续（历史消息不丢）</div>
       </div>

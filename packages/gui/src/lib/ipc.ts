@@ -36,6 +36,8 @@ export interface ModouApi {
   getConfig(): Promise<GuiConfigSummary | null>;
   /** 删除一条会话（侧栏）。 */
   deleteSession(sessionId: string): Promise<boolean>;
+  /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
+  selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 退出应用。 */
   quit(): void;
 }

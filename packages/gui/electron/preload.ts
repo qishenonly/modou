@@ -63,6 +63,10 @@ const api = {
   deleteSession(sessionId: string): Promise<unknown> {
     return ipcRenderer.invoke(IPC.DELETE_SESSION, sessionId);
   },
+  /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
+  selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
+    return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);
+  },
   /** 退出应用。 */
   quit(): void {
     void ipcRenderer.invoke(IPC.QUIT);

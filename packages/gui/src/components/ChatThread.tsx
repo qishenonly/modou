@@ -1,28 +1,74 @@
 /**
- * 对话流（中间主区）：历史消息 + 工具卡片 + 流式回复 + 思考折叠 + 提示/错误。
- * 自动滚到底部（用户上滚阅读历史时暂停跟随——MVP 简化为总是跟随）。
+ * 对话流（Claude Desktop 式消息布局）：
+ * - 用户消息：右侧气泡（奶油底色，无头像）；
+ * - assistant：左侧 LogoMark 头像 + 正文，悬停出现复制按钮；
+ * - 等待动画：running 且尚无任何输出时，显示脉冲圆点（Thinking）；
+ * - 工具调用以卡片展示（Claude 式紧凑活动行）。
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ChatMessage } from '../lib/state';
 import type { ToolCallEntry } from '../lib/tools';
 import { Markdown } from '../lib/markdown';
+import { LogoMark } from './LogoMark';
 import { ToolCard } from './ToolCard';
+
+/** 等待指示：三个脉冲圆点（Claude 式）。 */
+function ThinkingDots(): ReactNode {
+  return (
+    <div className="thinking-dots" role="status" aria-label="正在思考">
+      <span className="thinking-dot" />
+      <span className="thinking-dot" />
+      <span className="thinking-dot" />
+    </div>
+  );
+}
 
 function UserMessage({ text }: { readonly text: string }): ReactNode {
   return (
     <div className="msg msg-user">
-      <div className="msg-bubble">{text}</div>
+      <div className="msg-bubble msg-user-bubble">{text}</div>
     </div>
   );
 }
 
 function AssistantMessage({ text }: { readonly text: string }): ReactNode {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时静默降级
+    }
+  };
+
   return (
     <div className="msg msg-assistant">
-      <div className="msg-role">assistant</div>
-      <div className="msg-bubble">
-        <Markdown text={text} />
+      <LogoMark size={26} className="msg-avatar" />
+      <div className="msg-content">
+        <div className="msg-bubble msg-assistant-bubble">
+          <Markdown text={text} />
+        </div>
+        <button
+          type="button"
+          className="msg-copy"
+          onClick={() => void copy()}
+          title="复制消息"
+        >
+          {copied ? (
+            '已复制'
+          ) : (
+            <svg viewBox="0 0 16 16" className="icon-copy" aria-hidden="true">
+              <path
+                d="M5.25 2.5h6.5A1.75 1.75 0 0 1 13.5 4.25v6.5a1.75 1.75 0 0 1-1.75 1.75H5.25A1.75 1.75 0 0 1 3.5 10.75v-6.5A1.75 1.75 0 0 1 5.25 2.5ZM5 5.25v5.5c0 .14.11.25.25.25h5.5c.14 0 .25-.11.25-.25v-5.5a.25.25 0 0 0-.25-.25h-5.5a.25.25 0 0 0-.25.25ZM2.5 5.5v5.75A2.25 2.25 0 0 0 4.75 13.5h5.75v-1.5H4.75a.75.75 0 0 1-.75-.75V5.5h-1.5Z"
+                fill="currentColor"
+              />
+            </svg>
+          )}
+        </button>
       </div>
     </div>
   );
@@ -44,6 +90,7 @@ export function ChatThread({
   tools,
   notices,
   error,
+  running,
 }: {
   readonly history: readonly ChatMessage[];
   readonly streamingText: string;
@@ -55,12 +102,22 @@ export function ChatThread({
     readonly text: string;
   }[];
   readonly error: string | null;
+  readonly running: boolean;
 }): ReactNode {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [history, streamingText, tools, notices]);
+  }, [history, streamingText, tools, notices, running]);
+
+  // 等待动画触发条件：running 且「没有文本、没有思考、没有进行中工具」
+  const hasOutput =
+    streamingText.length > 0 ||
+    thinking.length > 0 ||
+    tools.some(
+      (entry) => entry.status === 'pending' || entry.status === 'running',
+    );
+  const showThinking = running && !hasOutput;
 
   return (
     <main className="chat">
@@ -81,9 +138,20 @@ export function ChatThread({
 
         {streamingText.length > 0 && (
           <div className="msg msg-assistant">
-            <div className="msg-role">assistant</div>
-            <div className="msg-bubble">
-              <Markdown text={streamingText} />
+            <LogoMark size={26} className="msg-avatar" />
+            <div className="msg-content">
+              <div className="msg-bubble msg-assistant-bubble">
+                <Markdown text={streamingText} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showThinking && (
+          <div className="msg msg-assistant">
+            <LogoMark size={26} className="msg-avatar" />
+            <div className="msg-content">
+              <ThinkingDots />
             </div>
           </div>
         )}

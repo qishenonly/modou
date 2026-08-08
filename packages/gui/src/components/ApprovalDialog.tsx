@@ -1,7 +1,7 @@
 /**
  * 审批弹窗（Claude Desktop 式模态）：展示待执行操作与风险级别，三选项裁决
- * （allow_once / allow_always / deny）。裁决经 App 层转成 `approve` Command。
- * 危险命令由 core 强制逐次确认，可选项只透传 core 给的（不自己补全）。
+ * （本次允许 / 始终允许 / 拒绝）。裁决经 App 层转成 `approve` Command。
+ * 危险命令由 core 强制逐次确认，可选项只透传 core 给的。
  */
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import type {
@@ -17,7 +17,6 @@ const RISK_LABEL: Readonly<Record<RiskLevel, string>> = {
   network: '网络',
 };
 
-/** 选项 → 按钮标签（core 已给 label，这里只补主按钮文案）。 */
 const OPTION_TONE: Readonly<Record<ApprovalDecision, string>> = {
   allow_once: 'allow',
   allow_always: 'allow-strong',
@@ -33,7 +32,6 @@ export function ApprovalDialog({
 }): ReactNode {
   const [focus, setFocus] = useState(0);
 
-  // Esc / 快捷键
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
       onApprove(request.id, 'deny');
@@ -68,7 +66,7 @@ export function ApprovalDialog({
       aria-modal="true"
     >
       <div className="modal approval-dialog">
-        <div className="modal-title">⚠ 审批请求</div>
+        <div className="modal-title">审批请求</div>
         <div className="approval-risk">
           <span className="risk-badge">
             风险：{RISK_LABEL[request.risk] ?? request.risk}
@@ -80,7 +78,7 @@ export function ApprovalDialog({
             <button
               key={option.id}
               type="button"
-              className={`btn btn-${OPTION_TONE[option.id] ?? 'allow'}${index === focus ? ' btn-focus' : ''}`}
+              className={`btn btn-approval btn-${OPTION_TONE[option.id] ?? 'allow'}${index === focus ? ' btn-focus' : ''}`}
               onClick={() => onApprove(request.id, option.id)}
               onMouseEnter={() => setFocus(index)}
             >

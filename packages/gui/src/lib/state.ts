@@ -74,7 +74,8 @@ export type GuiAction =
   | { readonly type: 'user_slash'; readonly text: string }
   | { readonly type: 'clear_thread' }
   | { readonly type: 'seed_thread'; readonly messages: readonly ChatMessage[] }
-  | { readonly type: 'set_totals'; readonly totals: TokenTotals };
+  | { readonly type: 'set_totals'; readonly totals: TokenTotals }
+  | { readonly type: 'app_reset' };
 
 let noticeSeq = 0;
 
@@ -187,6 +188,9 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
     case 'set_totals':
       // resume / clear 后校准累计 token（预算账本在 bridge 侧重建）
       return { ...state, totals: action.totals };
+    case 'app_reset':
+      // 切换项目目录后整机重置（新 bridge 从零开始；不留旧会话/旧提示）
+      return initialGuiState();
     default:
       return state;
   }

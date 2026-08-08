@@ -31,6 +31,8 @@ export const IPC = {
   GET_CONFIG: 'modou:getConfig',
   /** renderer → main（invoke）：删除一条会话（侧栏）。 */
   DELETE_SESSION: 'modou:deleteSession',
+  /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
+  SELECT_DIRECTORY: 'modou:selectDirectory',
   /** renderer → main（invoke）：退出应用。 */
   QUIT: 'modou:quit',
 } as const;

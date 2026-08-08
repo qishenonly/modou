@@ -1,9 +1,8 @@
 /**
- * 底部状态栏：模型名 / 权限模式 / 运行状态 / 当前轮次 / 累计 token。
- * 纯展示——状态由 App 层持有并传入。
+ * 底部细状态栏：模型 / 权限模式 / 运行状态 / 当前轮次 / 累计 token。
+ * Claude Desktop 没有状态栏，这里是 modou 的最小信息条（细、弱化）。
  */
 import type { ReactNode } from 'react';
-import { PERMISSION_MODE_LABEL, type TokenTotals } from '../../electron/status';
 import { formatTokens } from '../lib/format';
 
 export function StatusBar({
@@ -15,35 +14,31 @@ export function StatusBar({
 }: {
   readonly modelName?: string;
   readonly permissionMode?: string;
-  readonly totals: TokenTotals;
+  readonly totals: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cacheReadTokens: number;
+  };
   readonly running: boolean;
   readonly turn: number;
 }): ReactNode {
+  const segments: string[] = [];
+  if (modelName !== undefined) segments.push(modelName);
+  if (permissionMode !== undefined) segments.push(permissionMode);
+  segments.push(running ? '运行中' : '就绪');
+  segments.push(`turn ${turn}`);
+  segments.push(
+    `in ${formatTokens(totals.inputTokens)} / out ${formatTokens(totals.outputTokens)}`,
+  );
+  if (totals.cacheReadTokens > 0) {
+    segments.push(`cache +${formatTokens(totals.cacheReadTokens)}`);
+  }
   return (
     <footer className="statusbar">
-      {modelName !== undefined && (
-        <span className="status-seg status-model">{modelName}</span>
-      )}
-      {permissionMode !== undefined && (
-        <span className="status-seg">{permissionMode}</span>
-      )}
-      <span
-        className={`status-seg status-dot${running ? ' status-running' : ''}`}
-      >
-        {running ? '● 运行中' : '○ 就绪'}
+      <span className={`status-dot${running ? ' status-running' : ''}`}>
+        {running ? '●' : '○'}
       </span>
-      <span className="status-seg">turn {turn}</span>
-      <span className="status-seg">
-        in {formatTokens(totals.inputTokens)} / out{' '}
-        {formatTokens(totals.outputTokens)}
-      </span>
-      {totals.cacheReadTokens > 0 && (
-        <span className="status-seg">
-          cache +{formatTokens(totals.cacheReadTokens)}
-        </span>
-      )}
+      <span>{segments.join(' · ')}</span>
     </footer>
   );
 }
-
-export { PERMISSION_MODE_LABEL };
