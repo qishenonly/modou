@@ -9,6 +9,7 @@ import { todoTool } from './todo';
 import { writeTool } from './write';
 import { createWebFetchTool, type WebFetchConfig } from './webfetch';
 import { createWebSearchTool, type WebSearchConfig } from './websearch';
+import { createMemoryTools, type MemoryToolDeps } from './memory';
 
 /**
  * 工具实现（design 002 第十二节 `tools/impl/{read,write,edit,grep,glob,bash}.ts`）。
@@ -18,7 +19,8 @@ import { createWebSearchTool, type WebSearchConfig } from './websearch';
  * 0.12.0 子代理工具：task（T-120，supervisor 一层深，ADR 0011）；
  * 0.17.0 角色派发工具：agent（T-170，自定义 agents 复用子代理运行时）；
  * 0.17.0 联网工具：webfetch（T-171）/ websearch（T-172，risk: network，
- * 域名过滤 + 提示注入防护）。
+ * 域名过滤 + 提示注入防护）；
+ * 0.17.0 长期记忆工具：memory_write/read/list（T-173，文件式结构化笔记，ADR 0016）。
  */
 export * from './read';
 export * from './grep';
@@ -32,6 +34,7 @@ export * from './skill';
 export * from './agent';
 export * from './webfetch';
 export * from './websearch';
+export * from './memory';
 
 /**
  * 便捷装配：把全部只读工具（read / grep / glob）加入一个工具注册表
@@ -77,6 +80,23 @@ export function defaultWriteTools(
     if (!registry.has(tool.name)) registry.register(tool);
   }
   return registry;
+}
+
+/**
+ * 在既有工具集上追加长期记忆工具组（0.17.0 T-173）：复制注册表 + 注册
+ * memory_write / memory_read / memory_list（deps 注入记忆目录）。有记忆能力时
+ * 才注册（没有记忆目录时模型调用只会得到「记忆不可用」，不必暴露）。
+ */
+export function withMemoryTools(
+  registry: ToolRegistry,
+  deps: MemoryToolDeps,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  for (const tool of createMemoryTools(deps)) {
+    if (!copy.has(tool.name)) copy.register(tool);
+  }
+  return copy;
 }
 
 /**

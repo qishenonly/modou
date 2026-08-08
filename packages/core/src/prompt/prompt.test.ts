@@ -7,6 +7,10 @@ import { grepTool } from '../tools/impl/grep';
 import { readTool } from '../tools/impl/read';
 import { writeTool } from '../tools/impl/write';
 import { createWebFetchTool } from '../tools/impl/webfetch';
+import { loadMemoryText, writeMemoryNote } from '../memory/store';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ToolRegistry } from '../tools/registry';
 import { buildSystemPrompt } from './system';
 
@@ -235,5 +239,31 @@ describe('角色清单段与外部内容防护段（0.17.0）', () => {
   test('只读工具集不渲染外部内容防护段（无联网能力）', () => {
     const prompt = buildSystemPrompt({ tools: defaultReadonlyTools() });
     expect(prompt).not.toContain('外部内容防护');
+  });
+});
+
+describe('长期记忆注入（0.17.0 T-173：跨会话加载进系统提示词）', () => {
+  test('记忆文本经 extra 注入系统提示词（新会话加载既有记忆）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-prompt-mem-'));
+    try {
+      // 会话 1：写入记忆
+      const written = writeMemoryNote(
+        dir,
+        'conventions',
+        '测试文件统一放 src/__tests__，用 bun:test。',
+      );
+      expect(written.ok).toBe(true);
+      // 会话 2：loadMemoryText → 注入 extra → 系统提示词包含记忆内容
+      const loaded = loadMemoryText(dir);
+      const prompt = buildSystemPrompt({
+        tools: defaultWriteTools(),
+        extra: loaded.text,
+      });
+      expect(prompt).toContain('## 长期记忆');
+      expect(prompt).toContain('### conventions');
+      expect(prompt).toContain('测试文件统一放 src/__tests__');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

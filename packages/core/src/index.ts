@@ -11,6 +11,7 @@ export * from './session';
 export * from './skills';
 export * from './agents';
 export * from './web';
+export * from './memory';
 export * from './snapshot';
 export * from './config';
 export * from './eval';

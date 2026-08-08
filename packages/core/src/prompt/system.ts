@@ -1,5 +1,10 @@
 import { TODO_WRITE_TOOL_NAME } from '../tools/impl/todo';
 import { SKILL_TOOL_NAME } from '../tools/impl/skill';
+import {
+  MEMORY_WRITE_TOOL_NAME,
+  MEMORY_READ_TOOL_NAME,
+  MEMORY_LIST_TOOL_NAME,
+} from '../tools/impl/memory';
 import type { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolRisk } from '../tools/types';
 import type { SkillSummary } from '../skills/parse';
@@ -106,10 +111,11 @@ function boundaryClause(registry: ToolRegistry): string {
 /**
  * 按 risk 分组枚举文件系统工具名（read → 读用、write → 写入用、exec → 执行命令用）。
  *
- * `todo_write`（risk: read 的会话内清单工具，ADR 0010）与 `skill`（0.15.0，
- * risk: read 的技能正文加载工具，ADR 0014）不进文件系统分类——它们不触碰文件
- * 系统，列进「读用」反而误导模型（本句的语义是「对文件系统的一切访问一律通过
- * 列出的工具」）。
+ * `todo_write`（risk: read 的会话内清单工具，ADR 0010）、`skill`（0.15.0，
+ * risk: read 的技能正文加载工具，ADR 0014）与记忆工具（0.17.0 T-173：memory_read/
+ * write/list，操作 `.modou/memory/` 笔记而非项目文件）不进文件系统分类——它们
+ * 不触碰项目文件系统，列进「读用/写入用」反而误导模型（本句的语义是「对文件
+ * 系统的一切访问一律通过列出的工具」）。
  */
 function toolPathClause(registry: ToolRegistry): string {
   const tools = registry.list();
@@ -119,7 +125,10 @@ function toolPathClause(registry: ToolRegistry): string {
         (tool) =>
           risks.includes(tool.risk) &&
           tool.name !== TODO_WRITE_TOOL_NAME &&
-          tool.name !== SKILL_TOOL_NAME,
+          tool.name !== SKILL_TOOL_NAME &&
+          tool.name !== MEMORY_WRITE_TOOL_NAME &&
+          tool.name !== MEMORY_READ_TOOL_NAME &&
+          tool.name !== MEMORY_LIST_TOOL_NAME,
       )
       .map((tool) => tool.name)
       .sort();

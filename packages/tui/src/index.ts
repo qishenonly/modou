@@ -17,6 +17,9 @@ import {
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   discoverAgents,
   discoverSkills,
+  loadMemoryText,
+  memoryDirFor,
+  withMemoryTools,
   withWebTools,
   EnvelopeLogAdapter,
   expandCommandPlaceholders,
@@ -278,15 +281,30 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 看到自己哪份指令文件没生效。
   const instructions =
     options.system === undefined ? loadInstructions({ homeDir, cwd }) : null;
+  // 0.17.0 T-173 长期记忆：项目 `.modou/memory/` 的结构化笔记（ADR 0016 不上向量库）。
+  // 新会话启动加载全部记忆注入系统提示词（loadMemoryText，总量上限内、最近写入
+  // 优先）；会话内由 memory_read/write/list 工具读写。记忆目录按需创建（工具写入
+  // 会 mkdir），因此恒注册记忆工具组——即使当前没有记忆，本会话也可以记录第一条。
+  const memoryDir = memoryDirFor(cwd);
+  const memoryLoaded = loadMemoryText(memoryDir);
+  const memoryText =
+    memoryLoaded.text.length > 0 ? memoryLoaded.text : undefined;
+  tools = withMemoryTools(tools, { dir: memoryDir });
   // 基准系统提示词（正常执行模式的稳定前缀）；T-112 Plan Mode 进入/退出时
   // 在 system 与 baseSystem 之间切换（let 供切换）。技能清单（0.15.0）作为
   // 稳定前缀的一部分常驻——只有 name + description，正文按需由 skill 工具注入。
   // 0.16.0 MCP：连接完成后重建（MCP 工具定义进「可用工具」段），构造收成函数。
+  const extraParts: string[] = [];
+  if (instructions !== null && instructions.text.length > 0) {
+    extraParts.push(instructions.text);
+  }
+  if (memoryText !== undefined) extraParts.push(memoryText);
+  const extra = extraParts.length > 0 ? extraParts.join('\n\n') : undefined;
   const buildBaseSystem = (): string =>
     options.system ??
     buildSystemPrompt({
       tools,
-      extra: instructions?.text,
+      ...(extra !== undefined ? { extra } : {}),
       ...(skillsEnabled
         ? {
             skills: discoveredSkills.map((skill) => ({
@@ -440,6 +458,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 的信封先入队、App 挂载后按 FIFO 展示，与 core 发出的 notice 同构。
   if (instructions?.notice !== undefined) {
     pushNotice('warn', instructions.notice);
+  }
+  // 0.17.0 T-173：长期记忆注入超限截断告警（不静默——用户要知道哪些记忆没进
+  // 上下文，最近写入优先保留）。
+  if (memoryLoaded.notice !== undefined) {
+    pushNotice('warn', memoryLoaded.notice);
   }
   // T-114：自定义斜杠命令中被跳过的文件（缺 name/description/正文或与内置
   // 命令同名）如实告警——用户要知道自己写的命令哪份没生效。
