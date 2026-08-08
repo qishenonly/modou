@@ -224,6 +224,10 @@ export function itemKey(item: {
  * 合并一个列表：既有条目保留原序；delta 条目按 key 去重——同键**替换**
  * 为 delta 版本（「改」），无键重复文本去重（「去重」），新键**追加**（「增」）。
  * 返回新数组，不修改入参。
+ *
+ * 0.11.0（ADR 0010）：`status` / `dependsOn` 对合并是 opaque 字段——同键替换时
+ * delta 缺失的 opaque 字段保留既有值（`mergeOpaqueFields`），待办的状态 / 依赖
+ * 随压缩原样保留、清单不丢；delta 显式给出时以 delta 为准（模型能推进状态）。
  */
 function mergeItems(
   existing: readonly SummaryItem[],
@@ -239,10 +243,30 @@ function mergeItems(
       index.set(key, result.length);
       result.push(item);
     } else {
-      result[hit] = item; // 同键新条目替换旧条目（最新理解为准）
+      result[hit] = mergeOpaqueFields(result[hit], item); // 同键新条目替换旧条目（最新理解为准）
     }
   }
   return result;
+}
+
+/**
+ * 合并 opaque 字段（ADR 0010）：`status` / `dependsOn` 对压缩合并透明——delta
+ * 缺失时保留既有值，显式给出时以 delta 为准。非待办列表不受影响（字段本就缺省）。
+ * 返回新对象，不修改入参。
+ */
+function mergeOpaqueFields(
+  existing: SummaryItem,
+  incoming: SummaryItem,
+): SummaryItem {
+  return {
+    ...incoming,
+    ...(incoming.status === undefined && existing.status !== undefined
+      ? { status: existing.status }
+      : {}),
+    ...(incoming.dependsOn === undefined && existing.dependsOn !== undefined
+      ? { dependsOn: existing.dependsOn }
+      : {}),
+  };
 }
 
 /**

@@ -227,7 +227,8 @@ const DEFAULT_DELTA_SYSTEM_PROMPT = `你是 modou 的上下文增量压缩器。
 
 增量是严格 JSON 对象（只输出 JSON，不要 markdown 围栏、不要任何解释文字），字段如下：
 - "goal"：字符串——仅当摘要中的目标为空时给出（goal 是任务锚，永不改写）；
-- "constraints" / "decisions" / "done" / "todo" / "findings" / "openQuestions"：条目数组，元素为 {"id"?: 字符串, "text": 字符串}；
+- "constraints" / "decisions" / "done" / "findings" / "openQuestions"：条目数组，元素为 {"id"?: 字符串, "text": 字符串}；
+- "todo"：待办条目数组（0.11.0 起与 TodoWrite 清单共用结构，压缩后清单不丢），元素为 {"id"?: 字符串, "text": 字符串, "status": "pending" | "in_progress" | "done", "dependsOn"?: 字符串数组}——**status 必填**（待办进度随压缩保留的关键）；dependsOn 是依赖的其他待办 id 集合，仅在折叠区里发生变化时给出；
 - "filesTouched"：文件数组，元素为 {"path": 字符串, "note"?: 字符串}（只追加客观事实，绝不删除）；
 - "removed"：删除声明数组，元素为 {"list": 列表名, "key": 字符串}，key 是既有条目的 id 或原文。
 
@@ -240,6 +241,7 @@ const DEFAULT_DELTA_SYSTEM_PROMPT = `你是 modou 的上下文增量压缩器。
 要求：
 - 只提取折叠区里**新出现**的信息；既有摘要已覆盖的内容不要重复；
 - 条目 text 用简洁中文或代码标识符，不超过 80 字；
+- todo 条目务必携带 status：与既有条目同 id / 同文本时，缺省的 status / dependsOn 会保留既有值（增量合并非全量重写）——折叠区里待办进度有变化就更新对应条目的 status，没有变化的待办可以不输出，不会被丢弃；
 - 你输出的必须是合法 JSON——解析失败会导致本轮压缩整体失败。`;
 
 /** 把既有状态 + 折叠区对话文本拼成 user 提示。 */
