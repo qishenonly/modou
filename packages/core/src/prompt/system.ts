@@ -1,6 +1,7 @@
 import { TODO_WRITE_TOOL_NAME } from '../tools/impl/todo';
 import type { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolRisk } from '../tools/types';
+import type { SkillSummary } from '../skills/parse';
 
 /**
  * 系统提示词模块（T-023/T-034）：面向模型的 Agent 系统提示词。
@@ -30,6 +31,12 @@ export interface BuildSystemPromptOptions {
    * 三级指令「全局 → 项目根 → 子目录」的渲染结果，作为稳定前缀的一部分）。
    */
   readonly extra?: string;
+  /**
+   * 技能清单（0.15.0 T-152 渐进式披露）：只含 name + description，常驻系统
+   * 提示词（稳定前缀）供模型判断何时命中某技能；正文**不**在此渲染——由 skill
+   * 工具按需拉取（ADR 0014）。未传 / 空数组时不渲染技能段。
+   */
+  readonly skills?: readonly SkillSummary[];
 }
 
 /** 段落序号（中文数字；段落数 ≤ 6，renderSection 依序编号）。 */
@@ -210,17 +217,48 @@ function buildToolsSection(registry: ToolRegistry): string {
 }
 
 /**
+ * 技能清单小节正文（0.15.0 T-152 渐进式披露）：只列 name + description，正文
+ * 不常驻。明确「触发判断由模型做」——需要做清单里的事时先调用 skill 工具加载
+ * 正文再动手；未列出的技能不存在（防模型臆造技能名）。
+ */
+function buildSkillsSection(skills: readonly SkillSummary[]): string {
+  const lines: string[] = [
+    '技能是「怎么做某类事」的分步流程知识，与总是适用的项目指令（AGENTS.md）互补。',
+    '下面的清单只含技能名与一句话说明，正文按需加载：需要做清单里的事情时，',
+    '先调用 skill 工具加载对应技能的正文与附带文件，再按正文执行；未列出的技能不存在，不要臆造技能名。',
+    '',
+    ...skills.map(
+      (skill) =>
+        `- ${skill.name}：${skill.description.length > 0 ? skill.description : '（无描述）'}`,
+    ),
+  ];
+  return lines.join('\n');
+}
+
+/**
  * 构建系统提示词（T-023 / T-034）。
  *
  * 段落顺序：身份与行为准则（能力声明随注册表 risk 构成派生）→ 搜索优先策略 →
- * 工具说明（按注册表动态生成）→ 编辑纪律（仅在含写 / 执行工具时）→ 输出期待
- * →（可选 extra）。整段是纯文本、无外部依赖，同一输入产出确定。
+ * 工具说明（按注册表动态生成）→ 技能清单（0.15.0，仅在提供 skills 时）→
+ * 编辑纪律（仅在含写 / 执行工具时）→ 输出期待 →（可选 extra）。整段是纯文本、
+ * 无外部依赖，同一输入产出确定。
  */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   const parts: string[] = [buildIdentitySection(options.tools)];
   parts.push(renderSection(0, '搜索优先策略（最重要）', SEARCH_FIRST_SECTION));
   parts.push(renderSection(1, '可用工具', buildToolsSection(options.tools)));
   let nextIndex = 2;
+  const skills = options.skills ?? [];
+  if (skills.length > 0) {
+    parts.push(
+      renderSection(
+        nextIndex,
+        '可用技能（正文按需加载）',
+        buildSkillsSection(skills),
+      ),
+    );
+    nextIndex += 1;
+  }
   if (hasWriteExec(options.tools)) {
     parts.push(
       renderSection(

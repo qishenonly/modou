@@ -11,8 +11,10 @@ import {
   countUserMessages,
   createModelDeltaGenerator,
   createProviderFromConfig,
+  createSkillTool,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  discoverSkills,
   EnvelopeLogAdapter,
   expandCommandPlaceholders,
   isEmptyPlan,
@@ -57,6 +59,7 @@ import type {
   ResumeCandidate,
   RewindPreview,
   SessionRecord,
+  SkillToolDeps,
   SnapshotPoint,
   StructuredPlan,
   SummaryState,
@@ -157,6 +160,21 @@ function leaveAltScreen(stdout: NodeJS.WriteStream | undefined): void {
   }
 }
 
+/**
+ * 在既有工具集上追加 skill 工具（0.15.0 T-152）：复制注册表 + 注册 Skill 工具。
+ * 复制而非原地注册——不修改调用方传入的注册表（options.tools 是调用方资产，
+ * 自定义斜杠命令 / Plan Mode 白名单 / 权限模式推导都以本函数产出的副本为准）。
+ */
+function withSkillTool(
+  registry: ToolRegistry,
+  deps: SkillToolDeps,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  copy.register(createSkillTool(deps));
+  return copy;
+}
+
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // T-080 配置装配：内置默认 → ~/.modou/settings.json → <project>/.modou/settings.json
   // → MODOU_* 环境变量 → 显式选项（最高优先）；provider / permission / maxTurns /
@@ -165,9 +183,24 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 当前 provider 实例（T-082 /model：会话中途换模型 = 换实例，002 8.2；
   // let 供切换后重建并接续）。
   let provider: ModelProvider = startup.provider;
-  const tools = options.tools ?? defaultReadonlyTools();
   const cwd = startup.projectRoot;
   const homeDir = startup.homeDir;
+  // 0.15.0 Skills（T-151/T-152）：三级发现（仓库内置 skills/ < 全局
+  // ~/.modou/skills < 项目 .modou/skills，后者覆盖前者）→ 渐进式披露——
+  // 只有 name + description 进系统提示词清单，正文由模型按需通过 skill 工具
+  // 加载（触发判断由模型做，ADR 0014）。有可用技能时才注册 skill 工具并渲染
+  // 清单（没有技能时模型调用只会得到「无可用技能」，不必暴露该工具）。
+  const discoveredSkills = discoverSkills({ homeDir, projectRoot: cwd });
+  const skillIndex = new Map(
+    discoveredSkills.map((skill) => [skill.name, skill] as const),
+  );
+  const skillsEnabled = skillIndex.size > 0;
+  const tools = skillsEnabled
+    ? withSkillTool(options.tools ?? defaultReadonlyTools(), {
+        resolve: (name) => skillIndex.get(name),
+        names: () => [...skillIndex.keys()],
+      })
+    : (options.tools ?? defaultReadonlyTools());
   // T-114 自定义斜杠命令：加载 `.modou/commands/*.md`（frontmatter + 正文提示词）。
   // 与内置命令同名的文件被跳过并记录（不静默，启动时发 notice 告知）。
   const loadedCommands = await loadCustomCommands(cwd);
@@ -185,9 +218,22 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const instructions =
     options.system === undefined ? loadInstructions({ homeDir, cwd }) : null;
   // 基准系统提示词（正常执行模式的稳定前缀）；T-112 Plan Mode 进入/退出时
-  // 在 system 与 baseSystem 之间切换（let 供切换）。
+  // 在 system 与 baseSystem 之间切换（let 供切换）。技能清单（0.15.0）作为
+  // 稳定前缀的一部分常驻——只有 name + description，正文按需由 skill 工具注入。
   const baseSystem =
-    options.system ?? buildSystemPrompt({ tools, extra: instructions?.text });
+    options.system ??
+    buildSystemPrompt({
+      tools,
+      extra: instructions?.text,
+      ...(skillsEnabled
+        ? {
+            skills: discoveredSkills.map((skill) => ({
+              name: skill.name,
+              description: skill.description,
+            })),
+          }
+        : {}),
+    });
   let system = baseSystem;
   const readFiles = new Set(options.readFiles ?? []);
   const channel = createEventChannel();

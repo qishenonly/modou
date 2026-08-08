@@ -23,6 +23,7 @@ export * from './edit';
 export * from './bash';
 export * from './todo';
 export * from './task';
+export * from './skill';
 
 /**
  * 便捷装配：把全部只读工具（read / grep / glob）加入一个工具注册表
