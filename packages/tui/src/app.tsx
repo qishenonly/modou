@@ -274,6 +274,14 @@ export function App(props: AppProps): ReactElement {
             `子代理 ${envelope.agent} 出错：${envelope.data.message}`,
           ]);
           break;
+        case 'notice':
+          // 0.12.1 修复：子代理的 warn 级过程提示（写冲突等）透出到提示区——
+          // 写冲突需人工核对「改动可能互相覆盖」，折叠掉会漏掉关键告警；
+          // info 级（子代理内部细节）仍折叠，不污染主对话。
+          if (envelope.data.level === 'warn') {
+            setNotices((prev) => [...prev, envelope.data.text]);
+          }
+          break;
         case 'approval_request':
           // 0.12.1 修复：子代理的审批请求转发到主弹窗。弹窗按 requestId 裁决，
           // 审批桥（createApprovalBridge）的 pending map 按 id 命中、agent 无关

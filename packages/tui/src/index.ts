@@ -33,6 +33,8 @@ import {
   SessionStore,
   SnapshotStore,
   ToolRegistry,
+  toOnFileWrite,
+  WriteConflictDetector,
 } from '@modou/core';
 import type {
   Command,
@@ -178,6 +180,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   let system = baseSystem;
   const readFiles = new Set(options.readFiles ?? []);
   const channel = createEventChannel();
+  // T-123 写冲突检测接入（0.12.1 修复）：会话级检测器——主代理与子代理的每次
+  // 成功写入按自身 agent 上报（主 'main' / 子代理 ID），同一文件被多个 agent
+  // 写入时检出新写与既有写的冲突并下发 notice(warn) 告知前端（改动可能互相
+  // 覆盖，需人工核对）。跨轮次持续（同一实例传给每一轮）。
+  const writeConflicts = new WriteConflictDetector();
   const emitter = options.signalEmitter ?? process;
   // T-050：权限组合来自配置装配（内置默认 workspace-write + on-request，与
   // headless 一致）；projectRoot 取 cwd；矩阵 allow/deny 由 gate 内部裁决，
@@ -460,6 +467,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           // T-110 TodoWrite：会话级待办清单种子（跨轮演进 / /resume 重建）。
           todoState,
           compact: compactConfig,
+          // T-123 写冲突检测（0.12.1 修复）：把会话级检测器适配为 loop 的
+          // onFileWrite 钩子——每次工具成功写入按 agent 上报，跨 agent 同文件
+          // 写入 → loop 发 notice(warn)（主代理走主事件、子代理经 applySubagent
+          // 透出），前端据此提示「改动可能互相覆盖」。
+          onFileWrite: toOnFileWrite(writeConflicts),
           options: {
             maxTurns: startup.maxTurns,
             abortSignal: controller.signal,

@@ -620,4 +620,46 @@ describe('App 子代理事件流（T-122 折叠展示）', () => {
 
     unmount();
   });
+
+  test('子代理 warn 级 notice（写冲突）透出到提示区；info 级仍折叠', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    const subAgent = 'sub-abc123';
+    push(
+      subEnv(
+        {
+          type: 'notice',
+          data: {
+            level: 'warn',
+            text: '写冲突：文件 "/tmp/shared.txt" 已被 main 写入，现在由 sub-abc123 再次写入——改动可能互相覆盖，请核对后决定取舍',
+          },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    // 子代理的写冲突告警透出到提示区（改动可能互相覆盖，需人工核对，不能折叠）
+    expect(frame).toContain('写冲突');
+    expect(frame).toContain('/tmp/shared.txt');
+    expect(frame).toContain('改动可能互相覆盖');
+
+    // 子代理 info 级 notice（内部细节）仍折叠：不污染主对话
+    push(
+      subEnv(
+        { type: 'notice', data: { level: 'info', text: '子代理内部提示' } },
+        subAgent,
+      ),
+    );
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).not.toContain('子代理内部提示');
+    // 之前的告警仍在（不因新事件丢失）
+    expect(frame).toContain('写冲突');
+
+    unmount();
+  });
 });
