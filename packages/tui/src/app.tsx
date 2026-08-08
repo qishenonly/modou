@@ -6,13 +6,20 @@ import type {
   ContextStateData,
   Envelope,
   ResumeCandidate,
+  RewindPreview,
+  SnapshotPoint,
+  StructuredPlan,
+  TodoItemData,
 } from '@modou/core';
 import { ApprovalModal } from './approval';
 import { ContextPanel } from './context';
 import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import { ModelPicker } from './model';
+import { PlanPanel } from './planpanel';
 import { ResumePicker } from './resume';
+import { SnapshotPicker } from './rewind';
+import { TodoList } from './todolist';
 import {
   StatusBar,
   ZERO_TOKEN_TOTALS,
@@ -77,6 +84,38 @@ export interface AppProps {
   readonly onModelSelect?: (modelId: string) => void;
   /** /model：用户取消选择（Esc；runTui 关闭选择器）。 */
   readonly onModelCancel?: () => void;
+  /**
+   * /rewind（T-102）：待选快照点列表（runTui 注入；非空时显示快照选择器并隐藏
+   * 输入行，阻塞输入提交）。缺省/空数组 = 正常输入。
+   */
+  readonly snapshotCandidates?: readonly SnapshotPoint[];
+  /**
+   * /rewind：用户选中快照点后的回滚预览（runTui 经 previewRewind 计算并注入；
+   * 非空 = 选择器进入确认态，展示差异等待回车确认）。
+   */
+  readonly rewindPreview?: RewindPreview;
+  /** /rewind：用户选中一个快照点（id；runTui 计算预览）。 */
+  readonly onSnapshotSelect?: (id: string) => void;
+  /** /rewind：用户确认还原（runTui 执行 rewindTo 并插入会话说明）。 */
+  readonly onRewindConfirm?: () => void;
+  /** /rewind：用户取消 / 返回（runTui 关选择器或退回列表态）。 */
+  readonly onSnapshotCancel?: () => void;
+  /**
+   * 计划模式（T-112 Plan Mode）：true = 只读研究 → 结构化计划（runTui 注入）。
+   * 面板打开时输入行隐藏；状态栏显示「计划模式」段。
+   */
+  readonly planMode?: boolean;
+  /**
+   * 待评审的结构化计划（runTui 在计划轮结束后解析模型输出并注入；非空 = 显示
+   * 计划面板，阻塞输入提交，等待批准/修改/拒绝——裁决经 `plan_approve` /
+   * `plan_reject` / `plan_modify` Command 回传 runTui）。
+   */
+  readonly planProposal?: StructuredPlan | null;
+  /**
+   * 输入框的斜杠命令补全候选（`/name` 形态；runTui 注入内置 + 自定义命令）。
+   * 缺省 = input.tsx 的 DEFAULT_SLASH_COMMANDS（内置子集）。
+   */
+  readonly slashCommands?: readonly string[];
 }
 
 /**
@@ -115,6 +154,14 @@ export function App(props: AppProps): ReactElement {
     modelCandidates,
     onModelSelect,
     onModelCancel,
+    snapshotCandidates,
+    rewindPreview,
+    onSnapshotSelect,
+    onRewindConfirm,
+    onSnapshotCancel,
+    planMode,
+    planProposal,
+    slashCommands,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -166,6 +213,9 @@ export function App(props: AppProps): ReactElement {
   // 弹窗打开期间输入行被隐藏（阻塞输入提交），全局 Esc 让给弹窗（拒绝）。
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequestData | null>(null);
+  // 待办清单（T-111）：todo_update 事件（模型调用 todo_write 后发出）全量刷新；
+  // /resume 时 runTui 推合成 todo_update 信封回填。空数组不渲染。
+  const [todoItems, setTodoItems] = useState<TodoItemData[]>([]);
   // 键盘回调读到的是旧闭包：用 ref 镜像弹窗是否打开，供 App 层全局键判断
   const approvalOpenRef = useRef(false);
   approvalOpenRef.current = pendingApproval !== null;
@@ -183,6 +233,16 @@ export function App(props: AppProps): ReactElement {
   const modelOpen = (modelCandidates?.length ?? 0) > 0;
   const modelOpenRef = useRef(modelOpen);
   modelOpenRef.current = modelOpen;
+  // 快照选择器（T-102 /rewind）：runTui 注入候选列表；非空即打开。与 /resume
+  // 选择器同一惯例——打开时输入行隐藏，全局 Esc 让给选择器（取消/返回）。
+  const snapshotOpen = (snapshotCandidates?.length ?? 0) > 0;
+  const snapshotOpenRef = useRef(snapshotOpen);
+  snapshotOpenRef.current = snapshotOpen;
+  // 计划面板（T-112 Plan Mode）：runTui 注入解析出的计划；非空即打开（模态）。
+  // 打开时输入行隐藏，全局 Esc 让给面板（拒绝），不打断任何轮次（计划轮已结束）。
+  const planOpen = planProposal !== undefined && planProposal !== null;
+  const planOpenRef = useRef(planOpen);
+  planOpenRef.current = planOpen;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -191,7 +251,68 @@ export function App(props: AppProps): ReactElement {
   useEffect(() => {
     let disposed = false;
 
+    // T-122（0.12.0 子代理事件流）：子代理事件的折叠消费——把「开始/结束/出错」
+    // 落成提示区 notice，其余过程细节（text_delta / tool_call / usage …）静默
+    // 折叠（G-0.12.0：子代理内部过程不污染主对话，前端按 agent 分组可折叠展示）。
+    const applySubagent = (envelope: Envelope): void => {
+      switch (envelope.type) {
+        case 'turn_start':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 开始处理（第 ${envelope.data.turn} 轮）`,
+          ]);
+          break;
+        case 'turn_end':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 结束：${envelope.data.termination}`,
+          ]);
+          break;
+        case 'error':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 出错：${envelope.data.message}`,
+          ]);
+          break;
+        case 'notice':
+          // 0.12.1 修复：子代理的 warn 级过程提示（写冲突等）透出到提示区——
+          // 写冲突需人工核对「改动可能互相覆盖」，折叠掉会漏掉关键告警；
+          // info 级（子代理内部细节）仍折叠，不污染主对话。
+          if (envelope.data.level === 'warn') {
+            setNotices((prev) => [...prev, envelope.data.text]);
+          }
+          break;
+        case 'approval_request':
+          // 0.12.1 修复：子代理的审批请求转发到主弹窗。弹窗按 requestId 裁决，
+          // 审批桥（createApprovalBridge）的 pending map 按 id 命中、agent 无关
+          // ——子代理若被折叠掉，它的 decider 永远等不到裁决，子代理整轮悬挂
+          // （主代理也停在等 task 结论，整轮卡死）。转发到主弹窗即可让用户裁决。
+          setPendingApproval(envelope.data);
+          break;
+        case 'approval_resolved':
+          // 子代理裁决收尾：与主代理同款语义——id 匹配才关闭弹窗（迟到旧请求
+          // 的收尾事件不误关当前弹窗）。
+          setPendingApproval((prev) =>
+            prev !== null && prev.id === envelope.data.id ? null : prev,
+          );
+          break;
+        default:
+          // text_delta / tool_call / tool_result / usage / context_state 等
+          // 子代理过程细节：折叠（不展示）。子代理的最终结论文本会经主代理的
+          // task 工具 tool_result 展示，用户不丢失结论。
+          break;
+      }
+    };
+
     const apply = (envelope: Envelope): void => {
+      // T-122（0.12.0 子代理事件流）：子代理事件带自身 agent（≠ 'main'）。
+      // 前端按 agent 分组折叠——子代理的完整过程（text_delta / tool_call /
+      // usage / context_state …）折叠成提示区的一条 notice，不打进主对话 /
+      // 主用量 / 主工具列表（G-0.12.0：主上下文不被子代理过程污染）。
+      if (envelope.agent !== 'main') {
+        applySubagent(envelope);
+        return;
+      }
       switch (envelope.type) {
         case 'turn_start':
           // 防御：前一轮若有残留缓冲立即提交（正常情况 turn_end 已封存）
@@ -221,6 +342,10 @@ export function App(props: AppProps): ReactElement {
             `已压缩：折叠 ${envelope.data.coveredTurns[0]}..${envelope.data.coveredTurns[1]} 轮，` +
               `${envelope.data.beforeTokens} → ${envelope.data.afterTokens} tokens`,
           ]);
+          break;
+        case 'todo_update':
+          // T-111 待办清单：模型调用 todo_write 后发来全量清单快照，全量刷新
+          setTodoItems([...envelope.data.items]);
           break;
         case 'notice':
           setNotices((prev) => [...prev, envelope.data.text]);
@@ -275,7 +400,9 @@ export function App(props: AppProps): ReactElement {
     if (
       approvalOpenRef.current ||
       resumeOpenRef.current ||
-      modelOpenRef.current
+      modelOpenRef.current ||
+      snapshotOpenRef.current ||
+      planOpenRef.current
     ) {
       if (key.ctrl && _text === 'c') {
         onExit?.();
@@ -345,6 +472,8 @@ export function App(props: AppProps): ReactElement {
           当前轮的流式回复实时追加；工具调用单行状态（T-043）在消息之上。
           PgUp/PgDn 条目级上翻历史（隐藏最近 N 条），新轮自动回最新 */}
       <Box flexGrow={1} flexDirection="column">
+        {/* 待办清单（T-111）：模型调用 todo_write 后实时渲染，进度条 + 勾选 + 高亮 */}
+        {todoItems.length > 0 && <TodoList items={todoItems} />}
         {tools.length > 0 && <ToolCallList entries={tools} />}
         {history
           .slice(0, Math.max(0, history.length - scrollOffset))
@@ -378,6 +507,7 @@ export function App(props: AppProps): ReactElement {
         totals={totals}
         running={running}
         turn={lastTurn}
+        planMode={planMode}
       />
 
       {/* 审批弹窗（T-044）：approval_request 打开，approval_resolved 关闭；
@@ -389,6 +519,17 @@ export function App(props: AppProps): ReactElement {
           onApprove={(requestId, decision) =>
             send({ type: 'approve', requestId, decision })
           }
+        />
+      )}
+
+      {/* 计划面板（T-112 Plan Mode）：runTui 注入解析出的计划；非空即显示（模态）。
+          打开期间隐藏输入行，a 批准 / e 修改 / r/Esc 拒绝（拒绝 = 零文件改动） */}
+      {planProposal !== undefined && planProposal !== null && (
+        <PlanPanel
+          plan={planProposal}
+          onApprove={() => send({ type: 'plan_approve' })}
+          onReject={() => send({ type: 'plan_reject' })}
+          onEdit={() => send({ type: 'plan_modify' })}
         />
       )}
 
@@ -414,21 +555,40 @@ export function App(props: AppProps): ReactElement {
         />
       )}
 
+      {/* 快照选择器（T-102 /rewind）：runTui 注入候选列表；非空即显示。
+          打开期间隐藏输入行（阻塞输入提交），Esc 取消/返回后恢复；选中快照点
+          后 rewindPreview 非空 → 选择器进入确认态（展示差异等待回车确认） */}
+      {snapshotOpen && (
+        <SnapshotPicker
+          candidates={snapshotCandidates ?? []}
+          preview={rewindPreview}
+          onSelect={(id) => onSnapshotSelect?.(id)}
+          onConfirm={() => onRewindConfirm?.()}
+          onCancel={() => onSnapshotCancel?.()}
+        />
+      )}
+
       {/* /context 用量面板（T-063）：runTui 注入 contextState 即显示（模态），
           Esc 经 onContextDismiss 关闭；与弹窗/选择器同款「打开时隐藏输入行」 */}
       {contextState !== undefined && <ContextPanel state={contextState} />}
 
       {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
-          审批弹窗、会话选择器、模型选择器或 /context 面板打开时隐藏——模态期间
-          不接受新的输入提交 */}
+          审批弹窗、会话选择器、模型选择器、快照选择器或 /context 面板打开时
+          隐藏——模态期间不接受新的输入提交 */}
       {pendingApproval === null &&
         !resumeOpen &&
         !modelOpen &&
+        !snapshotOpen &&
+        !planOpen &&
         contextState === undefined && (
           <Box>
             <Text color="cyan">&gt; </Text>
             <Box flexGrow={1}>
-              <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+              <Input
+                onSubmit={handleSubmit}
+                onSlash={handleSlash}
+                slashCommands={slashCommands}
+              />
             </Box>
           </Box>
         )}

@@ -232,6 +232,23 @@ describe('createModelDeltaGenerator（stub provider 覆盖解析）', () => {
       expect((caught as SummaryDeltaError).cause).toBeInstanceOf(Error);
     });
   });
+
+  test('缺省摘要提示词要求 todo 条目携带 status/dependsOn（0.11.0 清单不丢）', async () => {
+    const provider = new TextStubProvider('{"todo": []}');
+    await createModelDeltaGenerator(provider)({
+      folded: [],
+      state: seededState(),
+    });
+    const system = provider.seenSystem[0] ?? '';
+    // todo 条目结构与 TodoWrite 同构：status 必填、dependsOn 可选
+    expect(system).toContain('"todo"');
+    expect(system).toContain('"status"');
+    expect(system).toContain('"dependsOn"');
+    expect(system).toContain('pending');
+    expect(system).toContain('in_progress');
+    expect(system).toContain('done');
+    expect(system).toContain('status 必填');
+  });
 });
 
 // ---------------------------------------------------------------------------

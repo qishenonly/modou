@@ -9,7 +9,11 @@
  *   3. 包内容断言：bin 存在、tui/core 源码在、无 dist 残留、单元测试不泄漏
  *      （保留 eval/fixtures 数据与 provider/contract 运行时导出）；
  *   4. 安装冒烟：tarball 装进临时目录，跑 `modou --version` 与 `--help`
- *      （无 TTY 环境下的启动验证；TUI 本体需要 TTY，不在此覆盖）。
+ *      （无 TTY 环境下的启动验证；TUI 本体需要 TTY，不在此覆盖）；
+ *   5. 内置技能发现冒烟（0.15.0 打包修复）：安装后的嵌套布局
+ *      （node_modules/modou/node_modules/@modou/core）下直接 import
+ *      discoverSkills，缺省内置目录应经向上多退找到随包发布的
+ *      node_modules/modou/skills/，4 个内置技能全部可发现。
  *
  * 用法：`bun run pack:verify`（仓库根目录）。退出码非 0 = 验证失败。
  * 需要网络（安装冒烟要从 registry 拉 ink/react 等运行时依赖）。
@@ -83,7 +87,21 @@ function main(): void {
     bundleDependencies?: string[];
   };
   check(rootPackage.name === 'modou', '根包名必须是 modou');
+  void mainAsync(rootPackage).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
 
+async function mainAsync(rootPackage: {
+  name: string;
+  version: string;
+  bin?: Record<string, string>;
+  files?: string[];
+  engines?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  bundleDependencies?: string[];
+}): Promise<void> {
   // 临时注入 file: 依赖：开发期根 package.json 不声明 @modou/core（保持 workspace
   // 软链、改动即时生效）；打包时才需要它内嵌 core 进 tarball（bundleDependencies）。
   // 打包验证结束后还原 package.json，避免污染开发环境。
@@ -228,6 +246,61 @@ function main(): void {
       helpOut.includes(`modou ${rootPackage.version}`) &&
         helpOut.includes('/help'),
       '--help 输出不完整',
+    );
+
+    // ⑤ 内置技能发现冒烟（0.15.0 打包修复）：安装后的嵌套布局下，直接从
+    // 内嵌 core 的 discover.ts 出发调用 discoverSkills——defaultBuiltinSkillsDir
+    // 必须经向上多退找到随包发布的 node_modules/modou/skills/（而非固定四级上退
+    // 落到 node_modules/skills 这种不存在的路径），4 个内置技能全部可发现。
+    const discoverPath = join(
+      smokeDir,
+      'node_modules',
+      'modou',
+      'node_modules',
+      '@modou',
+      'core',
+      'src',
+      'skills',
+      'discover.ts',
+    );
+    check(
+      existsSync(discoverPath),
+      `安装后内嵌 core 的 discover.ts 不在期望路径: ${discoverPath}`,
+    );
+    const { discoverSkills } = (await import(discoverPath)) as {
+      discoverSkills: (options: {
+        homeDir: string;
+        projectRoot: string;
+      }) => ReadonlyArray<{
+        readonly name: string;
+        readonly level: string;
+        readonly description: string;
+        readonly body: string;
+      }>;
+    };
+    const discovered = discoverSkills({
+      homeDir: join(smokeDir, 'home'),
+      projectRoot: smokeDir,
+    });
+    const builtinNames = discovered
+      .filter((skill) => skill.level === 'builtin')
+      .map((skill) => skill.name)
+      .sort();
+    const expectedBuiltin = [
+      'code-review',
+      'commit-message',
+      'debugging',
+      'write-tests',
+    ];
+    for (const name of expectedBuiltin) {
+      check(
+        builtinNames.includes(name),
+        `安装后内置技能不可发现: ${name}（已发现: ${builtinNames.join('、')}）`,
+      );
+    }
+    check(
+      builtinNames.length >= expectedBuiltin.length,
+      `安装后内置技能数量不足: ${builtinNames.join('、')}`,
     );
   } finally {
     rmSync(smokeDir, { recursive: true, force: true });

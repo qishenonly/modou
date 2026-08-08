@@ -185,6 +185,49 @@ describe('merge（002 7.2 增量合并，非全量重写）', () => {
     expect(merged.todo[2]).toEqual({ id: 't2', text: '新的待办' });
   });
 
+  test('同 id 替换时 delta 缺失 status/dependsOn 保留既有值（0.11.0 opaque 透传）', () => {
+    const existing = merge(createSummaryState(), {
+      todo: [
+        { id: 't1', text: '实现核心模块', status: 'in_progress' },
+        {
+          id: 't2',
+          text: '写测试',
+          status: 'pending',
+          dependsOn: ['t1'],
+        },
+      ],
+    });
+    const merged = merge(existing, {
+      todo: [
+        // 同 id：更新文本但未带 status/dependsOn → 保留既有状态与依赖（opaque 透传）
+        { id: 't1', text: '实现核心模块（推进中）' },
+        // 同 id：显式给出新 status → 覆盖；dependsOn 缺省 → 保留既有
+        { id: 't2', text: '写测试', status: 'done' },
+        // 新键：直接追加
+        { id: 't3', text: '验证结果', status: 'pending' },
+      ],
+    });
+    expect(merged.todo).toHaveLength(3);
+    expect(merged.todo[0]).toEqual({
+      id: 't1',
+      text: '实现核心模块（推进中）',
+      status: 'in_progress',
+    });
+    expect(merged.todo[1]).toEqual({
+      id: 't2',
+      text: '写测试',
+      status: 'done',
+      dependsOn: ['t1'],
+    });
+    expect(merged.todo[2]).toEqual({
+      id: 't3',
+      text: '验证结果',
+      status: 'pending',
+    });
+    // 纯函数：既有数组未被修改
+    expect(existing.todo[0].status).toBe('in_progress');
+  });
+
   test('removed：显式删除条目；filesTouched 不可删（硬事实白名单）', () => {
     const existing = merge(createSummaryState(), {
       todo: [
@@ -764,6 +807,64 @@ describe('runAgentTurn 接入（summaryState + compact 配置）', () => {
     const seen = provider.seenMessages[0];
     expect(seen[0].role).toBe('system');
     expect(texts(seen)).not.toContain('任务开始');
+  });
+
+  test('压缩后清单+状态保留：todo 的 status/dependsOn 随压缩原样保留（0.11.0）', async () => {
+    // 既有摘要里已有带状态/依赖的待办清单（TodoWrite 写入 → 压缩的素材）
+    const state = merge(createSummaryState(), {
+      goal: '重构订单模块',
+      todo: [
+        { id: 't1', text: '读取现状', status: 'done' },
+        {
+          id: 't2',
+          text: '重构核心',
+          status: 'in_progress',
+          dependsOn: ['t1'],
+        },
+      ],
+    });
+    const provider = new StubProvider([
+      [textEvent('完成'), usageEvent(100, 10), finishEvent('stop')],
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: longThread(),
+        summaryState: state,
+        compact: {
+          keepTurns: 2,
+          thresholdTokens: 1, // 小阈值 → 必触发压缩
+          // 生产生成器：折叠区里 t2 推进（文本更新但未带 status，opaque 透传缺省
+          // → 保留既有），t3 新增（无 status，缺省 pending）；t1 未提及
+          generateDelta: async () => ({
+            todo: [{ id: 't2', text: '重构核心（推进中）' }],
+          }),
+        },
+        options: { maxTurns: 1 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 压缩发生、状态演进（rev +1）
+    expect(events.some((event) => event.type === 'compaction')).toBe(true);
+    const merged = result.summaryState!;
+    expect(merged.rev).toBe(state.rev + 1);
+    // t1 未在 delta 中 → 原样保留（含 status）
+    expect(merged.todo).toContainEqual({
+      id: 't1',
+      text: '读取现状',
+      status: 'done',
+    });
+    // t2 同 id 文本更新但缺 status/dependsOn → 保留既有 in_progress 与依赖
+    expect(merged.todo).toContainEqual({
+      id: 't2',
+      text: '重构核心（推进中）',
+      status: 'in_progress',
+      dependsOn: ['t1'],
+    });
   });
 });
 

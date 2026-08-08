@@ -1,4 +1,4 @@
-export const version = '0.9.0';
+export const version = '0.17.0';
 
 export * from './provider';
 export * from './runtime';
@@ -8,5 +8,17 @@ export * from './permission';
 export * from './prompt';
 export * from './context';
 export * from './session';
+export * from './skills';
+export * from './agents';
+export * from './web';
+export * from './memory';
+export * from './snapshot';
 export * from './config';
 export * from './eval';
+export * from './hooks';
+export * from './plan';
+export * from './logging';
+export * from './init';
+export * from './multimodal';
+export * from './cost';
+export * from './mcp';

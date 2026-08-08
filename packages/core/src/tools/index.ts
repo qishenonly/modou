@@ -10,4 +10,5 @@ export * from './toolset';
 export * from './truncate';
 export * from './redact';
 export * from './pipeline';
+export * from './write-conflict';
 export * from './impl';

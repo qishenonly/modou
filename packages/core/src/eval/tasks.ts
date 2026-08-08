@@ -4,6 +4,7 @@ import {
   runBunTest,
   runProbeTest,
 } from './judges';
+import { isEmptyPlan, parseStructuredPlan } from '../plan/plan';
 import type { EvalTask } from './types';
 
 /**
@@ -24,6 +25,10 @@ import type { EvalTask } from './types';
  * 另含 1 个**长任务压缩用例**（long-mathlib，`long: true`，fixture =
  * `fixtures/longtask`）：实现 mathlib 五个函数，maxTurns 44，启用压缩配置
  * （T-070）——验证「压缩后任务延续率」：会话中途压缩后，judge 仍通过。
+ *
+ * 另含 1 个**技能触发用例**（skill-code-review，0.15.0）：「审查本次改动」应
+ * 命中 code-review——judge 断言模型调用 skill 工具且 name 参数为期望技能
+ * （runSuite 聚合「技能触发准确率」，G-0.15.0 验收门）。
  *
  * 每个任务的 judge 只依赖 fixture 副本 + 模型输出，可离线手工断言。
  */
@@ -377,6 +382,134 @@ export const TASKS: readonly EvalTask[] = [
     },
   },
 
+  // ---- 多文件重构 / 规划（3，T-115 新增，fixture = `fixtures/refactor-multi`）----
+  // refactor-multi-datefmt：跨 3 个文件（report/invoice/ledger）把重复的日期
+  // 格式化抽取到共享模块 src/datefmt.ts——judge 先跑回归基线断言**行为不变**，
+  // 再 grep 断言共享模块导出 + 三个模块都 import 复用；
+  // plan-restructure / plan-restructure-detailed：规划类用例——judge 对模型
+  // 最终文本做**结构化计划**断言（固定五段：目标/涉及文件/分步改动/验证方式/
+  // 风险点，parseStructuredPlan 解析，ADR 0010），检验规划质量（G-0.11.0）。
+  {
+    id: 'refactor-multi-datefmt',
+    kind: 'refactor',
+    title: '重构（多文件）：抽取重复的日期格式化到共享模块',
+    fixture: 'refactor-multi',
+    prompt:
+      '在 src/report.ts、src/invoice.ts、src/ledger.ts 中，formatReportDate / ' +
+      'formatInvoiceDate / formatLedgerDate 重复了「时间戳 → YYYY-MM-DD」的日期格式化' +
+      '逻辑（各写了一遍）。请把该逻辑抽取到共享模块 src/datefmt.ts（导出 ' +
+      '`formatDate(timestamp: number): string`），三个函数复用它，对外行为必须不变——' +
+      '`bun test tests/regression.test.ts` 必须保持通过。重构后自行运行测试验证。' +
+      '不要改动测试文件与其他文件。',
+    judge: async (ctx) => {
+      const regression = await runBunTest(ctx.dir, 'tests/regression.test.ts');
+      if (!regression.pass) return regression;
+      const shared = await fileContains(
+        ctx.dir,
+        'src/datefmt.ts',
+        /export\s+function\s+formatDate\s*\(/,
+      );
+      if (!shared.pass) return shared;
+      const modules = ['report', 'invoice', 'ledger'];
+      const reused: string[] = [];
+      for (const name of modules) {
+        const source = await readFixtureFile(ctx.dir, `src/${name}.ts`);
+        if (/from\s+['"].\/datefmt['"]/.test(source)) reused.push(name);
+      }
+      return reused.length === 3
+        ? {
+            pass: true,
+            reason: `行为不变且日期格式化已抽取到 src/datefmt.ts，report/invoice/ledger 三模块复用`,
+          }
+        : {
+            pass: false,
+            reason: `共享模块存在但未全部复用（复用 ${reused.join('、')}）：未完成多文件重构`,
+          };
+    },
+  },
+  {
+    id: 'plan-restructure',
+    kind: 'plan',
+    title: '规划：跨文件重构的实施计划（结构化五段）',
+    fixture: 'refactor-multi',
+    prompt:
+      '请只读研究 src/report.ts、src/invoice.ts、src/ledger.ts 与 tests/regression.test.ts，' +
+      '然后输出一个结构化实施计划：把重复的日期格式化逻辑抽取到共享模块。' +
+      '计划必须包含五段：目标 / 涉及文件 / 分步改动 / 验证方式 / 风险点' +
+      '（markdown 小节标题或 JSON 均可）。只输出计划，不要改动任何文件。',
+    judge: (ctx) => {
+      const plan = parseStructuredPlan(ctx.text);
+      if (plan === null || isEmptyPlan(plan)) {
+        return {
+          pass: false,
+          reason: `文本未产出结构化五段计划：${ctx.text.slice(0, 200)}`,
+        };
+      }
+      if (plan.files.length === 0 || plan.steps.length === 0) {
+        return {
+          pass: false,
+          reason:
+            '计划缺少涉及文件或分步改动（固定五段：目标/涉及文件/分步改动/验证方式/风险点）',
+        };
+      }
+      return {
+        pass: true,
+        reason: `结构化计划（目标=${plan.goal.slice(0, 40)}，文件 ${plan.files.length}，步骤 ${plan.steps.length}）`,
+      };
+    },
+  },
+  {
+    id: 'plan-restructure-detailed',
+    kind: 'plan',
+    title: '规划（严格）：跨文件重构计划须覆盖全部文件与验证方式',
+    fixture: 'refactor-multi',
+    prompt:
+      '请只读研究 src/report.ts、src/invoice.ts、src/ledger.ts 与 tests/regression.test.ts，' +
+      '输出一个结构化实施计划：抽取重复的日期格式化逻辑到共享模块 src/datefmt.ts。' +
+      '计划固定五段（目标 / 涉及文件 / 分步改动 / 验证方式 / 风险点）。' +
+      '要求：涉及文件列出全部三个模块；分步改动 ≥ 3 步；验证方式必须包含运行回归测试。' +
+      '只输出计划，不要改动任何文件。',
+    judge: (ctx) => {
+      const plan = parseStructuredPlan(ctx.text);
+      if (plan === null || isEmptyPlan(plan)) {
+        return {
+          pass: false,
+          reason: `文本未产出结构化五段计划：${ctx.text.slice(0, 200)}`,
+        };
+      }
+      const fileText = plan.files.join('\n');
+      const coversAll = ['report', 'invoice', 'ledger'].every((name) =>
+        fileText.includes(name),
+      );
+      const enoughSteps = plan.steps.length >= 3;
+      const mentionsVerify = plan.verification.some((line) =>
+        /regression|bun test|bun\s+test|测试/.test(line),
+      );
+      if (!coversAll) {
+        return {
+          pass: false,
+          reason: `计划涉及文件未覆盖全部三个模块（${plan.files.join('、')}）`,
+        };
+      }
+      if (!enoughSteps) {
+        return {
+          pass: false,
+          reason: `分步改动不足 3 步（${plan.steps.length} 步）`,
+        };
+      }
+      if (!mentionsVerify) {
+        return {
+          pass: false,
+          reason: '验证方式未包含回归测试（regression / bun test）',
+        };
+      }
+      return {
+        pass: true,
+        reason: `详细计划：文件 ${plan.files.length}，步骤 ${plan.steps.length}，验证含回归测试`,
+      };
+    },
+  },
+
   // ---- 读代码答问（5）：judge = 关键词 / 结构断言模型文本输出 ----
   {
     id: 'read-average-empty',
@@ -474,6 +607,47 @@ export const TASKS: readonly EvalTask[] = [
     prompt:
       '在 src/mathlib.ts 中实现五个缺失函数：add / subtract / multiply / divide / modulo（规格见 tests/final.test.ts 的断言）。这是一个长任务：请先完整读取相关文件，再逐一实现，最后运行 `bun test tests/final.test.ts` 验证全部通过。不要改动其他文件。',
     judge: (ctx) => runBunTest(ctx.dir, 'tests/final.test.ts'),
+  },
+
+  // ---- 技能触发（1，0.15.0）：judge 断言模型调用 skill 工具并命中期望技能 ----
+  // 技能触发任务测的是「触发准确率可测」：系统提示词常驻技能清单（渐进式披露，
+  // 只有 name + description），模型应自行判断任务命中 code-review 技能并调用
+  // skill 工具加载正文。judge 依据 ctx.toolCalls（runEval 从事件流重建）断言
+  // 触发了 skill 且 name 参数为期望技能——不检查正文质量（那是审查任务的延伸，
+  // 本任务只测触发准确性）。runner 需注入 skills（RunEvalOptions.skills）装配
+  // skill 工具；未注入时模型调用得到「无可用技能」，judge 判 fail。
+  {
+    id: 'skill-code-review',
+    kind: 'skill',
+    title: '技能触发：审查本次改动应命中 code-review',
+    fixture: 'skills-review',
+    expectedSkill: 'code-review',
+    prompt:
+      '请审查本次改动（当前工作区的代码）：逐文件核对改动，按严重度输出审查意见。' +
+      '动手前先判断是否命中系统提示词里的技能清单——命中就先调用 skill 工具加载' +
+      '对应技能的正文，再按正文执行。',
+    judge: (ctx) => {
+      const skillCall = (ctx.toolCalls ?? []).find(
+        (call) => call.name === 'skill',
+      );
+      if (skillCall === undefined) {
+        return {
+          pass: false,
+          reason: '模型未调用 skill 工具（技能触发缺失）',
+        };
+      }
+      const input = skillCall.input;
+      const hit =
+        typeof input === 'object' &&
+        input !== null &&
+        (input as { name?: unknown }).name === 'code-review';
+      return hit
+        ? { pass: true, reason: '模型调用 skill 工具命中 code-review' }
+        : {
+            pass: false,
+            reason: `模型调用了 skill 但命中 ${JSON.stringify(input)}，期望 code-review`,
+          };
+    },
   },
 ];
 

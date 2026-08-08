@@ -10,6 +10,149 @@ import { z } from 'zod';
 /** 工具风险分类（002 5.2）：给 Permission 裁决用的分类维度，不是自由文本。 */
 export type ToolRisk = 'read' | 'write' | 'exec' | 'network';
 
+/**
+ * TodoWrite 清单条目（与 context/summary 的 SummaryItem 结构共用——ADR 0010：
+ * 清单与压缩状态同一结构，压缩时清单不丢）。tools 边界内自持结构类型，
+ * 不 import context；运行时（loop）据此适配进会话结构化状态。
+ */
+export interface TodoWriteItem {
+  readonly id?: string;
+  readonly text: string;
+  readonly status: 'pending' | 'in_progress' | 'done';
+  /** 依赖的其他待办 id（可选）。 */
+  readonly dependsOn?: readonly string[];
+}
+
+/** 一次 TodoWrite 的清单更新（全量期望清单，模型每次带全部条目）。 */
+export interface TodoUpdate {
+  readonly items: readonly TodoWriteItem[];
+}
+
+// ---------------------------------------------------------------------------
+// 子代理（T-120 Task 工具，ADR 0011）
+// ---------------------------------------------------------------------------
+
+/** 子代理缺省轮次上限：request 未传 maxTurns 时的兜底（runtime/subagent.ts 消费）。 */
+export const SUBAGENT_DEFAULT_MAX_TURNS = 10;
+
+/** 子代理缺省工具白名单：只读三件套（ADR 0011「子代理默认只读」）。 */
+export const SUBAGENT_DEFAULT_TOOL_NAMES: readonly string[] = [
+  'read',
+  'grep',
+  'glob',
+];
+
+/**
+ * 子代理请求（Task 工具入参经过校验后的形态）：派生子代理执行的任务描述与预算。
+ */
+export interface SubagentRequest {
+  /** 交给子代理的完整指令（作为子代理对话的首条 user 消息）。 */
+  readonly prompt: string;
+  /**
+   * 工具白名单（父代理工具名的子集，缺省 = 只读三件套）。白名单外的工具名
+   * 静默跳过——子代理永远拿不到父代理没有的工具（权限继承不超父，ADR 0011）。
+   */
+  readonly tools?: readonly string[];
+  /** 子代理轮次上限（独立于父代理；缺省 SUBAGENT_DEFAULT_MAX_TURNS）。 */
+  readonly maxTurns?: number;
+  /** 子代理 token 预算（独立核算，父代理不合并；缺省不限）。 */
+  readonly maxTokens?: number;
+  /** 子代理墙钟超时（毫秒；缺省不限——靠 maxTurns/maxTokens 预算兜底）。 */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * 子代理执行结果：只向主循环返回最终结论文本（独立消息历史 / 独立上下文窗口
+ * 的产物，父代理不接触子代理的内部过程）。
+ */
+export interface SubagentResult {
+  /** 子代理正常收尾（end_turn）为 true；超预算 / 超时 / 错误 / 一层深拒绝为 false。 */
+  readonly ok: boolean;
+  /** 最终结论文本（失败时为已产出的部分文本或诊断信息）。 */
+  readonly text: string;
+  /** ok:false 时的失败原因（depth 限制 / 超时 / 预算超限 / 终止原因等）。 */
+  readonly error?: string;
+  /** 子代理 ID（事件流 agent 字段；T-122 前端按此分组折叠）。 */
+  readonly agentId?: string;
+  /** 子代理实际完成的轮次（模型请求数）。 */
+  readonly turns?: number;
+  /** 子代理独立核算的 token 用量（不并入父代理 usage）。 */
+  readonly usage?: Readonly<{
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+  }>;
+}
+
+/**
+ * 子代理派发函数：由运行时注入 ToolContext（Task 工具经此派发），
+ * 实现 = 一次独立的 `runAgentTurn`（runtime/subagent.ts，ADR 0011）。
+ */
+export type SubagentRunner = (
+  request: SubagentRequest,
+) => Promise<SubagentResult>;
+
+// ---------------------------------------------------------------------------
+// 自定义 agents（0.17.0 T-170，ADR 0011 子代理边界的角色化复用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 自定义 agent 派发请求（agent 工具入参 + 角色配置解析后的形态）：按名派发
+ * 一个角色化子代理——角色提示词拼入系统提示词、注册表按角色白名单派生、
+ * 可选模型切换（002 8.2 换 provider 实例）。
+ */
+export interface AgentDispatchRequest {
+  /** 角色名（审计 / 事件流 agent 标识用）。 */
+  readonly name: string;
+  /** 角色提示词（拼入子代理系统提示词的追加段）。 */
+  readonly systemPrompt: string;
+  /**
+   * 工具白名单（角色声明的 allowedTools；空数组 = 继承父代理完整工具集）。
+   * **真正强制**：派生注册表只含白名单工具，越界调用在 ① Resolve 即被拒。
+   */
+  readonly allowedTools: readonly string[];
+  /** 角色指定模型（缺省 = 沿用父代理当前 provider）。 */
+  readonly model?: string;
+  /** 交给角色的任务指令（作为子代理对话的首条 user 消息）。 */
+  readonly prompt: string;
+}
+
+/**
+ * 自定义 agent 派发函数：由运行时注入 ToolContext（agent 工具经此派发），
+ * 实现 = 一次带角色配置的 `runAgentTurn`（runtime/agent.ts，复用子代理内核）。
+ */
+export type AgentRunner = (
+  request: AgentDispatchRequest,
+) => Promise<SubagentResult>;
+
+// ---------------------------------------------------------------------------
+// 写冲突检测（T-123，ADR 0011）
+// ---------------------------------------------------------------------------
+
+/**
+ * 写冲突报告（T-123）：同一文件被另一 agent 先写入后，当前 agent 再次写入时
+ * 返回的冲突信息。前端 / 用户据此核对「改动可能互相覆盖」。
+ */
+export interface WriteConflictReport {
+  /** 冲突的文件路径（工具上报的解析后绝对路径）。 */
+  readonly path: string;
+  /** 本次写入的 agent（'main' 或子代理 ID）。 */
+  readonly agent: string;
+  /** 此前已写入同一文件的另一 agent。 */
+  readonly existingAgent: string;
+  /** 既有写入的时间戳（epoch ms）。 */
+  readonly existingAt: number;
+}
+
+/**
+ * 写冲突检测钩子（运行时/调用方注入）：每次工具成功写入一个文件后调用，
+ * 返回冲突报告（同一文件此前已被另一 agent 写入）或 undefined（无冲突 /
+ * 同一 agent 连续写入）。agent 参数：'main' = 主代理，子代理用自身 ID。
+ */
+export type OnFileWrite = (
+  path: string,
+  agent: string,
+) => WriteConflictReport | undefined;
+
 /** 工具执行上下文。0.2.0 最小集：组合取消信号 + 工作目录。 */
 export interface ToolContext {
   /**
@@ -37,6 +180,38 @@ export interface ToolContext {
    * 不把 loop 与 read 工具的 payload 结构耦合在一起。
    */
   readonly onFileRead?: (path: string) => void;
+  /**
+   * 待办更新上报回调（TodoWrite 工具的持久化通道，T-110）：工具每次更新
+   * 清单后调用（全量期望清单），运行时据此把清单写入会话内结构化状态
+   * （TodoState）与会话日志（todo_update 条目，/resume 可重建）。回调同步、
+   * 缺省不调用——与 onFileRead 同一设计：写方自报更新，不把 loop 与工具的
+   * payload 结构耦合。
+   */
+  readonly onTodoUpdate?: (update: TodoUpdate) => void;
+  /**
+   * 子代理派发通道（T-120 Task 工具）：运行时注入，Task 工具 execute 经它派出
+   * 子代理（独立 runAgentTurn、独立消息历史、独立上下文窗口），只拿回最终结论
+   * 文本。缺省不提供——未注入时 Task 工具返回「子代理不可用」失败结果（错误即
+   * 数据）。一层深限制由运行时强制：子代理 loop 内的 runSubagent 直接拒绝
+   * （ADR 0011）。
+   */
+  readonly runSubagent?: SubagentRunner;
+  /**
+   * 自定义 agent 派发通道（0.17.0 T-170）：运行时注入，agent 工具 execute 经它
+   * 派出角色化子代理（独立 runAgentTurn、独立消息历史、独立上下文窗口）。
+   * 与 runSubagent 同一派发内核（复用子代理运行时），区别在系统提示词（角色
+   * 提示词拼入）与注册表派生（按角色白名单，真正强制越界拒绝）。缺省不提供——
+   * 未注入时 agent 工具返回「自定义 agent 不可用」失败结果（错误即数据）。
+   * 一层深限制由运行时强制：子代理 loop 内的 runAgent 直接拒绝（ADR 0011）。
+   */
+  readonly runAgent?: AgentRunner;
+  /**
+   * 写入上报回调（T-123 写冲突检测）：write / edit 工具成功落盘后调用，入参是
+   * 实际写入的文件路径（解析后绝对路径）。运行时据此维护会话级写冲突检测
+   * （onFileWrite 注入，ADT 0011）。回调同步、缺省不调用——写方自报，不把
+   * loop 与工具的 payload 结构耦合。
+   */
+  readonly onFileWrite?: (path: string) => void;
 }
 
 /**
@@ -82,6 +257,36 @@ export interface Tool<
   readonly description: string;
   readonly schema: TSchema;
   readonly risk: ToolRisk;
+  /**
+   * JSON Schema 覆盖（0.16.0 T-162 MCP 工具注入）：工具对模型的参数说明以
+   * 此为准（registry.toJsonSchema 直接返回，不再 z.toJSONSchema 生成）——
+   * MCP 工具的 inputSchema 由远程 server 声明，是权威形态；round-trip 可能
+   * 丢失 additionalProperties / 描述等细节，故保留原文透传给模型。缺省 =
+   * 由 schema 生成（既有行为，本地工具不受影响）。
+   */
+  readonly jsonSchema?: unknown;
+  /**
+   * 工具级执行超时（毫秒，0.16.0 design-checker minor）：覆盖管线缺省的 60s
+   * 兜底。MCP 注入工具设为服务器的 callTimeoutMs（settings.json
+   * mcp.servers.<name>.callTimeoutMs，缺省 120s）——使远程工具的调用时限遵循
+   * 配置而非被管线默认切短；本地工具缺省不设（管线 60s 兜底不变）。
+   */
+  readonly timeoutMs?: number;
+  /**
+   * 来源标识（0.16.0 design-checker minor）：MCP 注入工具填服务器名，审批描述
+   * 在 command/path 分支加「[MCP <origin>]」前缀——谁的工具在请求什么一目了然
+   * （远程 server 的命令/路径操作与本地 bash/file 可区分）。缺省无（本地工具
+   * 不受影响）。
+   */
+  readonly origin?: string;
+  /**
+   * 并发执行标记（T-123 子代理）：标为 true 的工具在同一轮被多次调用时由 loop
+   * 并行执行（Promise.all 派发、结果按调用顺序聚合）——适用于互不共享状态、
+   * 无文件写副作用的工具（如 task 子代理派发，ADR 0011 默认只读因此并行安全）。
+   * 缺省 = 串行执行（002 十一「工具默认串行落地」，换取可预测性；并发写同一
+   * 文件必然丢改动）。
+   */
+  readonly concurrent?: boolean;
   readonly execute: (
     args: z.infer<TSchema>,
     ctx: ToolContext,

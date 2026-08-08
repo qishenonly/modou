@@ -101,6 +101,11 @@ export interface StatusBarProps {
   readonly running: boolean;
   /** 当前轮次（turn_start 事件携带；未开始过为 0）。 */
   readonly turn: number;
+  /**
+   * 计划模式（T-112 Plan Mode）：true = 只读研究阶段，状态栏显示「计划模式」段。
+   * 缺省不显示该段。
+   */
+  readonly planMode?: boolean;
 }
 
 /**
@@ -108,9 +113,10 @@ export interface StatusBarProps {
  * 本组件不订阅事件流。缓存命中累计 > 0 时额外显示「cache +N」。
  */
 export function StatusBar(props: StatusBarProps): ReactElement {
-  const { modelName, permissionMode, totals, running, turn } = props;
+  const { modelName, permissionMode, totals, running, turn, planMode } = props;
 
   const segments: string[] = [];
+  if (planMode === true) segments.push('计划模式');
   if (modelName !== undefined) segments.push(modelName);
   if (permissionMode !== undefined) {
     segments.push(PERMISSION_MODE_LABEL[permissionMode]);

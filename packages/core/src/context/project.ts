@@ -53,16 +53,45 @@ export interface ToolsSource {
 
 /** 分项名称：协议负载里的机器可读标识（TUI 负责映射为中文标签）。 */
 export type ContextSectionName =
-  'system' | 'tools' | 'instructions' | 'history' | 'tool_output';
+  'system' | 'tools' | 'mcp_tools' | 'instructions' | 'history' | 'tool_output';
 
-/** 分项展示顺序（稳定前缀在前、易变区在后，与 002 7.1 分段一致）。 */
+/**
+ * 分项展示顺序（稳定前缀在前、易变区在后，与 002 7.1 分段一致）。
+ * 0.16.0：`mcp_tools` 紧邻 `tools`——MCP 工具定义也是稳定前缀的一部分（随请求
+ * 发给模型），单独计价便于 /context 单列 MCP 占用（phase-3 §0.16.0 上下文成本
+ * 控制：装十个 server 可能吃掉数千 token，要有尺子量）。
+ */
 export const CONTEXT_SECTION_NAMES: readonly ContextSectionName[] = [
   'system',
   'tools',
+  'mcp_tools',
   'instructions',
   'history',
   'tool_output',
 ];
+
+/**
+ * MCP 工具命名空间前缀（0.16.0 切分约定）：mcp/types.ts 的 MCP_TOOL_PREFIX
+ * 保证注册名以 `mcp_` 开头（构造处保证），此处只读约定按前缀把工具定义切分为
+ * 「本地工具（tools）」与「MCP 工具（mcp_tools）」两段——两侧互为注释。
+ */
+const MCP_TOOL_PREFIX = 'mcp_';
+
+/** 是否 MCP 工具（命名空间前缀约定，见 MCP_TOOL_PREFIX）。 */
+function isMcpToolName(name: string): boolean {
+  return name.startsWith(MCP_TOOL_PREFIX);
+}
+
+/** 按谓词过滤工具集视图（list 过滤；toJsonSchema 按名查原样可用）。 */
+function filterTools(
+  source: ToolsSource,
+  predicate: (name: string) => boolean,
+): ToolsSource {
+  return {
+    list: () => source.list().filter((tool) => predicate(tool.name)),
+    toJsonSchema: (name) => source.toJsonSchema(name),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 序列化（与 runtime 请求级粗估同源，见文件头）
@@ -190,10 +219,18 @@ export function estimateContextSections(
   input: EstimateContextInput,
 ): ContextEstimate {
   const systemTokens = estimateTokens(input.system);
-  const toolsTokens =
+  // 0.16.0：工具定义按命名空间切分——本地工具（tools）与 MCP 工具（mcp_tools）
+  // 分别计价（合计不变，只是单列以便 /context 定位膨胀段，phase-3 §0.16.0）。
+  const allToolsTokens =
     input.tools === undefined
       ? 0
       : estimateTokens(serializeToolsText(input.tools));
+  const mcpToolsTokens =
+    input.tools === undefined
+      ? 0
+      : estimateTokens(
+          serializeToolsText(filterTools(input.tools, isMcpToolName)),
+        );
   const instructionsTokens = estimateTokens(input.instructions ?? '');
 
   // 易变区按消息角色切分：工具输出（role tool）单独计价，其余全算历史。
@@ -208,7 +245,8 @@ export function estimateContextSections(
 
   const sections: readonly ContextSection[] = [
     { name: 'system', tokens: systemTokens },
-    { name: 'tools', tokens: toolsTokens },
+    { name: 'tools', tokens: allToolsTokens - mcpToolsTokens },
+    { name: 'mcp_tools', tokens: mcpToolsTokens },
     { name: 'instructions', tokens: instructionsTokens },
     { name: 'history', tokens: estimateTokens(historyParts.join('\n')) },
     { name: 'tool_output', tokens: estimateTokens(toolOutputParts.join('\n')) },

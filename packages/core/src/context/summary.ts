@@ -27,15 +27,27 @@ import type { SessionRecord } from '../session/log';
 // 结构
 // ---------------------------------------------------------------------------
 
+/** 待办条目的状态（TodoWrite 复用；ADR 0010「清单与压缩状态共用结构」）。 */
+export type TodoStatus = 'pending' | 'in_progress' | 'done';
+
 /**
  * 摘要条目：`id` 是去重 / 更新的稳定键（缺省按 `text` 去重）。
  * 生产摘要由模型生成（0.7.0 可注入生成函数，测试用 stub），`ts` 可选留档。
+ *
+ * 0.11.0（ADR 0010）起 `status` / `dependsOn` 是 TodoWrite 清单条目的字段，
+ * 直接挂在摘要条目上——清单 = 「把状态卸载到上下文之外」的最佳载体，两者本
+ * 是同一件事的两面。压缩合并（merge）按 `id ?? text` 处理条目时**不感知**这两
+ * 个字段（opaque 透传），因此待办的状态 / 依赖随压缩原样保留、清单不丢。
  */
 export interface SummaryItem {
   readonly id?: string;
   readonly text: string;
   /** 条目产生的 epoch ms（可选，留档排序用）。 */
   readonly ts?: number;
+  /** 待办状态（TodoWrite 清单条目携带；非待办条目缺省）。 */
+  readonly status?: TodoStatus;
+  /** 待办依赖（TodoWrite 清单条目携带：引用的其他待办 id 集合；非待办条目缺省）。 */
+  readonly dependsOn?: readonly string[];
 }
 
 /** 已触文件（硬事实）：path 为键，只追加、永不删除、永不改写。 */
@@ -212,6 +224,10 @@ export function itemKey(item: {
  * 合并一个列表：既有条目保留原序；delta 条目按 key 去重——同键**替换**
  * 为 delta 版本（「改」），无键重复文本去重（「去重」），新键**追加**（「增」）。
  * 返回新数组，不修改入参。
+ *
+ * 0.11.0（ADR 0010）：`status` / `dependsOn` 对合并是 opaque 字段——同键替换时
+ * delta 缺失的 opaque 字段保留既有值（`mergeOpaqueFields`），待办的状态 / 依赖
+ * 随压缩原样保留、清单不丢；delta 显式给出时以 delta 为准（模型能推进状态）。
  */
 function mergeItems(
   existing: readonly SummaryItem[],
@@ -227,10 +243,30 @@ function mergeItems(
       index.set(key, result.length);
       result.push(item);
     } else {
-      result[hit] = item; // 同键新条目替换旧条目（最新理解为准）
+      result[hit] = mergeOpaqueFields(result[hit], item); // 同键新条目替换旧条目（最新理解为准）
     }
   }
   return result;
+}
+
+/**
+ * 合并 opaque 字段（ADR 0010）：`status` / `dependsOn` 对压缩合并透明——delta
+ * 缺失时保留既有值，显式给出时以 delta 为准。非待办列表不受影响（字段本就缺省）。
+ * 返回新对象，不修改入参。
+ */
+function mergeOpaqueFields(
+  existing: SummaryItem,
+  incoming: SummaryItem,
+): SummaryItem {
+  return {
+    ...incoming,
+    ...(incoming.status === undefined && existing.status !== undefined
+      ? { status: existing.status }
+      : {}),
+    ...(incoming.dependsOn === undefined && existing.dependsOn !== undefined
+      ? { dependsOn: existing.dependsOn }
+      : {}),
+  };
 }
 
 /**

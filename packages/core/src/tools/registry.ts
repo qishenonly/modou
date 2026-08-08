@@ -46,6 +46,8 @@ export class ToolRegistry {
 
   /**
    * schema → JSON Schema（zod 4 内置 z.toJSONSchema），结果缓存。
+   * 工具声明了 `jsonSchema` 覆盖（0.16.0 MCP 注入）时直接返回原文——
+   * 远程 server 声明的 inputSchema 是权威形态，不走 round-trip。
    * 未知工具抛错——这属于编程错误（调用前应先 find / has）。
    */
   toJsonSchema(name: string): unknown {
@@ -55,7 +57,10 @@ export class ToolRegistry {
     }
     const cached = this.jsonSchemas.get(name);
     if (cached !== undefined) return cached;
-    const jsonSchema = z.toJSONSchema(tool.schema);
+    const jsonSchema =
+      tool.jsonSchema !== undefined
+        ? tool.jsonSchema
+        : z.toJSONSchema(tool.schema);
     this.jsonSchemas.set(name, jsonSchema);
     return jsonSchema;
   }

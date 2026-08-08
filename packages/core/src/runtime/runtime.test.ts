@@ -28,6 +28,8 @@ import {
 import { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolContext } from '../tools/types';
 import { ApprovalGate } from '../permission/approval';
+import { HookBus } from '../hooks/bus';
+import { planReadonlyRegistry } from '../plan/policy';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
 import { BudgetLedger } from '../context/budget';
@@ -236,10 +238,11 @@ describe('runAgentTurn（0.1.0 裸循环）', () => {
     expect(event.type).toBe('context_state');
     if (event.type === 'context_state') {
       const data = event.data;
-      // 五个分项齐全（002 7.1 分段）
+      // 六个分项齐全（002 7.1 分段；0.16.0 起 MCP 工具定义单列）
       expect(data.sections.map((s) => s.name)).toEqual([
         'system',
         'tools',
+        'mcp_tools',
         'instructions',
         'history',
         'tool_output',
@@ -1351,5 +1354,323 @@ describe('预算核算接线（T-062 loop → BudgetLedger）', () => {
     expect(ledger.snapshot().inputTokens).toBe(20);
     expect(ledger.snapshot().outputTokens).toBe(10);
     expect(result.budget).toBe(ledger); // TurnResult 返回同一实例
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TodoWrite 接线（T-110）：loop 维护会话级待办清单
+// ---------------------------------------------------------------------------
+
+describe('TodoWrite 接线（T-110 loop → 清单状态）', () => {
+  /** 模型第一轮调 todo_write 更新清单，第二轮纯文本收尾。 */
+  const todoRounds: StreamEvent[][] = [
+    [
+      {
+        type: 'tool_use',
+        id: 'todo-1',
+        name: 'todo_write',
+        input: {
+          list: [
+            { id: 'a', text: '读取项目结构', status: 'done' },
+            { id: 'b', text: '实现 TodoWrite', status: 'in_progress' },
+          ],
+        },
+      },
+      { type: 'finish', reason: 'tool_use' },
+    ],
+    textEvents('清单已建立。'),
+  ];
+
+  test('todo_write 更新清单：todoState 演进、todo_update 事件发出', async () => {
+    const provider = new StubProvider(todoRounds);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: defaultWriteTools(),
+        options: { maxTurns: 4 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 懒初始化：todoState 随首轮更新出现，条目演进
+    expect(result.todoState).toBeDefined();
+    expect(result.todoState!.items).toHaveLength(2);
+    expect(result.todoState!.items[0].status).toBe('done');
+    expect(result.todoState!.items[1].status).toBe('in_progress');
+
+    // todo_update 运行时事件（bridge → 协议 todo_update）
+    const updateEvents = events.filter((e) => e.type === 'todo_update');
+    expect(updateEvents).toHaveLength(1);
+    if (updateEvents[0]?.type === 'todo_update') {
+      expect(updateEvents[0].items).toHaveLength(2);
+    }
+
+    // 工具执行成功（tool_result ok）
+    const toolResult = events.filter((e) => e.type === 'tool_result');
+    expect(toolResult).toHaveLength(1);
+    if (toolResult[0]?.type === 'tool_result') {
+      expect(toolResult[0].ok).toBe(true);
+    }
+  });
+
+  test('todoState 种子传入：跨调用接续累计（/resume 种子语义）', async () => {
+    const provider = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'todo-2',
+          name: 'todo_write',
+          input: {
+            list: [
+              { id: 'a', text: '读取', status: 'done' },
+              { id: 'b', text: '实现', status: 'done' },
+            ],
+          },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('完成。'),
+    ]);
+    const seed = {
+      items: [{ id: 'a', text: '读取', status: 'in_progress' as const }],
+    };
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: defaultWriteTools(),
+        todoState: seed,
+        options: { maxTurns: 4 },
+      },
+      () => {},
+    );
+
+    // 种子上的 a 被更新为 done，b 新增
+    expect(result.todoState!.items).toHaveLength(2);
+    expect(result.todoState!.items[0].status).toBe('done');
+    expect(result.todoState!.items[1].status).toBe('done');
+  });
+
+  test('未调用 todo_write 的轮次：todoState 不产生（缺省 undefined）', async () => {
+    const provider = new StubProvider([textEvents('纯文本回复')]);
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        options: { maxTurns: 4 },
+      },
+      () => {},
+    );
+    expect(result.todoState).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan Mode 只读白名单强制（T-112）
+// ---------------------------------------------------------------------------
+
+describe('Plan Mode 只读白名单强制（T-112）', () => {
+  test('plan 注册表下写工具被拒：未知工具 ok:false，零文件改动，轮次照常推进', async () => {
+    const provider = new StubProvider([
+      [
+        {
+          type: 'tool_use',
+          id: 'w1',
+          name: 'write',
+          input: { path: 'x.ts', content: 'x' },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textEvents('好的，我不写文件。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider,
+        messages: [userMsg],
+        tools: planReadonlyRegistry(defaultWriteTools()),
+        options: { maxTurns: 4 },
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // 写工具调用被拒绝（注册表里没有 write → 未知工具），且零文件改动
+    const toolResult = events.filter((e) => e.type === 'tool_result');
+    expect(toolResult).toHaveLength(1);
+    if (toolResult[0]?.type === 'tool_result') {
+      expect(toolResult[0].ok).toBe(false);
+      expect(toolResult[0].forModel).toContain('未知工具');
+    }
+    // 模型收到拒绝后改出纯文本，轮次正常收尾
+    expect(result.termination).toBe('end_turn');
+    expect(result.text).toContain('我不写文件');
+  });
+
+  test('plan 注册表下只读工具正常放行：read 成功执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-plan-'));
+    try {
+      const file = join(dir, 'a.ts');
+      writeFileSync(file, 'export const a = 1;\n', 'utf8');
+      const provider = new StubProvider([
+        [
+          { type: 'tool_use', id: 'r1', name: 'read', input: { path: file } },
+          { type: 'finish', reason: 'tool_use' },
+        ],
+        textEvents('已读取。'),
+      ]);
+      const events: RuntimeEvent[] = [];
+      await runAgentTurn(
+        {
+          provider,
+          messages: [userMsg],
+          tools: planReadonlyRegistry(defaultWriteTools()),
+          cwd: dir,
+          options: { maxTurns: 4 },
+        },
+        (event) => {
+          events.push(event);
+        },
+      );
+      const toolResult = events.filter((e) => e.type === 'tool_result');
+      expect(toolResult).toHaveLength(1);
+      if (toolResult[0]?.type === 'tool_result') {
+        expect(toolResult[0].ok).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 钩子透传接线（0.14.0 design-checker minor）：runAgentTurn 把 input.hooks
+// 注入管线 ④⑦，PreToolUse deny 真正阻止执行并回喂理由；改写生效时 loop
+// 转发说明性 notice（loop → 管线端到端，离线内联钩子）。
+// ---------------------------------------------------------------------------
+
+describe('钩子透传接线（0.14.0 loop → 管线 ④）', () => {
+  function toolResultFor(
+    events: RuntimeEvent[],
+    id: string,
+  ): { ok: boolean; forModel: string } | undefined {
+    const event = events.find((e) => e.type === 'tool_result' && e.id === id);
+    if (event === undefined || event.type !== 'tool_result') return undefined;
+    return { ok: event.ok, forModel: event.forModel ?? '' };
+  }
+
+  test('PreToolUse deny → 工具未执行，tool_result ok:false 且理由回喂模型', async () => {
+    const bus = new HookBus();
+    let executed = 0;
+    bus.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'deny',
+        reason: '测试钩子：echo 被策略性拒绝，勿重试',
+      }),
+      { id: 'deny-echo', matcher: { tools: ['echo'] } },
+    );
+    const registry = new ToolRegistry().register({
+      ...echoTool,
+      execute: async () => {
+        executed += 1;
+        return { ok: true, forModel: 'SHOULD NOT RUN' };
+      },
+    });
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'hi' }),
+      textEvents('好的，不调用 echo。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: registry,
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(executed).toBe(0); // ④ deny → ⑤ Execute 未发生
+    const toolResult = toolResultFor(events, 'call-1');
+    expect(toolResult?.ok).toBe(false);
+    expect(toolResult?.forModel).toContain('被钩子拒绝');
+    expect(toolResult?.forModel).toContain(
+      '测试钩子：echo 被策略性拒绝，勿重试',
+    );
+  });
+
+  test('改写生效时 loop 转发说明性 notice；改写后的参数实际执行', async () => {
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'allow',
+        modifiedInput: { text: 'REWRITTEN' },
+      }),
+      { id: 'rewrite', matcher: { tools: ['echo'] } },
+    );
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'original' }),
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: new ToolRegistry().register(echoTool),
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    // 说明性 notice 从管线经 loop 转发到事件流（前端提示区展示，不静默）
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.level).toBe('info');
+      expect(notice.text).toContain('改写了工具 "echo" 的入参');
+    }
+    // 改写后的参数实际执行（审计的 tool_call 仍记录原始请求，见 run.test.ts）
+    expect(toolResultFor(events, 'call-1')?.forModel).toBe('echo:REWRITTEN');
+  });
+
+  test('匹配器不命中的工具直通（钩子不干扰其他工具执行）', async () => {
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      async () => ({ decision: 'deny', reason: '只拦 bash' }),
+      { id: 'bash-only', matcher: { tools: ['bash'] } },
+    );
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'hi' }),
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: new ToolRegistry().register(echoTool),
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(toolResultFor(events, 'call-1')?.ok).toBe(true);
+    expect(toolResultFor(events, 'call-1')?.forModel).toBe('echo:hi');
   });
 });

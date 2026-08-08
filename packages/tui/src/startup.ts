@@ -10,7 +10,11 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import type {
   CompactOptions,
+  ConfigMcp,
   ConfigOverrides,
+  ConfigSnapshot,
+  ConfigWeb,
+  HookBus,
   ModelProvider,
   PermissionConfig,
   ProviderFromConfigInput,
@@ -21,10 +25,14 @@ import type {
 } from '@modou/core';
 import {
   createProviderFromConfig,
+  defaultHookLogDir,
+  hooksFromSettings,
   loadSettings,
   readOpencodeEnv,
   resolveConfig,
 } from '@modou/core';
+import { HookExecutionLog } from '@modou/core';
+import type { StructuredLogger } from '@modou/core';
 
 /** /model 重建 provider 实例的工厂（与 core createProviderFromConfig 同形）。 */
 export type CreateProvider = (
@@ -87,6 +95,11 @@ export interface TuiOptions {
    * 裁决 ask 之后的请求，矩阵中的 allow / deny 由 gate 内部直接裁决（弹窗不出现）。
    */
   readonly permission?: PermissionConfig;
+  /**
+   * 快照配置（T-103：保留策略 / 降级阈值 / 开关）。缺省经配置解析（内置默认 =
+   * 启用，30 天 / 每会话 10 条 / 每项目 200 条）；显式选项最高优先。
+   */
+  readonly snapshot?: ConfigSnapshot;
   /** Ink 输出流（测试注入；缺省 process.stdout）。 */
   readonly stdout?: NodeJS.WriteStream;
   /** Ink 输入流（测试注入；缺省 process.stdin）。 */
@@ -100,6 +113,31 @@ export interface TuiOptions {
    * 外网、不读真实环境变量）。/resume 恢复会话模型时同样走本工厂。
    */
   readonly createProvider?: CreateProvider;
+  /**
+   * 结构化日志（T-131）：提供时，事件流经 EnvelopeLogAdapter 落盘 JSONL
+   * （request / tool_call / permission 三类，见 core logging/structured.ts）。
+   * 缺省不记录。调用方（main.ts / CI 包装）注入；测试注入临时目录 logger 断言。
+   */
+  readonly structuredLog?: StructuredLogger;
+  /**
+   * 钩子总线（0.14.0）：提供时，管线 ④ PreToolUse（deny 阻止执行 / 改写参数）、
+   * ⑦ PostToolUse（观察 / 副作用）挂载钩子；用户提交提示词时执行 UserPromptSubmit
+   * 钩子（可注入附加上下文 / 阻止提交）。缺省经配置装配（settings.json hooks 键，
+   * T-143）；测试注入内存 HookBus 以离线覆盖。
+   */
+  readonly hooks?: HookBus;
+  /**
+   * MCP 配置（0.16.0，T-163）：settings.json mcp 键的显式覆盖（最高优先级）。
+   * 缺省经配置解析（内置默认空表 = 不连接任何 server）。测试可注入自建 server
+   * 配置离线覆盖。
+   */
+  readonly mcp?: ConfigMcp;
+  /**
+   * 联网工具配置（0.17.0，T-171/T-172）：settings.json web 键的显式覆盖
+   * （最高优先级）。缺省经配置解析（内置默认 = 不限制域名）。测试可注入
+   * 域名白名单离线覆盖。
+   */
+  readonly web?: ConfigWeb;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */
@@ -116,6 +154,20 @@ export interface TuiStartupConfig {
   readonly maxTurns: number;
   /** 压缩保留的近 N 轮原文（配置解析后的最终值）。 */
   readonly keepTurns: number;
+  /** 快照配置（配置解析后的最终值；缺省 undefined = 引擎内置默认）。 */
+  readonly snapshot?: ConfigSnapshot;
+  /**
+   * 钩子总线（0.14.0）：从 settings.json hooks 键装配的外部进程钩子
+   * （④⑦ 管线 + UserPromptSubmit），执行日志落 `~/.modou/logs/<project-hash>/`。
+   * 未配置 hooks 时缺省 undefined（管线直通）。
+   */
+  readonly hooks?: HookBus;
+  /**
+   * 启动期提示（0.14.0 补充）：配置了本版未接线的钩子点（SessionStart——
+   * 只提供挂载点）时，装配产出一条提示文案；runTui 以 notice 展示——配置
+   * 合法但钩子不会执行，不能静默失效。
+   */
+  readonly notices?: readonly string[];
   /**
    * provider 装配面（T-082 /model 重建 provider 实例用）：供应商类型 +
    * 生效端点。baseURL 取「配置显式值 → opencode 测试端点 → OPENAI_BASE_URL」，
@@ -128,6 +180,16 @@ export interface TuiStartupConfig {
   };
   /** 装配时使用的环境（/model 重建 provider 时沿用同一环境）。 */
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * MCP 服务器配置表（0.16.0，T-163）：settings.json mcp 键 + 显式覆盖后的结果。
+   * 缺省 undefined = 不连接任何 server（/mcp 提示未配置）。
+   */
+  readonly mcp?: ConfigMcp;
+  /**
+   * 联网工具配置（0.17.0，T-171/T-172）：settings.json web 键 + 显式覆盖后的
+   * 结果（域名白名单/黑名单 + 抓取超时）。缺省 undefined = 不限制域名。
+   */
+  readonly web?: ConfigWeb;
 }
 
 /**
@@ -150,7 +212,10 @@ export function assembleTuiStartup(
   const overrides: ConfigOverrides = {
     maxTurns: options.maxTurns,
     keepTurns: options.compact?.keepTurns,
+    snapshot: options.snapshot,
     homeDir: options.homeDir,
+    mcp: options.mcp,
+    web: options.web,
   };
   const resolved = resolveConfig({
     settings: loaded.settings,
@@ -158,6 +223,10 @@ export function assembleTuiStartup(
     env,
     overrides,
   });
+  // 偏离 C：SessionStart 本版未接线（只提供挂载点）——settings.json 配置了
+  // SessionStart 钩子时装配产出一条 notice（runTui 展示：配置合法但钩子不会
+  // 执行，不静默失效；移除配置或等后续版本接线）。
+  const sessionStartCount = resolved.hooks?.SessionStart?.length ?? 0;
   // provider 装配面（T-082 /model 重建用）：baseURL 与装配时的
   // createProviderFromConfig 分支同口径——openai-compat 且未配置 model 时
   // 优先 opencode 测试端点，否则配置显式值 / OPENAI_BASE_URL 回落环境变量。
@@ -192,11 +261,36 @@ export function assembleTuiStartup(
       options.permission ?? permissionFromResolved(resolved, projectRoot),
     maxTurns: resolved.maxTurns,
     keepTurns: resolved.keepTurns,
+    ...(resolved.snapshot !== undefined ? { snapshot: resolved.snapshot } : {}),
+    // T-143 Hooks：settings.json hooks 键 → HookBus（外部进程钩子 + 执行日志
+    // 落 ~/.modou/logs/<project-hash>/hooks-<日期>.jsonl）。未配置 = 直通。
+    ...(resolved.hooks !== undefined
+      ? {
+          hooks: hooksFromSettings(resolved.hooks, {
+            log: new HookExecutionLog({
+              dir: defaultHookLogDir({
+                homeDir: resolved.homeDir,
+                cwd: projectRoot,
+              }),
+            }),
+            cwd: projectRoot,
+          }),
+        }
+      : {}),
+    ...(sessionStartCount > 0
+      ? {
+          notices: [
+            `settings.json 配置了 ${sessionStartCount} 个 SessionStart 钩子，但本版本未接线（仅提供挂载点）——这些钩子不会执行。请移除该配置，或等待后续版本接线。`,
+          ],
+        }
+      : {}),
     providerSpec: {
       type: (options.provider?.id as ProviderType) ?? resolved.provider,
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),
     },
     env,
+    ...(resolved.mcp !== undefined ? { mcp: resolved.mcp } : {}),
+    ...(resolved.web !== undefined ? { web: resolved.web } : {}),
   };
 }
 

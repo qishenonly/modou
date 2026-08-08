@@ -69,6 +69,10 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
       // 压缩事件（T-070）：压缩前后 token、被折叠的轮次范围——前端据此
       // 告知用户「刚压缩过」（002 3.2 compaction 表）。
       return [{ type: 'compaction', data: event.data }];
+    case 'todo_update':
+      // 待办清单更新（T-110 TodoWrite）：一次清单快照——前端据此渲染
+      // 进度条 / 勾选（002 3.2 todo_update 表，T-111）。
+      return [{ type: 'todo_update', data: { items: event.items } }];
     case 'notice':
       // loop 侧提示（T-070：压缩跳过 / 压缩失败等），与协议 notice 同形
       return [
@@ -117,6 +121,11 @@ export function mapRuntimeEvent(event: RuntimeEvent): ProtocolEvent[] {
       ];
     case 'error':
       return [{ type: 'error', data: toErrorData(event.error) }];
+    case 'subagent_event':
+      // 子代理内部事件按同一规则映射（信封的 agent 由流式桥接按 agent 分发——
+      // 本函数只负责事件类型层映射）。一层深硬限制保证内层不再嵌套
+      // subagent_event，递归仅作防御。
+      return mapRuntimeEvent(event.event);
     case 'tool_feedback':
       // 「未知工具」错误已回喂模型；同时以 notice 告知前端发生了什么
       return [
@@ -149,6 +158,11 @@ function toErrorData(error: ProviderError): ErrorData {
  * 流式桥接（headless / TUI 用）：`runAgentTurn` + `EnvelopeEmitter`，
  * 协议事件逐条经 `onEnvelope` 回调送出 —— 前端拿到的是纯协议信封，
  * 与 core 内部对象零接触。
+ *
+ * T-122（0.12.0 子代理事件流）：子代理的 `subagent_event` 在此按 agent 分发
+ * 到独立的子 EnvelopeEmitter——每个子代理有自己的 agent 字段与独立的
+ * seq / turn 空间（信封的 `agent` 字段从第一天就存在，002 3.1 的便宜先手），
+ * 前端按 `agent` 分组即可折叠展示子代理完整过程，协议一个字节都不用改。
  */
 export async function runAgentTurnStreaming(
   input: RunAgentTurnInput,
@@ -156,11 +170,45 @@ export async function runAgentTurnStreaming(
   options: EnvelopeEmitterOptions = {},
 ): Promise<TurnResult> {
   const emitter = new EnvelopeEmitter(options);
-  return runAgentTurn(input, (runtimeEvent) => {
-    for (const protocolEvent of mapRuntimeEvent(runtimeEvent)) {
-      onEnvelope(emitter.emit(protocolEvent));
+  // 子代理专属信封发射器缓存：agent → emitter（每个子代理独立 seq / turn）。
+  const childEmitters = new Map<string, EnvelopeEmitter>();
+
+  const emitFor = (agent: string, event: ProtocolEvent): void => {
+    if (agent === 'main') {
+      onEnvelope(emitter.emit(event));
+      return;
     }
-  });
+    let child = childEmitters.get(agent);
+    if (child === undefined) {
+      child = new EnvelopeEmitter({
+        agent,
+        ...(options.now !== undefined ? { now: options.now } : {}),
+      });
+      childEmitters.set(agent, child);
+    }
+    onEnvelope(child.emit(event));
+  };
+
+  // 递归分发：subagent_event → 按其 agent 处理内层事件；内层理论上不可能再是
+  // subagent_event（一层深硬限制），此处仍递归处理以防御性保持 agent 正确。
+  const dispatch = (event: RuntimeEvent): void => {
+    if (event.type === 'subagent_event') {
+      const inner = event.event;
+      if (inner.type === 'subagent_event') {
+        dispatch(inner);
+        return;
+      }
+      for (const protocolEvent of mapRuntimeEvent(inner)) {
+        emitFor(event.agent, protocolEvent);
+      }
+      return;
+    }
+    for (const protocolEvent of mapRuntimeEvent(event)) {
+      emitFor('main', protocolEvent);
+    }
+  };
+
+  return runAgentTurn(input, dispatch);
 }
 
 /** 收集式桥接的产出：全部信封 + TurnResult。 */

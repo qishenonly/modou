@@ -132,6 +132,46 @@ export interface ModelSwitchEntryData {
   readonly to: string;
 }
 
+/**
+ * snapshot 条目负载（design 002 §4.2：快照标记入日志；0.10.0 落地）。
+ * 记录「快照点在哪、改了什么」——/rewind 列表的依据之一是清单（manifest），
+ * 日志侧这条是审计 / 追溯用的旁路标记，投影时忽略（不产生模型消息）。
+ */
+export interface SnapshotEntryData {
+  /** 快照点 id（影子仓库 commit 哈希；degraded 点也记录供追溯）。 */
+  readonly ref: string;
+  /** 改动摘要（快照点的 summary，如「3 个文件变更：…」）。 */
+  readonly summary?: string;
+}
+
+/**
+ * todo_update 条目负载（design 002 §4.2 / ADR 0010；0.11.0 TodoWrite 落地）。
+ * TodoWrite 每次更新清单落一条**全量清单快照**（log 是唯一真相，002 4.1）——
+ * /resume 重建清单只需取最后一条 todo_update，无需重放全量历史。
+ * 条目结构复用 SummaryState.todo 的 SummaryItem（id / text / status / dependsOn）；
+ * 本模块不自知 context/summary（依赖方向：Session 不依赖 Context），落盘结构
+ * 由 context/todo.ts 的 rebuildTodoState 做运行时守卫。
+ */
+export interface TodoUpdateEntryData {
+  readonly items: readonly {
+    readonly id?: string;
+    readonly text: string;
+    readonly status?: 'pending' | 'in_progress' | 'done';
+    readonly dependsOn?: readonly string[];
+  }[];
+}
+
+/**
+ * plan 条目负载（T-113 计划文档化；002 4.2「日志是唯一真相」）。计划批准 / 落盘
+ * 时把序列化的计划 markdown 存一条快照——/resume 重建结构化计划
+ * （rebuildStructuredPlan）据此恢复，计划在会话间仍在；投影时忽略
+ * （计划的执行输入是批准时的 user 消息，已由 user 条目承载）。
+ */
+export interface PlanEntryData {
+  /** 序列化的结构化计划 markdown（parseStructuredPlan 可解析回 StructuredPlan）。 */
+  readonly text: string;
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -144,6 +184,9 @@ export interface SessionEntryDataMap {
   error: ErrorEntryData;
   compaction: CompactionEntryData;
   model_switch: ModelSwitchEntryData;
+  snapshot: SnapshotEntryData;
+  todo_update: TodoUpdateEntryData;
+  plan: PlanEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -160,6 +203,9 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'error',
   'compaction',
   'model_switch',
+  'snapshot',
+  'todo_update',
+  'plan',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -184,6 +230,9 @@ export type SessionRecord = {
   | { readonly kind: 'error'; readonly data: ErrorEntryData }
   | { readonly kind: 'compaction'; readonly data: CompactionEntryData }
   | { readonly kind: 'model_switch'; readonly data: ModelSwitchEntryData }
+  | { readonly kind: 'snapshot'; readonly data: SnapshotEntryData }
+  | { readonly kind: 'todo_update'; readonly data: TodoUpdateEntryData }
+  | { readonly kind: 'plan'; readonly data: PlanEntryData }
 );
 
 /**
@@ -446,6 +495,32 @@ export class SessionLog {
    */
   appendModelSwitch(from: string, to: string): Promise<void> {
     return this.append('model_switch', { from, to });
+  }
+
+  /**
+   * 追加 snapshot 条目（0.10.0「安全网」：快照标记入日志，002 4.2）。
+   * 快照引擎每次产生真实快照点（非 degraded）后调用方把它记进会话日志，
+   * 作为审计 / 追溯的旁路标记；投影时忽略（不产生模型消息，历史上下文不变）。
+   */
+  appendSnapshot(data: SnapshotEntryData): Promise<void> {
+    return this.append('snapshot', data);
+  }
+
+  /**
+   * 追加 todo_update 条目（T-110 TodoWrite：一次清单更新的全量快照）。
+   * /resume 重建清单（rebuildTodoState）据此取最新快照；投影时忽略
+   * （不产生模型消息——清单状态经 TodoWrite 工具结果进上下文）。
+   */
+  appendTodoUpdate(data: TodoUpdateEntryData): Promise<void> {
+    return this.append('todo_update', data);
+  }
+
+  /**
+   * 追加 plan 条目（T-113 计划文档化：批准 / 落盘时存序列化计划快照）。
+   * /resume 重建结构化计划（rebuildStructuredPlan）据此恢复；投影时忽略。
+   */
+  appendPlan(text: string): Promise<void> {
+    return this.append('plan', { text });
   }
 
   /**

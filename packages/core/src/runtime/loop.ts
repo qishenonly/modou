@@ -17,6 +17,7 @@ import type {
 } from '../provider/types';
 import { computeCacheHitRate } from '../provider/vercel';
 import type { ApprovalGate } from '../permission/approval';
+import type { HookBus } from '../hooks/bus';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -28,7 +29,14 @@ import type {
 import { runToolPipeline } from '../tools/pipeline';
 import { redactValue } from '../tools/redact';
 import type { ToolRegistry } from '../tools/registry';
+import type {
+  AgentRunner,
+  SubagentRunner,
+  WriteConflictReport,
+} from '../tools/types';
 import { toToolSet } from '../tools/toolset';
+import { createSubagentRunner } from './subagent';
+import { createAgentRunner } from './agent';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
@@ -43,8 +51,10 @@ import {
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
 } from '../context/compact';
 import type { CompactOptions } from '../context/compact';
-import type { SummaryState } from '../context/summary';
+import type { SummaryItem, SummaryState } from '../context/summary';
 import { createSummaryState } from '../context/summary';
+import type { TodoState } from '../context/todo';
+import { applyTodoWrite, createTodoState } from '../context/todo';
 import {
   canTransition,
   stopReasonToTransition,
@@ -127,6 +137,15 @@ export interface RunAgentTurnInput {
    */
   readonly summaryState?: SummaryState;
   /**
+   * 会话级待办清单状态（T-110 TodoWrite）：提供时，模型调用 todo_write 更新
+   * 的清单并入该状态，并随 `TurnResult.todoState` 返回（调用方跨轮次传入同一
+   * 演进状态即可持续累计）；/resume 可先用 `rebuildTodoState` 从会话日志的
+   * todo_update 条目重建后传入。缺省 = loop 在首次清单更新时自建（懒初始化），
+   * 结果随 TurnResult.todoState 返回。清单与压缩状态共用条目结构（ADR 0010），
+   * 压缩时清单不丢。
+   */
+  readonly todoState?: TodoState;
+  /**
    * 压缩配置（T-070 /compact）：提供时，loop 在每轮请求前做「触发 → 压缩 →
    * 投影」：上下文估算超 `thresholdTokens`、轮数超 `keepTurns` 且迟滞窗口已过
    * （`minTurnsBetweenCompactions`，缺省 5 轮）时调用 `generateDelta`（可注入；
@@ -137,6 +156,44 @@ export interface RunAgentTurnInput {
    * 跨 runAgentTurn 接续，避免跨阈值后每轮重复压缩。缺省 = 不压缩不折叠。
    */
   readonly compact?: CompactOptions;
+  /**
+   * 子代理深度（T-120 一层深限制，ADR 0011）：主代理深度 0，子代理深度 1。
+   * 深度 ≥ 1 的 loop 里 ToolContext.runSubagent 直接拒绝——子代理不能再派出
+   * 子代理（supervisor 一层深，不做嵌套）。由 runtime/subagent.ts 派发时设置；
+   * 调用方一般不用管（缺省 0）。
+   */
+  readonly subagentDepth?: number;
+  /**
+   * 本循环的 agent 标识（T-122 写冲突上报用）：主代理缺省 'main'；子代理由
+   * 派发器传自身 ID（sub-xxx）。写冲突检测（onFileWrite）用它区分写入者。
+   */
+  readonly agentId?: string;
+  /**
+   * 写冲突检测钩子（T-123，ADR 0011）：每次工具成功写入一个文件后调用（path =
+   * 工具上报的解析后绝对路径，agent = 写入者标识，见 agentId）。返回冲突报告
+   * （同一文件此前已被另一 agent 写入）或 undefined；返回冲突时本 loop 发
+   * notice（warn）告知前端。缺省 = 不检测（0.11.0 及之前行为）。调用方可注入
+   * WriteConflictDetector（tools/write-conflict.ts 的 toOnFileWrite）。
+   */
+  readonly onFileWrite?: (
+    path: string,
+    agent: string,
+  ) => WriteConflictReport | undefined;
+  /**
+   * 钩子总线（0.14.0，design 002 5.1 ④⑦ 挂载点）：提供时，管线 ④ PreToolUse
+   * （deny 阻止执行且理由回喂模型 / 可改写参数）、⑦ PostToolUse（观察 /
+   * 副作用，如编辑后自动 format）挂载钩子。子代理派发器继承同一总线（钩子是
+   * 统一的管线安全面——子代理的工具调用同样过钩子）。缺省 = 管线直通
+   * （0.13.0 及之前行为）。TUI 按 settings.json hooks 装配后注入。
+   */
+  readonly hooks?: HookBus;
+  /**
+   * 模型解析工厂（0.17.0 T-170 自定义 agents）：角色声明 model 时经此按模型 ID
+   * 重建 provider 实例（002 8.2 换 provider 实例）。由装配方注入（TUI 按
+   * providerSpec + 环境变量重建）；缺省 = 角色 model 被忽略（沿用当前 provider）。
+   * 返回 undefined = 无法解析该模型（角色派发失败回喂可诊断错误）。
+   */
+  readonly resolveModel?: (model: string) => ModelProvider | undefined;
   readonly options: TurnOptions;
 }
 
@@ -160,6 +217,12 @@ export interface TurnResult {
    * 缺省 undefined（未启用压缩）。
    */
   readonly summaryState?: SummaryState;
+  /**
+   * 本轮结束后的待办清单状态（T-110 TodoWrite）：模型调用过 todo_write 时
+   * 存在（入参种子演进 / 首次更新自建）——调用方把它作为下一轮的种子传入。
+   * 缺省 undefined（本轮未触碰清单）。
+   */
+  readonly todoState?: TodoState;
   /** 最后一轮的 finish reason（未收到 finish 事件时为 null） */
   readonly finishReason: StreamFinishReason | null;
   readonly termination: TurnTermination;
@@ -167,6 +230,14 @@ export interface TurnResult {
   readonly turns: number;
   /** 终止时的状态机状态 */
   readonly state: LoopState;
+  /**
+   * 本轮结束时的会话级已读文件集合（0.12.1 修复）：loop 持续维护的 readFiles
+   * 快照（跨轮次的已读累计，Write/Edit 防盲写的生产者种子）。子代理派发器据此
+   * 把子代理本地已读集合的增量并入父集合（共享 Set 语义兑现——子代理 Read 过
+   * 的文件主代理可直接 Edit/Write）。调用方若跨轮次自行持有 readFiles，需与
+   * 本返回值合并（TUI 从会话日志重建，见 refreshHistory）。
+   */
+  readonly readFiles: ReadonlySet<string>;
   /** termination === 'error' 时的归一错误 */
   readonly error?: ProviderError;
   /** termination === 'interrupted' 时的中断原因（来自 abort signal） */
@@ -229,6 +300,10 @@ export type RuntimeEvent =
       readonly data: CompactionData;
     }
   | {
+      readonly type: 'todo_update';
+      readonly items: readonly SummaryItem[];
+    }
+  | {
       readonly type: 'notice';
       readonly level: NoticeLevel;
       readonly text: string;
@@ -238,6 +313,20 @@ export type RuntimeEvent =
       readonly type: 'turn_end';
       readonly turn: number;
       readonly termination: TurnTermination;
+    }
+  | {
+      /**
+       * 子代理内部运行时事件（T-122，0.12.0 子代理事件流）：子代理派发器把
+       * 子代理 loop 的每个 RuntimeEvent 包上 agentId 转发。bridge 据此为每个
+       * 子代理分配独立 EnvelopeEmitter（agent = 子代理 ID、独立 seq/turn 空间），
+       * 前端按 agent 分组折叠——协议一个字节都不用改（002 3.1 的便宜先手）。
+       * 一层深硬限制保证内层事件不再嵌套 subagent_event（子代理不能再派生子代理）。
+       */
+      readonly type: 'subagent_event';
+      /** 子代理 ID（协议信封的 agent 字段）。 */
+      readonly agent: string;
+      /** 子代理内部事件。 */
+      readonly event: RuntimeEvent;
     };
 
 /** 未提供工具注册表时的回喂文案：模型看不到任何工具定义却发了工具调用。 */
@@ -321,6 +410,7 @@ export async function runAgentTurn(
     budget: inputBudget,
     summaryState: inputSummaryState,
     compact: compactConfig,
+    resolveModel,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -339,6 +429,57 @@ export async function runAgentTurn(
   const readFiles = new Set<string>(initialReadFiles ?? []);
   /** 工作目录：入参提供或缺省 process.cwd()，传给工具 ctx.cwd。 */
   const cwd = inputCwd ?? process.cwd();
+  /** 本循环的 agent 标识（写冲突上报用）：主代理 'main'，子代理自身 ID。 */
+  const agent = input.agentId ?? 'main';
+
+  /**
+   * 子代理派发通道（T-120 Task 工具）：注入 ToolContext 的 runSubagent——
+   * Task 工具 execute 经此派生子代理（独立 runAgentTurn / 独立消息历史 /
+   * 独立上下文窗口），只拿回最终结论文本。一层深限制在此强制：深度 ≥ 1
+   * （即子代理自身）的 loop 里派发直接拒绝（ADR 0011）；`task` 工具也永不
+   * 进入子代理注册表（deriveSubagentRegistry 过滤），双保险。
+   */
+  const runSubagent: SubagentRunner = createSubagentRunner({
+    runTurn: runAgentTurn,
+    provider,
+    parentRegistry: tools,
+    readFiles,
+    cwd,
+    approval,
+    abortSignal,
+    depth: input.subagentDepth ?? 0,
+    // T-122：子代理运行时事件包上 agentId 转出为 subagent_event
+    emit,
+    // T-123：写冲突检测——子代理写入按自身 agentId 上报（与主代理的 'main'
+    // 区分，跨 agent 同文件写入被检出冲突）
+    onFileWrite: input.onFileWrite,
+    // T-142：钩子总线继承——子代理的工具调用同样过 ④⑦ 钩子（统一的管线安全面）
+    hooks: input.hooks,
+  });
+
+  /**
+   * 自定义 agent 派发通道（0.17.0 T-170）：注入 ToolContext 的 runAgent——
+   * agent 工具 execute 经此派出角色化子代理（复用子代理内核：独立 runAgentTurn /
+   * 独立消息历史 / 独立上下文窗口），只拿回最终结论文本。角色化增量：
+   * 系统提示词拼入角色提示词（buildAgentSystemPrompt）、注册表按角色白名单派生
+   * （deriveAgentRegistry——白名单真正强制，越界调用在 ① Resolve 即被拒）、
+   * 角色声明 model 时经 resolveModel（装配方注入）重建 provider 实例。
+   * 一层深限制与 task 工具同款（深度 ≥ 1 直接拒绝；task 工具永不进入角色注册表）。
+   */
+  const runAgent: AgentRunner = createAgentRunner({
+    runTurn: runAgentTurn,
+    provider,
+    parentRegistry: tools,
+    readFiles,
+    cwd,
+    approval,
+    abortSignal,
+    depth: input.subagentDepth ?? 0,
+    emit,
+    onFileWrite: input.onFileWrite,
+    hooks: input.hooks,
+    resolveModel,
+  });
 
   /**
    * 持久摘要状态（T-070）：从入参复制，压缩发生时在此演进，随
@@ -348,6 +489,13 @@ export async function runAgentTurn(
   let summaryState: SummaryState | undefined =
     inputSummaryState ??
     (compactConfig === undefined ? undefined : createSummaryState());
+
+  /**
+   * 会话级待办清单状态（T-110 TodoWrite）：从入参复制（/resume 重建后的种子），
+   * 模型调用 todo_write 时经 applyTodoWrite 演进，随 `TurnResult.todoState`
+   * 返回给调用方。懒初始化：首次清单更新才自建（未启用清单的会话保持 undefined）。
+   */
+  let todoState: TodoState | undefined = input.todoState;
 
   let state: LoopState = 'idle';
   let termination: TurnTermination = 'end_turn';
@@ -472,7 +620,14 @@ export async function runAgentTurn(
     }
 
     const results: ToolResultPart[] = [];
-    for (const call of toolUses) {
+    // 并行执行组（T-123 子代理）：concurrent 工具（如 task——子代理默认只读、
+    // 互不共享文件写状态，ADR 0011）同一轮被多次调用时并行派发（Promise.all），
+    // 结果按调用顺序聚合；其余工具保持串行（002 十一「工具默认串行落地」，
+    // 并发写同一文件必然丢改动，换取可预测性）。
+    const parallel: Array<{ index: number; promise: Promise<ToolResultPart> }> =
+      [];
+    for (let i = 0; i < toolUses.length; i += 1) {
+      const call = toolUses[i];
       if (tools === undefined) {
         // 未提供注册表：模型看不到任何工具定义却发了 tool_use，
         // 保留「未知工具」错误回喂（含 tool_feedback 事件）
@@ -482,7 +637,7 @@ export async function runAgentTurn(
           name: call.name,
           error: UNKNOWN_TOOL_MESSAGE(call.name),
         });
-        results.push({
+        results[i] = {
           type: 'tool-result',
           toolCallId: call.id,
           toolName: call.name,
@@ -490,12 +645,20 @@ export async function runAgentTurn(
             type: 'error-text',
             value: UNKNOWN_TOOL_MESSAGE(call.name),
           },
-        });
+        };
       } else {
         // 提供注册表（无论该工具是否注册）：一律走管线。未注册工具由
         // 管线产出 ok:false + 可用工具列表，比 loop 自己的弱诊断更可诊断。
-        results.push(await executeToolCall(call, tools));
+        const tool = tools.find(call.name);
+        if (tool?.concurrent === true) {
+          parallel.push({ index: i, promise: executeToolCall(call, tools) });
+        } else {
+          results[i] = await executeToolCall(call, tools);
+        }
       }
+    }
+    for (const { index, promise } of parallel) {
+      results[index] = await promise;
     }
     thread.push({ role: 'tool', content: results });
   };
@@ -526,16 +689,48 @@ export async function runAgentTurn(
         abortSignal,
         // ③ Authorize（T-033）：write / exec 工具经审批闸门（read 不拦）。
         // 缺省不拦截（调用方未注入时保持 0.2.0 行为）。
+        // ④ PreToolUse / ⑦ PostToolUse（0.14.0）：注入钩子总线时挂载——
+        // deny 阻止执行（理由回喂模型）/ 改写参数 / 观察副作用。
         authorize: approval,
+        hooks: input.hooks,
         // 执行上下文：cwd 供相对路径解析；readFiles 供 Write/Edit 防盲写检查；
         // onFileRead 是已读集合的唯一生产者——read 工具成功读到一个文件后
         // 回调，loop 据此把该文件（realpath 已由 read 工具解析）加入会话集合，
         // 使同轮或后续轮次的 Write/Edit 放行。集合跨轮次持续。
+        // sessionId 是钩子输入契约的一部分（0.14.0）。
         context: {
           cwd,
+          ...(session !== undefined ? { sessionId: session.sessionId } : {}),
           readFiles,
+          runSubagent,
+          // 0.17.0 T-170：自定义 agent 派发通道（agent 工具经此派出角色化子代理）
+          runAgent,
+          // T-123 写冲突检测：write/edit 成功落盘后自报路径，按本循环 agent
+          // 上报（主代理 'main' / 子代理 ID）；检出跨 agent 同文件写入时发
+          // notice（warn）告知前端「改动可能互相覆盖」（ADR 0011）。
+          onFileWrite: (path) => {
+            const conflict = input.onFileWrite?.(path, agent);
+            if (conflict !== undefined) {
+              emit({
+                type: 'notice',
+                level: 'warn',
+                text:
+                  `写冲突：文件 "${conflict.path}" 已被 ${conflict.existingAgent} 写入，` +
+                  `现在由 ${conflict.agent} 再次写入——改动可能互相覆盖，请核对后决定取舍`,
+              });
+            }
+          },
           onFileRead: (path) => {
             readFiles.add(path);
+          },
+          // T-110 TodoWrite：清单更新的唯一落点——演进会话级待办状态、
+          // 发出 todo_update 运行时事件（bridge → 协议 todo_update，前端渲染）、
+          // 落 todo_update 日志条目（/resume 重建依据）。
+          onTodoUpdate: (update) => {
+            if (todoState === undefined) todoState = createTodoState();
+            todoState = applyTodoWrite(todoState, update.items);
+            emit({ type: 'todo_update', items: update.items });
+            void session?.appendTodoUpdate({ items: update.items });
           },
         },
         emit: (pipelineEvent) => {
@@ -563,6 +758,11 @@ export async function runAgentTurn(
             // 审批裁决收尾：bridge 据此映射为协议 approval_resolved（关闭弹窗）
             const { id, decision, source } = pipelineEvent.data;
             emit({ type: 'approval_resolved', id, decision, source });
+          } else if (pipelineEvent.type === 'notice') {
+            // 管线侧提示（0.14.0：PreToolUse 钩子改写参数时补发的说明性
+            // notice）——bridge 映射为协议 notice，前端提示区展示（不静默）。
+            const { level, text } = pipelineEvent.data;
+            emit({ type: 'notice', level, text });
           }
         },
       },
@@ -593,10 +793,14 @@ export async function runAgentTurn(
       usage,
       budget: ledger,
       ...(summaryState !== undefined ? { summaryState } : {}),
+      ...(todoState !== undefined ? { todoState } : {}),
       finishReason,
       termination,
       turns: turn,
       state,
+      // 已读集合快照（0.12.1 修复）：随 TurnResult 带出——子代理派发器据此把
+      // 子代理本地已读集合的增量并入父集合（共享 Set 语义兑现）。
+      readFiles,
       ...(error !== undefined ? { error } : {}),
       ...(termination === 'interrupted' && interruptedReason !== undefined
         ? { interruptedReason }

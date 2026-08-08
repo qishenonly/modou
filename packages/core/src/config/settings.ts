@@ -45,6 +45,202 @@ export interface ConfigRule {
   readonly tool?: string;
 }
 
+// ---------------------------------------------------------------------------
+// MCP（0.16.0，T-163）：settings.json 的 mcp 键——服务器配置表
+// ---------------------------------------------------------------------------
+
+/**
+ * 单个 MCP 服务器的配置（settings.json mcp.servers.<name>）。
+ * command / url 二选一（stdio / Streamable HTTP 两种传输形态）；
+ * 其余字段可选（缺省由 McpManager 装配时补齐，见 mcp/manager.ts）。
+ */
+export interface ConfigMcpServer {
+  /** stdio 形态：可执行命令（绝对路径或 PATH 内命令；不支持 shell 语法）。 */
+  readonly command?: string;
+  /** HTTP 形态：Streamable HTTP 端点（http/https URL）。与 command 互斥。 */
+  readonly url?: string;
+  readonly args?: readonly string[];
+  /** 追加的环境变量（继承进程环境，此项覆盖）。 */
+  readonly env?: Readonly<Record<string, string>>;
+  /** 按需连接开关（缺省 true——false 时不连接、不注入工具）。 */
+  readonly enabled?: boolean;
+  /**
+   * 工具风险归类（与 permission 的 ToolRisk 同形；缺省 `network`）：
+   * MCP 工具是远程/进程外副作用、效果未知，默认权限矩阵下需审批；
+   * 声明为 read/write/exec 可贴合实际（只读服务器免审批等）。
+   */
+  readonly risk?: 'read' | 'write' | 'exec' | 'network';
+  /** 工具级过滤白名单（只暴露服务器的这些工具；缺省 = 全部暴露）。 */
+  readonly tools?: readonly string[];
+  /** initialize 握手超时（毫秒，缺省 10s）。 */
+  readonly connectTimeoutMs?: number;
+  /** tools/call 请求超时（毫秒，缺省 120s——远程工具可能长跑）。 */
+  readonly callTimeoutMs?: number;
+}
+
+/** settings.json 的 mcp 键：服务器配置表（缺省空表 = 不连接任何 server）。 */
+export interface ConfigMcp {
+  readonly servers: Readonly<Record<string, ConfigMcpServer>>;
+}
+
+// ---------------------------------------------------------------------------
+// Web（0.17.0，T-171/T-172）：联网工具的域名白名单/黑名单与超时
+// ---------------------------------------------------------------------------
+
+/**
+ * 联网工具配置（settings.json web 键，T-171 WebFetch / T-172 WebSearch）。
+ * 语义：域名白名单/黑名单是配置层的过滤（与权限模型正交——联网默认需批准由
+ * risk=network 在权限层兜底，这里是域名级的二次过滤）。
+ */
+export interface ConfigWeb {
+  /** 域名白名单：非空时只允许这些域名及其子域（其余域名一律拒绝）。 */
+  readonly allowedDomains?: readonly string[];
+  /** 域名黑名单：命中即拒绝（优先于白名单）。 */
+  readonly deniedDomains?: readonly string[];
+  /** 抓取超时（毫秒；缺省 WebFetch 内置 15s）。 */
+  readonly timeoutMs?: number;
+  /** 响应体上限（字节；缺省 256KB）。 */
+  readonly maxBytes?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Hooks（0.14.0）：settings.json 按钩子点 + 工具匹配器注册外部进程钩子
+// ---------------------------------------------------------------------------
+
+/** 钩子工具匹配器（与 hooks 模块的 ToolMatcher 结构同形；仅 PreToolUse/PostToolUse 有意义）。 */
+export interface ConfigHookMatcher {
+  /** 工具名白名单；缺省或 `'*'` = 匹配全部工具（只做精确名匹配）。 */
+  readonly tools?: readonly string[] | '*';
+}
+
+/**
+ * 单个钩子条目（settings.json hooks 数组的元素；与 hooks 模块的
+ * HookProcessSpec 结构同形——command 必填，其余可选）。
+ */
+export interface ConfigHookEntry {
+  /** 可执行命令（绝对路径或 PATH 内命令；不支持 shell 语法——命令拆分执行）。 */
+  readonly command: string;
+  /** 命令行参数。 */
+  readonly args?: readonly string[];
+  /** 工具匹配器（仅 PreToolUse / PostToolUse 有意义；非工具点忽略）。 */
+  readonly matcher?: ConfigHookMatcher;
+  /** 超时（毫秒；缺省 5000）。超时按 failBehavior 降级并终止进程组。 */
+  readonly timeoutMs?: number;
+  /**
+   * 失败降级策略（ADR 0013）：fail-open = 崩溃放行，fail-closed = 崩溃拦截。
+   * 缺省按钩子点：PreToolUse（deny 语义的安全钩子）缺省 fail-closed，其余 fail-open。
+   */
+  readonly failBehavior?: 'fail-open' | 'fail-closed';
+  /** 追加的环境变量（继承进程环境，此项覆盖）。 */
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/** settings.json 的 hooks 键：四个钩子点各一个条目数组（缺省点 = 无钩子）。 */
+export interface ConfigHooks {
+  readonly SessionStart?: readonly ConfigHookEntry[];
+  readonly UserPromptSubmit?: readonly ConfigHookEntry[];
+  readonly PreToolUse?: readonly ConfigHookEntry[];
+  readonly PostToolUse?: readonly ConfigHookEntry[];
+}
+
+/**
+ * 快照配置（0.10.0「安全网」；缺省全部可选，引擎回落内置默认）。
+ * - `enabled`：是否自动快照（缺省 true）；
+ * - `maxAgeDays`：快照保留窗口（天；0 = 不限时间，缺省 30）；
+ * - `keepPerSession`：每会话至少保留最近 N 条快照（缺省 10）；
+ * - `maxPerProject`：每项目最多保留快照数（超限删最旧，缺省 200）；
+ * - `maxChangedPaths`：单次快照降级阈值——变更路径数（缺省 2000）；
+ * - `maxBytes`：单次快照降级阈值——变更文件总字节（缺省 128 MB）。
+ */
+export interface ConfigSnapshot {
+  readonly enabled?: boolean;
+  readonly maxAgeDays?: number;
+  readonly keepPerSession?: number;
+  readonly maxPerProject?: number;
+  readonly maxChangedPaths?: number;
+  readonly maxBytes?: number;
+}
+
+/** 单个钩子条目 schema（0.14.0）：command 必填，其余可选。 */
+const ConfigHookEntrySchema = z
+  .object({
+    command: z.string().min(1, 'command 不能为空字符串'),
+    args: z.array(z.string().min(1)).optional(),
+    matcher: z
+      .object({
+        tools: z.union([z.array(z.string().min(1)), z.literal('*')]).optional(),
+      })
+      .strict()
+      .optional(),
+    timeoutMs: z
+      .number()
+      .int('timeoutMs 必须是整数')
+      .positive('timeoutMs 必须是正整数')
+      .optional(),
+    failBehavior: z.enum(['fail-open', 'fail-closed']).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+/** settings.json 的 hooks 键 schema（0.14.0）：四钩子点 + 工具匹配器注册。 */
+const ConfigHooksSchema = z
+  .object({
+    SessionStart: z.array(ConfigHookEntrySchema).optional(),
+    UserPromptSubmit: z.array(ConfigHookEntrySchema).optional(),
+    PreToolUse: z.array(ConfigHookEntrySchema).optional(),
+    PostToolUse: z.array(ConfigHookEntrySchema).optional(),
+  })
+  .strict()
+  .optional();
+
+/**
+ * 单个 MCP 服务器 schema（0.16.0，T-163）：command / url 二选一（strict refine）。
+ * 未知字段立即报错（拼写错误可见，不静默）。
+ */
+const ConfigMcpServerSchema = z
+  .object({
+    command: z.string().min(1).optional(),
+    url: z.string().url().optional(),
+    args: z.array(z.string().min(1)).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    enabled: z.boolean().optional(),
+    risk: z.enum(['read', 'write', 'exec', 'network']).optional(),
+    tools: z.array(z.string().min(1)).optional(),
+    connectTimeoutMs: z.number().int().positive().optional(),
+    callTimeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  // command / url 互斥（0.16.0 design-checker minor）：stdio / Streamable HTTP
+  // 两种传输形态由「有 command」还是「有 url」唯一决定——二者不得同时出现，
+  // 也必须出现其一（transport 判定不再有歧义）。
+  .refine(
+    (server) => (server.command !== undefined) !== (server.url !== undefined),
+    {
+      message:
+        'MCP 服务器必须声明 command（stdio）或 url（Streamable HTTP），二者必居其一且不得同时出现',
+      path: ['command'],
+    },
+  );
+
+/** settings.json 的 mcp 键 schema（0.16.0，T-163）：服务器配置表。 */
+const ConfigMcpSchema = z
+  .object({
+    servers: z.record(z.string().min(1), ConfigMcpServerSchema),
+  })
+  .strict()
+  .optional();
+
+/** settings.json 的 web 键 schema（0.17.0，T-171）：联网工具域名过滤与超时。 */
+const ConfigWebSchema = z
+  .object({
+    allowedDomains: z.array(z.string().min(1)).optional(),
+    deniedDomains: z.array(z.string().min(1)).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    maxBytes: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 /**
  * settings.json 支持项的 schema（T-080；按现有能力集，全部字段缺省可选）。
  * 顶层与 permission 均 `.strict()`：未知字段立即报错（拼写错误可见，不静默）。
@@ -83,12 +279,30 @@ export const SettingsSchema = z
     maxTurns: z.number().int().min(1).optional(),
     /** 压缩保留的近 N 轮原文（缺省 6，与 context/compact 的 DEFAULT_KEEP_TURNS 一致）。 */
     keepTurns: z.number().int().min(1).optional(),
+    /** 快照配置（T-103：保留策略 / 降级阈值；缺省引擎内置默认）。 */
+    snapshot: z
+      .object({
+        enabled: z.boolean().optional(),
+        maxAgeDays: z.number().int().min(0).optional(),
+        keepPerSession: z.number().int().min(1).optional(),
+        maxPerProject: z.number().int().min(1).optional(),
+        maxChangedPaths: z.number().int().min(1).optional(),
+        maxBytes: z.number().int().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     /** 用户主目录：会话/日志根（缺省 os.homedir()；须为绝对路径）。 */
     homeDir: z
       .string()
       .min(1)
       .refine((value) => isAbsolute(value), { message: '期望绝对路径' })
       .optional(),
+    /** Hooks（0.14.0）：按钩子点 + 工具匹配器注册外部进程钩子（缺省不挂钩子）。 */
+    hooks: ConfigHooksSchema,
+    /** MCP（0.16.0，T-163）：服务器配置表（缺省空表 = 不连接任何 server）。 */
+    mcp: ConfigMcpSchema,
+    /** Web（0.17.0，T-171）：联网工具域名白名单/黑名单与超时（缺省不限制域名）。 */
+    web: ConfigWebSchema,
   })
   .strict();
 
@@ -617,7 +831,14 @@ export interface ConfigOverrides {
   readonly rules?: readonly ConfigRule[];
   readonly maxTurns?: number;
   readonly keepTurns?: number;
+  readonly snapshot?: ConfigSnapshot;
   readonly homeDir?: string;
+  /** Hooks（0.14.0）：显式覆盖 settings.json 的 hooks 键（最高优先级）。 */
+  readonly hooks?: ConfigHooks;
+  /** MCP（0.16.0，T-163）：显式覆盖 settings.json 的 mcp 键（最高优先级）。 */
+  readonly mcp?: ConfigMcp;
+  /** Web（0.17.0，T-171）：显式覆盖 settings.json 的 web 键（最高优先级）。 */
+  readonly web?: ConfigWeb;
 }
 
 /** resolveConfig 入参。 */
@@ -647,7 +868,14 @@ export interface ResolvedConfig {
   readonly permission: ResolvedPermission;
   readonly maxTurns: number;
   readonly keepTurns: number;
+  readonly snapshot?: ConfigSnapshot;
   readonly homeDir: string;
+  /** Hooks（0.14.0）：settings.json / 显式覆盖合并后的钩子配置（缺省无钩子）。 */
+  readonly hooks?: ConfigHooks;
+  /** MCP（0.16.0，T-163）：settings.json / 显式覆盖后的服务器配置表（缺省空表）。 */
+  readonly mcp?: ConfigMcp;
+  /** Web（0.17.0，T-171）：settings.json / 显式覆盖后的联网工具配置（缺省不限制域名）。 */
+  readonly web?: ConfigWeb;
 }
 
 /**
@@ -680,6 +908,18 @@ export function resolveConfig(input: ResolveConfigInput = {}): ResolvedConfig {
     },
     maxTurns: overrides.maxTurns ?? settings.maxTurns ?? DEFAULT_MAX_TURNS,
     keepTurns: overrides.keepTurns ?? settings.keepTurns ?? DEFAULT_KEEP_TURNS,
+    ...((overrides.snapshot ?? settings.snapshot) !== undefined
+      ? { snapshot: overrides.snapshot ?? settings.snapshot }
+      : {}),
+    ...((overrides.hooks ?? settings.hooks) !== undefined
+      ? { hooks: overrides.hooks ?? settings.hooks }
+      : {}),
+    ...((overrides.mcp ?? settings.mcp) !== undefined
+      ? { mcp: overrides.mcp ?? settings.mcp }
+      : {}),
+    ...((overrides.web ?? settings.web) !== undefined
+      ? { web: overrides.web ?? settings.web }
+      : {}),
     homeDir:
       overrides.homeDir ?? settings.homeDir ?? input.homeDir ?? homedir(),
   };

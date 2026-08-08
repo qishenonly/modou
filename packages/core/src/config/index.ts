@@ -7,3 +7,4 @@
  */
 export * from './instructions';
 export * from './settings';
+export * from './commands';

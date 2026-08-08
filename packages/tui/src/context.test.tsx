@@ -26,6 +26,7 @@ function sampleState(
     sections: [
       { name: 'system', tokens: 1200 },
       { name: 'tools', tokens: 300 },
+      { name: 'mcp_tools', tokens: 0 },
       { name: 'instructions', tokens: 0 },
       { name: 'history', tokens: 400 },
       { name: 'tool_output', tokens: 200 },
@@ -41,17 +42,18 @@ function sampleState(
 // ---------------------------------------------------------------------------
 
 describe('formatContextRows / formatContextFooter（分项条 + 尾部，T-063）', () => {
-  test('五行齐全、顺序与 002 7.1 分段一致、每行含标签/token/占比', () => {
+  test('六行齐全（本地工具 + MCP 单列）、顺序与 002 7.1 分段一致、每行含标签/token/占比', () => {
     const rows = formatContextRows(sampleState());
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     expect(rows[0]).toContain('系统提示');
     expect(rows[1]).toContain('工具定义');
-    expect(rows[2]).toContain('项目指令');
-    expect(rows[3]).toContain('历史消息');
-    expect(rows[4]).toContain('工具输出');
+    expect(rows[2]).toContain('MCP 工具');
+    expect(rows[3]).toContain('项目指令');
+    expect(rows[4]).toContain('历史消息');
+    expect(rows[5]).toContain('工具输出');
     // token 数进行
     expect(rows[0]).toContain('1200');
-    expect(rows[4]).toContain('200');
+    expect(rows[5]).toContain('200');
     // 占比：1200/2100 ≈ 57.1%
     expect(rows[0]).toContain('57.1%');
   });
@@ -90,7 +92,7 @@ describe('ContextPanel（Ink 渲染，T-063）', () => {
     cleanup();
   });
 
-  test('渲染面板：标题、五个分项、合计尾部、关闭提示', () => {
+  test('渲染面板：标题、六个分项（含 MCP 工具单列）、合计尾部、关闭提示', () => {
     const { lastFrame, unmount } = render(
       <ContextPanel state={sampleState()} />,
     );
@@ -99,6 +101,7 @@ describe('ContextPanel（Ink 渲染，T-063）', () => {
     for (const label of [
       '系统提示',
       '工具定义',
+      'MCP 工具',
       '项目指令',
       '历史消息',
       '工具输出',
@@ -122,6 +125,6 @@ describe('JSON 输出可解析（/context --json，T-063）', () => {
     expect(parsed).toEqual(state);
     expect(parsed.total).toBe(2100);
     expect(parsed.drift).toEqual(state.drift);
-    expect(parsed.sections).toHaveLength(5);
+    expect(parsed.sections).toHaveLength(6);
   });
 });

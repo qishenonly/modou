@@ -17,7 +17,14 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
@@ -28,10 +35,13 @@ import type {
   SessionRecord,
   StreamChatInput,
   StreamEvent,
+  StructuredPlan,
 } from '@modou/core';
 import {
+  defaultWriteTools,
   projectHash,
   projectMessages,
+  serializeStructuredPlan,
   SessionLog,
   SessionStore,
 } from '@modou/core';
@@ -40,9 +50,12 @@ import { ModelPicker } from './model';
 import {
   BUILTIN_SLASH_COMMANDS,
   collectModelCandidates,
+  customToCommandInfo,
   dispatchSlash,
   lastModelSwitchTo,
+  renderCostReport,
   renderHelpText,
+  renderMcpStatus,
   type SlashHandlers,
 } from './slash';
 import { runTui } from './index';
@@ -66,12 +79,38 @@ class RecordingProvider implements ModelProvider {
   readonly capabilities: ProviderCapabilities = DEFAULT_CAPABILITIES;
   /** 每次 streamChat 收到的 messages（断言上下文延续）。 */
   readonly messages: ModelMessage[][] = [];
+  /** 每次 streamChat 收到的 tools（断言自定义命令工具白名单）。 */
+  readonly seenTools: Array<Record<string, unknown> | undefined> = [];
 
   constructor(readonly modelId: string) {}
 
   async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
     this.messages.push(input.messages);
+    this.seenTools.push(input.tools);
     const text = `回复(${this.modelId})`;
+    for (const char of text) {
+      yield { type: 'text_delta', delta: char };
+    }
+    yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
+    yield { type: 'finish', reason: 'stop' };
+  }
+}
+
+/**
+ * 首轮回放结构化计划文本（Plan Mode 研究轮 → 产出计划），其后各轮回放普通文本
+ * （批准后的执行轮）。驱动「/plan → 计划面板 → a 批准」的完整流程。
+ */
+class PlanThenTextProvider implements ModelProvider {
+  readonly id = 'openai-compat';
+  readonly capabilities: ProviderCapabilities = DEFAULT_CAPABILITIES;
+  readonly modelId = 'stub-model';
+  private calls = 0;
+
+  constructor(private readonly planText: string) {}
+
+  async *streamChat(): AsyncIterable<StreamEvent> {
+    const text = this.calls === 0 ? this.planText : '开始按计划执行';
+    this.calls += 1;
     for (const char of text) {
       yield { type: 'text_delta', delta: char };
     }
@@ -202,7 +241,7 @@ function readAllSessionLines(homeDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('dispatchSlash（T-082 分发器）', () => {
-  test('六个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
+  test('十二个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
     const called: string[] = [];
     const handlers: SlashHandlers = {
       help: () => called.push('help'),
@@ -211,6 +250,13 @@ describe('dispatchSlash（T-082 分发器）', () => {
       resume: (args) => called.push(`resume:${args ?? ''}`),
       context: (args) => called.push(`context:${args ?? ''}`),
       clear: () => called.push('clear'),
+      rewind: () => called.push('rewind'),
+      snapshots: (args) => called.push(`snapshots:${args ?? ''}`),
+      plan: (args) => called.push(`plan:${args ?? ''}`),
+      init: () => called.push('init'),
+      image: (args) => called.push(`image:${args ?? ''}`),
+      cost: () => called.push('cost'),
+      mcp: () => called.push('mcp'),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -238,6 +284,25 @@ describe('dispatchSlash（T-082 分发器）', () => {
     expect(dispatchSlash('clear', undefined, handlers, onUnimplemented)).toBe(
       true,
     );
+    expect(dispatchSlash('rewind', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
+    expect(
+      dispatchSlash('snapshots', '--cleanup', handlers, onUnimplemented),
+    ).toBe(true);
+    expect(dispatchSlash('plan', '重构', handlers, onUnimplemented)).toBe(true);
+    expect(dispatchSlash('init', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
+    expect(dispatchSlash('image', 'shot.png', handlers, onUnimplemented)).toBe(
+      true,
+    );
+    expect(dispatchSlash('cost', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
+    expect(dispatchSlash('mcp', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -249,13 +314,20 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'resume:sess-1',
       'context:--json',
       'clear',
+      'rewind',
+      'snapshots:--cleanup',
+      'plan:重构',
+      'init',
+      'image:shot.png',
+      'cost',
+      'mcp',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含 0.8.0 全部六个命令', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image、/cost、/mcp', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -263,6 +335,13 @@ describe('/help（T-082）', () => {
       'resume',
       'context',
       'clear',
+      'rewind',
+      'snapshots',
+      'plan',
+      'init',
+      'image',
+      'cost',
+      'mcp',
     ]);
   });
 
@@ -273,6 +352,118 @@ describe('/help（T-082）', () => {
       expect(text).toContain(command.usage);
       expect(text).toContain(command.description);
     }
+  });
+});
+
+describe('renderCostReport（T-134 /cost 展示）', () => {
+  test('会话 + 按天合计，含费用；token 格式化 K/M', () => {
+    const text = renderCostReport({
+      modelId: 'gpt-4o',
+      sessionId: 'sess-1',
+      session: {
+        requests: 3,
+        inputTokens: 1_200_000,
+        outputTokens: 4_000,
+        noCacheTokens: 600_000,
+        cacheReadTokens: 600_000,
+        cacheWriteTokens: 0,
+        totalCost: 1.5,
+        priced: true,
+      },
+      byDay: [
+        {
+          day: '2026-08-08',
+          requests: 2,
+          inputTokens: 1_000_000,
+          outputTokens: 3_000,
+          noCacheTokens: 500_000,
+          cacheReadTokens: 500_000,
+          cacheWriteTokens: 0,
+          totalCost: 1.2,
+          priced: true,
+        },
+        {
+          day: '2026-08-09',
+          requests: 1,
+          inputTokens: 200_000,
+          outputTokens: 1_000,
+          noCacheTokens: 100_000,
+          cacheReadTokens: 100_000,
+          cacheWriteTokens: 0,
+          totalCost: 0.3,
+          priced: true,
+        },
+      ],
+    });
+    expect(text).toContain('成本统计（模型 gpt-4o）');
+    expect(text).toContain('sess-1');
+    expect(text).toContain('3 次请求');
+    expect(text).toContain('1.2M'); // input tokens 格式化
+    expect(text).toContain('4.0K'); // output tokens 格式化
+    expect(text).toContain('2026-08-08');
+    expect(text).toContain('全部会话合计：$1.50');
+  });
+
+  test('未知模型：费用标 ?、注明只报 token（不假装知道价格）', () => {
+    const text = renderCostReport({
+      modelId: 'unknown-model',
+      sessionId: 'sess-2',
+      session: {
+        requests: 1,
+        inputTokens: 10,
+        outputTokens: 5,
+        noCacheTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        priced: false,
+      },
+      byDay: [],
+    });
+    expect(text).toContain('无定价');
+    expect(text).toContain('$?');
+  });
+});
+
+describe('renderMcpStatus（T-163 /mcp 展示）', () => {
+  test('已连接 / 失败 / 断开状态逐行展示（身份 + 工具数 + 错误）', () => {
+    const text = renderMcpStatus(
+      [
+        {
+          name: 'filesystem',
+          transport: 'stdio',
+          state: 'connected',
+          serverInfo: { name: 'filesystem', version: '0.6.2' },
+          protocolVersion: '2025-06-18',
+          toolCount: 5,
+        },
+        {
+          name: 'git',
+          transport: 'stdio',
+          state: 'failed',
+          error: '连接失败：command not found',
+          toolCount: 0,
+        },
+        {
+          name: 'web',
+          transport: 'http',
+          state: 'disconnected',
+          error: '连接断开，正在自动重连',
+          toolCount: 3,
+        },
+      ],
+      8,
+    );
+    expect(text).toContain('MCP 服务器（3 个，已注册工具 8 个）');
+    expect(text).toContain('filesystem [stdio] 已连接');
+    expect(text).toContain('filesystem 0.6.2 · 5 个工具');
+    expect(text).toContain('git [stdio] 连接失败');
+    expect(text).toContain('command not found');
+    expect(text).toContain('web [http] 已断开（等待重连）');
+    expect(text).toContain('正在自动重连');
+  });
+
+  test('未配置服务器时明确说明（不静默）', () => {
+    expect(renderMcpStatus([], 0)).toContain('未配置服务器');
   });
 });
 
@@ -549,5 +740,172 @@ describe('ModelPicker（T-082 /model 模型选择器）', () => {
     stdin.write('\x1b');
     expect(cancelled).toBe(1);
     unmount();
+  });
+});
+
+describe('自定义斜杠命令分发（T-114）', () => {
+  test('未命中内置但命中自定义命令表：调 handlers.custom，返回 true', () => {
+    const custom = {
+      name: 'fix-lint',
+      description: '修复 lint 错误',
+      allowedTools: ['read', 'grep', 'glob', 'write', 'edit', 'bash'],
+      prompt: '请修复 lint：$1',
+    };
+    const called: string[] = [];
+    const handlers: SlashHandlers = {
+      help: () => called.push('help'),
+      model: () => called.push('model'),
+      compact: () => called.push('compact'),
+      resume: () => called.push('resume'),
+      context: () => called.push('context'),
+      clear: () => called.push('clear'),
+      rewind: () => called.push('rewind'),
+      snapshots: () => called.push('snapshots'),
+      plan: () => called.push('plan'),
+      init: () => called.push('init'),
+      image: (args) => called.push(`image:${args ?? ''}`),
+      cost: () => called.push('cost'),
+      mcp: () => called.push('mcp'),
+      custom: (command, args) =>
+        called.push(`custom:${command.name}:${args ?? ''}`),
+    };
+    expect(
+      dispatchSlash('fix-lint', 'src/a.ts', handlers, () => {}, [custom]),
+    ).toBe(true);
+    expect(dispatchSlash('nope', undefined, handlers, () => {}, [custom])).toBe(
+      false,
+    );
+    expect(called).toEqual(['custom:fix-lint:src/a.ts']);
+  });
+
+  test('customToCommandInfo：转 /help 可展示的命令信息', () => {
+    const info = customToCommandInfo({
+      name: 'deploy',
+      description: '部署到测试环境',
+      prompt: '部署',
+    });
+    expect(info.usage).toBe('/deploy [参数…]');
+    expect(info.description).toBe('部署到测试环境');
+  });
+
+  test('renderHelpText 附加自定义命令', () => {
+    const text = renderHelpText([
+      { name: 'deploy', usage: '/deploy [参数…]', description: '部署' },
+    ]);
+    expect(text).toContain('/deploy [参数…]');
+    expect(text).toContain('部署');
+  });
+});
+
+describe('自定义斜杠命令集成（T-114 runTui 接线）', () => {
+  test('.modou/commands/*.md 注册的命令：占位展开 + 工具白名单 + /help 展示', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-custom-'));
+    try {
+      const commandsDir = join(dir, '.modou', 'commands');
+      mkdirSync(commandsDir, { recursive: true });
+      writeFileSync(
+        join(commandsDir, 'greet.md'),
+        `---
+name: greet
+description: 只读打招呼
+allowedTools: read
+---
+你好，$1！请只读研究，不要改文件。`,
+        'utf8',
+      );
+      const provider = new RecordingProvider('stub-model');
+      const { stdin, exit } = await startTui({ provider, cwd: dir });
+
+      // 提交 /greet 世界：占位 $1 → 世界，工具白名单只有 read
+      await typeAndEnter(stdin, '/greet 世界');
+      expect(provider.messages).toHaveLength(1);
+      const content = provider.messages[0]?.[0]?.content;
+      expect(typeof content).toBe('string');
+      expect(content as string).toContain('你好，世界！');
+      // 工具白名单：模型只看到 read（allowedTools 收窄）
+      const tools = provider.seenTools[0];
+      expect(tools !== undefined && Object.keys(tools)).toEqual(['read']);
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('计划批准落盘失败（T-113 告警不静默）', () => {
+  test('.modou/plans 不可写时批准计划：发「计划落盘失败」warn notice，计划仍执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-planfail-'));
+    try {
+      // .modou/plans 是普通文件 → savePlanToFile 的 mkdir 抛 EEXIST/ENOTDIR
+      const modouDir = join(dir, '.modou');
+      mkdirSync(modouDir, { recursive: true });
+      writeFileSync(join(modouDir, 'plans'), '不是目录', 'utf8');
+
+      const plan: StructuredPlan = {
+        goal: '重构订单模块',
+        files: ['src/orders.ts'],
+        steps: ['读取现状', '抽取共享函数'],
+        verification: ['bun test'],
+        risks: ['保持对外行为不变'],
+      };
+      const provider = new PlanThenTextProvider(serializeStructuredPlan(plan));
+      const { stdin, stdout, exit } = await startTui({ provider, cwd: dir });
+
+      // /plan 进入计划模式 → 模型产出结构化计划 → 计划面板等待评审
+      await typeAndEnter(stdin, '/plan 重构');
+      await flush();
+      await flush();
+      // 批准 → savePlanToFile 失败 → warn notice（不静默）；计划仍回填执行
+      stdin.write('a');
+      await flush();
+      await flush();
+
+      const allFrames = stdout.frames.join('\n');
+      expect(allFrames).toContain('计划落盘失败');
+      expect(allFrames).toContain('计划仍将执行');
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('自定义命令 allowedTools 未知工具名（启动校验不静默）', () => {
+  test('白名单含未注册工具名：启动 notice 列出未知名', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-unknown-tools-'));
+    try {
+      const commandsDir = join(dir, '.modou', 'commands');
+      mkdirSync(commandsDir, { recursive: true });
+      writeFileSync(
+        join(commandsDir, 'deploy.md'),
+        `---
+name: deploy
+description: 部署
+allowedTools: read,no_such_tool,write
+---
+部署 $1`,
+        'utf8',
+      );
+      const provider = new RecordingProvider('stub-model');
+      const { stdin, stdout, exit } = await startTui({
+        provider,
+        cwd: dir,
+        tools: defaultWriteTools(),
+      });
+      await flush();
+
+      const allFrames = stdout.frames.join('\n');
+      expect(allFrames).toContain('/deploy 的 allowedTools 含未注册工具');
+      expect(allFrames).toContain('no_such_tool');
+      // write 已注册 → 不列入未知清单
+      expect(allFrames).not.toContain('未注册工具：no_such_tool,write');
+      expect(allFrames).not.toContain('write、');
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

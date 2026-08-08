@@ -5,6 +5,8 @@ import { ApprovalGate } from '../permission/approval';
 import type { ProviderCapabilities } from '../provider/capabilities';
 import { ProviderError } from '../provider/errors';
 import type { ModelProvider, StreamEvent } from '../provider/types';
+import { createTaskTool } from '../tools/impl/task';
+import { readTool } from '../tools/impl/read';
 import { ToolRegistry } from '../tools/registry';
 import { mapRuntimeEvent, runTurnWithProtocol } from './bridge';
 import { EnvelopeEmitter } from './envelope';
@@ -630,6 +632,61 @@ describe('runTurnWithProtocol（收集式桥接）', () => {
       'context_state',
       'turn_end',
     ]);
+  });
+
+  test('子代理事件带 agent 字段（T-122）：主/子信封可区分，子代理独立 seq 空间', async () => {
+    const registry = new ToolRegistry()
+      .register(readTool)
+      .register(createTaskTool());
+    const stub = new StubProvider([
+      [
+        {
+          type: 'tool_use' as const,
+          id: 'call-task',
+          name: 'task',
+          input: { prompt: '找硬编码超时', tools: ['read'] },
+        },
+        { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } },
+        { type: 'finish' as const, reason: 'tool_use' as const },
+      ],
+      textRound('结论：src/a.ts:10。'),
+      textRound('已汇总。'),
+    ]);
+    const { envelopes, result } = await runTurnWithProtocol({
+      provider: stub,
+      messages: [userMsg],
+      tools: registry,
+      options: { maxTurns: 5 },
+    });
+
+    expect(result.termination).toBe('end_turn');
+
+    const mainEvents = envelopes.filter((e) => e.agent === 'main');
+    const subEvents = envelopes.filter((e) => e.agent !== 'main');
+    expect(mainEvents.length).toBeGreaterThan(0);
+    expect(subEvents.length).toBeGreaterThan(0);
+
+    // 子代理 agent 是 sub- 前缀 ID（bridge 为每个子代理建独立信封发射器）
+    const subAgents = new Set(subEvents.map((e) => e.agent));
+    expect([...subAgents].every((a) => a.startsWith('sub-'))).toBe(true);
+
+    // 子代理的 text_delta 是结论文本，且独立于主代理（seq 从 1 开始）
+    const subTurnStart = subEvents.find((e) => e.type === 'turn_start');
+    expect(subTurnStart).toBeDefined();
+    if (subTurnStart !== undefined) {
+      expect(subTurnStart.seq).toBe(1);
+    }
+    const subText = subEvents.find((e) => e.type === 'text_delta');
+    expect(subText).toBeDefined();
+    if (subText?.type === 'text_delta') {
+      expect(subText.data.delta).toBe('结');
+    }
+
+    // 主代理 text_delta 只有自己的收尾文本（子代理过程不污染主对话）
+    const mainTexts = mainEvents
+      .filter((e) => e.type === 'text_delta')
+      .map((e) => (e.type === 'text_delta' ? e.data.delta : ''));
+    expect(mainTexts.join('')).toBe('已汇总。');
   });
 });
 

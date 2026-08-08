@@ -161,4 +161,46 @@ describe('assembleTuiStartup（T-080 配置接入）', () => {
       rmSync(project, { recursive: true, force: true });
     }
   });
+
+  test('SessionStart 钩子未接线：配置时装配产出一条 notice（不静默失效）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(project, '.modou', {
+        hooks: {
+          SessionStart: [{ command: '/repo/scripts/hooks/session-start.mjs' }],
+          PreToolUse: [{ command: '/repo/scripts/hooks/guard.mjs' }],
+        },
+      });
+      const startup = assembleTuiStartup(
+        { cwd: project, homeDir: home },
+        { OPENAI_API_KEY: 'test-key' },
+      );
+      // 钩子总线正常装配（含 SessionStart 挂载点）
+      expect(startup.hooks?.has('SessionStart')).toBe(true);
+      expect(startup.hooks?.has('PreToolUse')).toBe(true);
+      // 未接线的点产出一条提示（runTui 以 notice 展示）
+      expect(startup.notices).toHaveLength(1);
+      expect(startup.notices?.[0]).toContain('SessionStart');
+      expect(startup.notices?.[0]).toContain('未接线');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('未配置 SessionStart：不产出 notice', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      const startup = assembleTuiStartup(
+        { cwd: project, homeDir: home },
+        { OPENAI_API_KEY: 'test-key' },
+      );
+      expect(startup.notices).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
 });

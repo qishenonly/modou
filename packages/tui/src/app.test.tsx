@@ -406,3 +406,260 @@ describe('App /compact（T-070）', () => {
     unmount();
   });
 });
+
+describe('App /todo_update（T-111 待办清单）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  test('todo_update 事件：渲染待办清单（进度条 + 勾选 + 进行中）', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    push(
+      env({
+        type: 'todo_update',
+        data: {
+          items: [
+            { id: 'a', text: '读取项目结构', status: 'done' },
+            { id: 'b', text: '实现 TodoWrite', status: 'in_progress' },
+            { text: '写测试', status: 'pending' },
+          ],
+        },
+      }),
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('待办清单');
+    expect(frame).toContain('1/3');
+    expect(frame).toContain('[x] 1. 读取项目结构');
+    expect(frame).toContain('[~] 2. 实现 TodoWrite');
+    unmount();
+  });
+
+  test('todo_update 事件：空清单隐藏待办区', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+    push(env({ type: 'todo_update', data: { items: [] } }));
+    await flush();
+    expect(lastFrame() ?? '').not.toContain('待办清单');
+    unmount();
+  });
+});
+
+describe('App /plan（T-112 Plan Mode）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  const PLAN = {
+    goal: '把重复的字段挑选逻辑抽取为共享函数',
+    files: ['src/orders.ts'],
+    steps: ['读取现状', '新增 pickOrderFields', '改为复用'],
+    verification: ['bun test tests/regression.test.ts 保持通过'],
+    risks: ['保持对外行为不变'],
+  };
+
+  test('planProposal 非空：显示计划面板（五段结构），输入行隐藏', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} planProposal={PLAN} />,
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('计划提案');
+    expect(frame).toContain('## 目标');
+    expect(frame).toContain('把重复的字段挑选逻辑抽取为共享函数');
+    expect(frame).toContain('## 涉及文件');
+    expect(frame).toContain('- src/orders.ts');
+    expect(frame).toContain('## 分步改动');
+    expect(frame).toContain('- 读取现状');
+    expect(frame).toContain('a 批准');
+    unmount();
+  });
+
+  test('键盘 a：发 plan_approve Command；r：plan_reject；e：plan_modify', async () => {
+    const { stream } = createEventChannel();
+    const calls: Command[] = [];
+    const send = (command: Command): void => {
+      calls.push(command);
+    };
+    const { stdin, unmount } = render(
+      <App stream={stream} send={send} planProposal={PLAN} />,
+    );
+    await flush();
+
+    stdin.write('a');
+    expect(calls).toEqual([{ type: 'plan_approve' }]);
+    unmount();
+  });
+
+  test('planMode 为 true：状态栏显示「计划模式」段', async () => {
+    const { stream } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} planMode />,
+    );
+    await flush();
+    expect(lastFrame() ?? '').toContain('计划模式');
+    unmount();
+  });
+});
+
+describe('App 子代理事件流（T-122 折叠展示）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  /** 构造一条子代理信封（agent = 子代理 ID）。 */
+  function subEnv(event: ProtocolEvent, agent: string): Envelope {
+    counter += 1;
+    const turn =
+      event.type === 'turn_start' || event.type === 'turn_end'
+        ? event.data.turn
+        : 0;
+    return { v: 1, seq: counter, ts: 0, agent, turn, ...event };
+  }
+
+  test('子代理开始/结束折叠为 notice；子代理文本不打进主对话', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    // 子代理完整过程：turn_start → text_delta → turn_end
+    const subAgent = 'sub-abc123';
+    push(subEnv({ type: 'turn_start', data: { turn: 1 } }, subAgent));
+    push(
+      subEnv(
+        { type: 'text_delta', data: { delta: '结论：src/a.ts:10。' } },
+        subAgent,
+      ),
+    );
+    push(
+      subEnv(
+        { type: 'turn_end', data: { turn: 1, termination: 'end_turn' } },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    expect(frame).toContain(`子代理 ${subAgent} 开始处理`);
+    expect(frame).toContain(`子代理 ${subAgent} 结束：end_turn`);
+    // 子代理的 text_delta 被折叠：主对话里看不到子代理的结论文本
+    expect(frame).not.toContain('结论：src/a.ts:10。');
+
+    // 主代理事件照常渲染
+    push(env({ type: 'turn_start', data: { turn: 2 } }));
+    push(env({ type: 'text_delta', data: { delta: '已汇总子代理结论' } }));
+    push(env({ type: 'turn_end', data: { turn: 2, termination: 'end_turn' } }));
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).toContain('已汇总子代理结论');
+    unmount();
+  });
+
+  test('子代理审批请求转发到主弹窗：按 requestId 裁决后子代理继续（不悬挂）', async () => {
+    const { stream, push } = createEventChannel();
+    const calls: Command[] = [];
+    const { stdin, lastFrame, unmount } = render(
+      <App stream={stream} send={(c) => calls.push(c)} />,
+    );
+
+    const subAgent = 'sub-abc123';
+    push(
+      subEnv(
+        {
+          type: 'approval_request',
+          data: {
+            id: 'req-sub',
+            description: '执行命令：git push --force',
+            risk: 'exec',
+            options: [
+              { id: 'allow_once', label: '允许本次' },
+              { id: 'deny', label: '拒绝' },
+            ],
+          },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    // 主弹窗出现：子代理的审批请求不再被折叠——描述与选项可见，输入行隐藏
+    expect(frame).toContain('审批请求');
+    expect(frame).toContain('执行命令：git push --force');
+    expect(frame).toContain('允许本次');
+    expect(frame).not.toContain('>');
+
+    // 按 2 → 拒绝：approve Command 带子代理请求的 requestId（弹窗按 id 裁决，
+    // 审批桥 pending map 按 id 命中、agent 无关——子代理据此继续执行）
+    stdin.write('2');
+    await flush();
+    expect(calls).toEqual([
+      { type: 'approve', requestId: 'req-sub', decision: 'deny' },
+    ]);
+
+    // 子代理的 approval_resolved（agent 为子代理）→ 弹窗关闭、输入行恢复
+    push(
+      subEnv(
+        {
+          type: 'approval_resolved',
+          data: { id: 'req-sub', decision: 'deny', source: 'user' },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).not.toContain('执行命令：git push --force');
+    expect(frame).toContain('>');
+
+    unmount();
+  });
+
+  test('子代理 warn 级 notice（写冲突）透出到提示区；info 级仍折叠', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    const subAgent = 'sub-abc123';
+    push(
+      subEnv(
+        {
+          type: 'notice',
+          data: {
+            level: 'warn',
+            text: '写冲突：文件 "/tmp/shared.txt" 已被 main 写入，现在由 sub-abc123 再次写入——改动可能互相覆盖，请核对后决定取舍',
+          },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    // 子代理的写冲突告警透出到提示区（改动可能互相覆盖，需人工核对，不能折叠）
+    expect(frame).toContain('写冲突');
+    expect(frame).toContain('/tmp/shared.txt');
+    expect(frame).toContain('改动可能互相覆盖');
+
+    // 子代理 info 级 notice（内部细节）仍折叠：不污染主对话
+    push(
+      subEnv(
+        { type: 'notice', data: { level: 'info', text: '子代理内部提示' } },
+        subAgent,
+      ),
+    );
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).not.toContain('子代理内部提示');
+    // 之前的告警仍在（不因新事件丢失）
+    expect(frame).toContain('写冲突');
+
+    unmount();
+  });
+});

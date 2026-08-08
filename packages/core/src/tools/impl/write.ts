@@ -255,6 +255,9 @@ async function executeWrite(
   }
 
   const bytesWritten = Buffer.byteLength(args.content, 'utf8');
+  // 写入上报（T-123 写冲突检测）：成功落盘后把实际写入路径自报给运行时——
+  // 运行时据此维护会话级写冲突检测（onFileWrite 注入，ADR 0011）。
+  ctx.onFileWrite?.(absPath);
   return {
     ok: true,
     forModel: existed

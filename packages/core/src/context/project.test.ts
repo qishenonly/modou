@@ -108,7 +108,7 @@ describe('序列化（T-063 分段计价的数据源）', () => {
 // ---------------------------------------------------------------------------
 
 describe('estimateContextSections（002 7.1 分段估算）', () => {
-  test('五个分项齐全、顺序与 CONTEXT_SECTION_NAMES 一致、合计为各段之和', () => {
+  test('分项齐全（本地工具 + MCP 单列）、顺序与 CONTEXT_SECTION_NAMES 一致、合计为各段之和', () => {
     const system = '你是 modou，一个终端编码助手。';
     const tools = registryWithEcho();
     const thread = typicalThread();
@@ -120,6 +120,7 @@ describe('estimateContextSections（002 7.1 分段估算）', () => {
     expect(estimate.sections.map((s) => s.tokens)).toEqual([
       estimateTokens(system),
       estimateTokens(serializeToolsText(tools)),
+      0, // mcp_tools 缺省 0（注册表无 mcp_* 工具时）
       0, // instructions 缺省 = 0 占位（0.8.0）
       estimateTokens(
         '请读一下 config.json\n好的，我先读文件。\n' +
@@ -127,6 +128,34 @@ describe('estimateContextSections（002 7.1 分段估算）', () => {
       ),
       estimateTokens('[tool-result:echo] {"type":"text","value":"echo:你好"}'),
     ]);
+    expect(estimate.total).toBe(
+      estimate.sections.reduce((sum, s) => sum + s.tokens, 0),
+    );
+  });
+
+  test('MCP 工具单列：mcp_* 前缀工具定义只进 mcp_tools 分项，不进 tools', () => {
+    // 构造一个含 MCP 工具（mcp_filesystem_read_file）的注册表
+    const mcpRegistry = new ToolRegistry();
+    mcpRegistry.register({
+      name: 'mcp_filesystem_read_file',
+      description: '读取远程文件（MCP 测试工具）',
+      risk: 'network',
+      schema: z.record(z.string(), z.unknown()),
+      jsonSchema: { type: 'object' },
+      execute: async () => ({ ok: true, forModel: 'ok' }),
+    });
+    const estimate = estimateContextSections({
+      system: 'sys',
+      tools: mcpRegistry,
+      thread: [],
+    });
+    const mcpTokens =
+      estimate.sections.find((s) => s.name === 'mcp_tools')?.tokens ?? 0;
+    const localTokens =
+      estimate.sections.find((s) => s.name === 'tools')?.tokens ?? 0;
+    expect(mcpTokens).toBeGreaterThan(0); // MCP 工具定义占位
+    expect(localTokens).toBe(0); // 本地工具为空
+    // 合计 = 所有分项之和（不重复计数）
     expect(estimate.total).toBe(
       estimate.sections.reduce((sum, s) => sum + s.tokens, 0),
     );

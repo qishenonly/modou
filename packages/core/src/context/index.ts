@@ -7,10 +7,12 @@
  *
  * 0.6.0 落地 budget（T-062）与 project 分项估算（T-063 /context）；
  * 0.7.0 落地 summary（T-070：增量压缩的持久摘要状态）、compact
- * （压缩决策 / 投影 / /compact 驱动）与 delta（生产摘要增量生成）。
+ * （压缩决策 / 投影 / /compact 驱动）与 delta（生产摘要增量生成）；
+ * 0.11.0 落地 todo（T-110 TodoWrite：会话级待办清单状态，复用 SummaryItem）。
  */
 export * from './budget';
 export * from './project';
 export * from './summary';
 export * from './compact';
 export * from './delta';
+export * from './todo';

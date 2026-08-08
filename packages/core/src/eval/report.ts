@@ -111,6 +111,12 @@ export function formatSuiteReport(suite: EvalSuiteResult): string {
   lines.push(
     `| token 基线 | ${baseline.totalTokens}（均 ${baseline.avgTokensPerTask.toFixed(0)}/任务，入 ${baseline.totalInputTokens} / 出 ${baseline.totalOutputTokens}） | — | 已建立 |`,
   );
+  // 0.15.0：技能触发准确率（无阈值——G-0.15.0 只要求「可测」，读数即观测值）
+  if (suite.skillTriggerCandidates > 0) {
+    lines.push(
+      `| 技能触发准确率 | ${formatPercent(suite.skillTriggerRate)}（${suite.skillTriggerHits}/${suite.skillTriggerCandidates}） | — | 已测量 |`,
+    );
+  }
   lines.push('');
 
   // —— 压缩用例备注 ——
@@ -127,6 +133,18 @@ export function formatSuiteReport(suite: EvalSuiteResult): string {
       '> 本套评测没有任务触发上下文压缩（压缩后延续率无法计算，不参与验收）。',
     );
   }
+  // —— 技能触发用例备注（0.15.0） ——
+  if (suite.skillTriggerCandidates > 0) {
+    const skillTasks = suite.results.filter(
+      (r) => r.task.expectedSkill !== undefined,
+    );
+    lines.push(
+      `> 技能触发准确率：${suite.skillTriggerHits}/${suite.skillTriggerCandidates} 个声明期望技能的任务正确调用 skill 工具` +
+        `（${skillTasks.map((r) => r.task.id).join('、')}）。`,
+    );
+  } else {
+    lines.push('> 本套评测没有技能触发任务（触发准确率不参与本次验收）。');
+  }
   lines.push('');
 
   // —— 逐任务明细 ——
@@ -142,6 +160,8 @@ export function formatSuiteReport(suite: EvalSuiteResult): string {
       feature: '加功能',
       refactor: '重构',
       read: '读代码',
+      plan: '规划',
+      skill: '技能',
     };
     lines.push(
       `| ${result.task.id} | ${kindLabel[result.task.kind] ?? result.task.kind}${result.task.long ? '·长' : ''} | ` +
