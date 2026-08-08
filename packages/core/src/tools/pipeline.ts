@@ -9,6 +9,7 @@ import type { ToolRegistry } from './registry';
 import { truncateOutput } from './truncate';
 import type { TruncationOptions } from './truncate';
 import type {
+  AgentRunner,
   SubagentRunner,
   Tool,
   ToolContext,
@@ -62,6 +63,12 @@ export interface ToolPipelineContext {
    * 缺省不注入（Task 工具返回「子代理不可用」失败结果）。
    */
   readonly runSubagent?: SubagentRunner;
+  /**
+   * 自定义 agent 派发通道（0.17.0 T-170）：透传给工具 ctx.runAgent——
+   * agent 工具 execute 经它派出角色化子代理（复用子代理运行时），只拿回最终结论。
+   * 缺省不注入（agent 工具返回「自定义 agent 不可用」失败结果）。
+   */
+  readonly runAgent?: AgentRunner;
   /** 写入上报回调：透传给工具 ctx.onFileWrite（write/edit 成功落盘后调用，运行时维护写冲突检测）。 */
   readonly onFileWrite?: (path: string) => void;
 }
@@ -307,6 +314,7 @@ function executeWithTimeout(
       ...(context.runSubagent !== undefined
         ? { runSubagent: context.runSubagent }
         : {}),
+      ...(context.runAgent !== undefined ? { runAgent: context.runAgent } : {}),
       ...(context.onFileWrite !== undefined
         ? { onFileWrite: context.onFileWrite }
         : {}),

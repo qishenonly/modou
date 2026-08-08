@@ -11,9 +11,11 @@ import {
   countUserMessages,
   createModelDeltaGenerator,
   createProviderFromConfig,
+  createAgentTool,
   createSkillTool,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  discoverAgents,
   discoverSkills,
   EnvelopeLogAdapter,
   expandCommandPlaceholders,
@@ -60,6 +62,7 @@ import type {
   NoticeLevel,
   ResumeCandidate,
   RewindPreview,
+  AgentToolDeps,
   SessionRecord,
   SkillToolDeps,
   SnapshotPoint,
@@ -179,6 +182,21 @@ function withSkillTool(
 }
 
 /**
+ * 在既有工具集上追加 agent 工具（0.17.0 T-170）：复制注册表 + 注册 agent 工具。
+ * 与 withSkillTool 同一约定（复制而非原地注册——不修改调用方资产）。有可用
+ * 角色时才注册（没有角色时模型调用只会得到「没有可用角色」，不必暴露该工具）。
+ */
+function withAgentTool(
+  registry: ToolRegistry,
+  deps: AgentToolDeps,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  copy.register(createAgentTool(deps));
+  return copy;
+}
+
+/**
  * 复制注册表（0.16.0 MCP 注入用）：把调用方的注册表复制一份再向其中注册 MCP
  * 工具——不修改调用方传入的注册表（options.tools 是调用方资产，与 withSkillTool
  * 同一约定）。MCP 工具是异步注入（连接后注册），必须落在副本上。
@@ -222,6 +240,22 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       names: () => [...skillIndex.keys()],
     });
   }
+  // 0.17.0 自定义 agents（T-170）：两级发现（全局 ~/.modou/agents < 项目
+  // .modou/agents，项目覆盖全局）→ 角色清单进系统提示词（name + description，
+  // 角色提示词派发时注入），模型据清单调 agent 工具按名派发（角色化子代理，
+  // 白名单真正强制 + 可选模型指定）。有可用角色时才注册 agent 工具并渲染清单
+  // （没有角色时模型调用只会得到「没有可用角色」，不必暴露该工具）。
+  const discoveredAgents = discoverAgents({ homeDir, projectRoot: cwd });
+  const agentIndex = new Map(
+    discoveredAgents.agents.map((agent) => [agent.name, agent] as const),
+  );
+  const agentsEnabled = agentIndex.size > 0;
+  if (agentsEnabled) {
+    tools = withAgentTool(tools, {
+      resolve: (name) => agentIndex.get(name),
+      names: () => [...agentIndex.keys()],
+    });
+  }
   // T-114 自定义斜杠命令：加载 `.modou/commands/*.md`（frontmatter + 正文提示词）。
   // 与内置命令同名的文件被跳过并记录（不静默，启动时发 notice 告知）。
   const loadedCommands = await loadCustomCommands(cwd);
@@ -252,6 +286,14 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
             skills: discoveredSkills.map((skill) => ({
               name: skill.name,
               description: skill.description,
+            })),
+          }
+        : {}),
+      ...(agentsEnabled
+        ? {
+            agents: discoveredAgents.agents.map((agent) => ({
+              name: agent.name,
+              description: agent.description,
             })),
           }
         : {}),
@@ -416,6 +458,34 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     pushNotice(
       'warn',
       `自定义斜杠命令工具白名单：${unknownToolDeclarations.join('；')}（这些工具名将被忽略）`,
+    );
+  }
+  // 0.17.0 T-170：自定义 agents 中被跳过的文件（缺 name/description/正文）如实
+  // 告警——用户要知道自己写的角色哪份没生效（不静默）。
+  if (discoveredAgents.skipped.length > 0) {
+    pushNotice(
+      'warn',
+      `自定义 agents：跳过 ${discoveredAgents.skipped.length} 个文件` +
+        `（${discoveredAgents.skipped.join('、')}）——缺 name/description/正文`,
+    );
+  }
+  // 0.17.0 T-170：agent 角色的 allowedTools 白名单里含注册表不存在的工具名时
+  // 启动告警（不静默丢弃）——该名在派发时被白名单过滤掉，角色实际拿到的工具集
+  // 比声明少（权限继承不超父，ADR 0011），用户要知道自己写的哪个工具名没生效。
+  const unknownAgentToolDeclarations = discoveredAgents.agents.flatMap(
+    (agent) => {
+      const unknown = agent.allowedTools.filter((name) => !tools.has(name));
+      return unknown.length > 0
+        ? [
+            `角色 ${agent.name} 的 allowedTools 含未注册工具：${unknown.join('、')}`,
+          ]
+        : [];
+    },
+  );
+  if (unknownAgentToolDeclarations.length > 0) {
+    pushNotice(
+      'warn',
+      `自定义 agents 工具白名单：${unknownAgentToolDeclarations.join('；')}（这些工具名将被忽略）`,
     );
   }
   // 偏离 C：SessionStart 本版未接线——装配时配置了 SessionStart 钩子的 notice
@@ -632,6 +702,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           onFileWrite: toOnFileWrite(writeConflicts),
           // T-142 钩子总线：管线 ④⑦ 挂载（deny 阻止 / 改写参数 / 观察副作用）。
           ...(hooksBus !== undefined ? { hooks: hooksBus } : {}),
+          // 0.17.0 T-170 自定义 agents：角色声明 model 时按装配面重建 provider 实例
+          // （与 /model 的 rebuildProvider 同口径——供应商类型 + 端点 + 环境变量）。
+          ...(agentsEnabled ? { resolveModel: rebuildProvider } : {}),
           options: {
             maxTurns: startup.maxTurns,
             abortSignal: controller.signal,

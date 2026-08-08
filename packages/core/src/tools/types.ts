@@ -92,6 +92,39 @@ export type SubagentRunner = (
 ) => Promise<SubagentResult>;
 
 // ---------------------------------------------------------------------------
+// 自定义 agents（0.17.0 T-170，ADR 0011 子代理边界的角色化复用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 自定义 agent 派发请求（agent 工具入参 + 角色配置解析后的形态）：按名派发
+ * 一个角色化子代理——角色提示词拼入系统提示词、注册表按角色白名单派生、
+ * 可选模型切换（002 8.2 换 provider 实例）。
+ */
+export interface AgentDispatchRequest {
+  /** 角色名（审计 / 事件流 agent 标识用）。 */
+  readonly name: string;
+  /** 角色提示词（拼入子代理系统提示词的追加段）。 */
+  readonly systemPrompt: string;
+  /**
+   * 工具白名单（角色声明的 allowedTools；空数组 = 继承父代理完整工具集）。
+   * **真正强制**：派生注册表只含白名单工具，越界调用在 ① Resolve 即被拒。
+   */
+  readonly allowedTools: readonly string[];
+  /** 角色指定模型（缺省 = 沿用父代理当前 provider）。 */
+  readonly model?: string;
+  /** 交给角色的任务指令（作为子代理对话的首条 user 消息）。 */
+  readonly prompt: string;
+}
+
+/**
+ * 自定义 agent 派发函数：由运行时注入 ToolContext（agent 工具经此派发），
+ * 实现 = 一次带角色配置的 `runAgentTurn`（runtime/agent.ts，复用子代理内核）。
+ */
+export type AgentRunner = (
+  request: AgentDispatchRequest,
+) => Promise<SubagentResult>;
+
+// ---------------------------------------------------------------------------
 // 写冲突检测（T-123，ADR 0011）
 // ---------------------------------------------------------------------------
 
@@ -163,6 +196,15 @@ export interface ToolContext {
    * （ADR 0011）。
    */
   readonly runSubagent?: SubagentRunner;
+  /**
+   * 自定义 agent 派发通道（0.17.0 T-170）：运行时注入，agent 工具 execute 经它
+   * 派出角色化子代理（独立 runAgentTurn、独立消息历史、独立上下文窗口）。
+   * 与 runSubagent 同一派发内核（复用子代理运行时），区别在系统提示词（角色
+   * 提示词拼入）与注册表派生（按角色白名单，真正强制越界拒绝）。缺省不提供——
+   * 未注入时 agent 工具返回「自定义 agent 不可用」失败结果（错误即数据）。
+   * 一层深限制由运行时强制：子代理 loop 内的 runAgent 直接拒绝（ADR 0011）。
+   */
+  readonly runAgent?: AgentRunner;
   /**
    * 写入上报回调（T-123 写冲突检测）：write / edit 工具成功落盘后调用，入参是
    * 实际写入的文件路径（解析后绝对路径）。运行时据此维护会话级写冲突检测

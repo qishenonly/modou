@@ -3,6 +3,7 @@ import { SKILL_TOOL_NAME } from '../tools/impl/skill';
 import type { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolRisk } from '../tools/types';
 import type { SkillSummary } from '../skills/parse';
+import type { AgentSummary } from '../agents/parse';
 
 /**
  * 系统提示词模块（T-023/T-034）：面向模型的 Agent 系统提示词。
@@ -38,6 +39,13 @@ export interface BuildSystemPromptOptions {
    * 工具按需拉取（ADR 0014）。未传 / 空数组时不渲染技能段。
    */
   readonly skills?: readonly SkillSummary[];
+  /**
+   * 自定义 agents 角色清单（0.17.0 T-170）：只含 name + description，常驻系统
+   * 提示词（稳定前缀）供模型判断何时派发到某角色——模型据清单决定调 agent 工具
+   * 派发（角色提示词 / 白名单 / 模型在派发时由运行时应用）。未传 / 空数组时
+   * 不渲染角色清单段。
+   */
+  readonly agents?: readonly AgentSummary[];
 }
 
 /** 段落序号（中文数字；段落数 ≤ 6，renderSection 依序编号）。 */
@@ -241,12 +249,34 @@ function buildSkillsSection(skills: readonly SkillSummary[]): string {
 }
 
 /**
+ * 自定义 agents 角色清单小节正文（0.17.0 T-170）：只列 name + description，
+ * 角色提示词不常驻（派发时由运行时拼入角色子代理的系统提示词）。明确触发判断
+ * 由模型做——任务需要特定专家视角时用 agent 工具按名派发；未列出的角色不存在
+ * （防模型臆造角色名）。
+ */
+function buildAgentsSection(agents: readonly AgentSummary[]): string {
+  const lines: string[] = [
+    '自定义 agent 是项目在 .modou/agents/*.md 里定义的角色——有独立的角色提示词、',
+    '工具白名单与可选模型。下面的清单只含角色名与一句话说明，角色提示词在派发时注入：',
+    '任务需要特定专家视角（代码审查、调试、调研等）时，用 agent 工具按名派发——',
+    '角色派发是独立的子代理（独立消息历史与上下文窗口），只把最终结论返回给主代理；',
+    '未列出的角色不存在，不要臆造角色名。',
+    '',
+    ...agents.map(
+      (agent) =>
+        `- ${agent.name}：${agent.description.length > 0 ? agent.description : '（无描述）'}`,
+    ),
+  ];
+  return lines.join('\n');
+}
+
+/**
  * 构建系统提示词（T-023 / T-034）。
  *
  * 段落顺序：身份与行为准则（能力声明随注册表 risk 构成派生）→ 搜索优先策略 →
  * 工具说明（按注册表动态生成）→ 技能清单（0.15.0，仅在提供 skills 时）→
- * 编辑纪律（仅在含写 / 执行工具时）→ 输出期待 →（可选 extra）。整段是纯文本、
- * 无外部依赖，同一输入产出确定。
+ * 角色清单（0.17.0，仅在提供 agents 时）→ 编辑纪律（仅在含写 / 执行工具时）→
+ * 输出期待 →（可选 extra）。整段是纯文本、无外部依赖，同一输入产出确定。
  */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   const parts: string[] = [buildIdentitySection(options.tools)];
@@ -260,6 +290,17 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
         nextIndex,
         '可用技能（正文按需加载）',
         buildSkillsSection(skills),
+      ),
+    );
+    nextIndex += 1;
+  }
+  const agents = options.agents ?? [];
+  if (agents.length > 0) {
+    parts.push(
+      renderSection(
+        nextIndex,
+        '自定义角色（按需派发）',
+        buildAgentsSection(agents),
       ),
     );
     nextIndex += 1;

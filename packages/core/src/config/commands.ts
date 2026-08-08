@@ -66,7 +66,8 @@ const COMMAND_EXT = '.md';
  * 解析策略（frontmatter 是模型/用户手写，容错）：
  * 1. 首行必须是 `---`，找到下一个 `---` 作为 frontmatter 边界（其余为正文）；
  * 2. frontmatter 逐行 `key: value` 解析：name / description / model 为字符串，
- *    allowedTools 按逗号拆分；
+ *    allowedTools 支持三种写法——逗号分隔（`a,b,c`）、空格分隔（`a b c`，
+ *    与 skills 解析口径一致）与块状列表（`allowedTools:` 换行 `- a` 逐行）；
  * 3. 正文 = frontmatter 之后的全部内容（trim 去首尾空行）。
  */
 export function parseCommandFrontmatter(
@@ -78,14 +79,36 @@ export function parseCommandFrontmatter(
   const front = text.slice(3, end);
   const body = text.slice(end + 4).trim();
   const fields: Record<string, string> = {};
-  for (const raw of front.split('\n')) {
-    const line = raw.trim();
+  const rawLines = front.split('\n');
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const line = rawLines[index].trim();
     if (line.length === 0 || line.startsWith('#')) continue;
     const colon = line.indexOf(':');
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     const value = line.slice(colon + 1).trim();
-    if (key.length > 0) fields[key] = value;
+    if (key.length === 0) continue;
+    // 块状列表：`key:` 空值 + 后续若干 `- item` 行（0.17.0 起支持，
+    // 与 skills 的 SKILL.md 解析同口径——模型/用户手写 frontmatter 的常见形态）
+    if (key === 'allowedTools' && value === '') {
+      const items: string[] = [];
+      let cursor = index + 1;
+      while (cursor < rawLines.length) {
+        const itemLine = rawLines[cursor].trim();
+        if (itemLine.startsWith('- ')) {
+          items.push(itemLine.slice(2).trim());
+          cursor += 1;
+        } else {
+          break;
+        }
+      }
+      if (items.length > 0) {
+        fields.allowedTools = items.join(',');
+        index = cursor - 1;
+        continue;
+      }
+    }
+    fields[key] = value;
   }
   const name = fields.name?.trim();
   const description = fields.description?.trim();
@@ -94,7 +117,7 @@ export function parseCommandFrontmatter(
   if (body.length === 0) return null;
 
   const allowedTools = fields.allowedTools
-    ?.split(',')
+    ?.split(/[,\s]+/)
     .map((tool) => tool.trim())
     .filter((tool) => tool.length > 0);
   const model = fields.model?.trim();

@@ -123,8 +123,8 @@ export interface SubagentRunnerOptions {
   readonly hooks?: import('../hooks/bus').HookBus;
 }
 
-/** 把子代理的终止归一为 SubagentResult（错误即数据）。 */
-function toResult(agentId: string, result: TurnResult): SubagentResult {
+/** 把子代理的终止归一为 SubagentResult（错误即数据）。导出：runtime/agent.ts 复用（0.17.0）。 */
+export function toResult(agentId: string, result: TurnResult): SubagentResult {
   const base: SubagentResult = {
     ok: result.termination === 'end_turn',
     text: result.text,
@@ -161,8 +161,8 @@ function toResult(agentId: string, result: TurnResult): SubagentResult {
   }
 }
 
-/** 组合多个中止信号：任一触发即中止；无信号时返回 undefined。 */
-function combineSignals(
+/** 组合多个中止信号：任一触发即中止；无信号时返回 undefined。导出：runtime/agent.ts 复用（0.17.0）。 */
+export function combineSignals(
   signals: ReadonlyArray<AbortSignal | undefined>,
 ): AbortSignal | undefined {
   const present = signals.filter(

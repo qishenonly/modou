@@ -29,9 +29,14 @@ import type {
 import { runToolPipeline } from '../tools/pipeline';
 import { redactValue } from '../tools/redact';
 import type { ToolRegistry } from '../tools/registry';
-import type { SubagentRunner, WriteConflictReport } from '../tools/types';
+import type {
+  AgentRunner,
+  SubagentRunner,
+  WriteConflictReport,
+} from '../tools/types';
 import { toToolSet } from '../tools/toolset';
 import { createSubagentRunner } from './subagent';
+import { createAgentRunner } from './agent';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
@@ -182,6 +187,13 @@ export interface RunAgentTurnInput {
    * （0.13.0 及之前行为）。TUI 按 settings.json hooks 装配后注入。
    */
   readonly hooks?: HookBus;
+  /**
+   * 模型解析工厂（0.17.0 T-170 自定义 agents）：角色声明 model 时经此按模型 ID
+   * 重建 provider 实例（002 8.2 换 provider 实例）。由装配方注入（TUI 按
+   * providerSpec + 环境变量重建）；缺省 = 角色 model 被忽略（沿用当前 provider）。
+   * 返回 undefined = 无法解析该模型（角色派发失败回喂可诊断错误）。
+   */
+  readonly resolveModel?: (model: string) => ModelProvider | undefined;
   readonly options: TurnOptions;
 }
 
@@ -398,6 +410,7 @@ export async function runAgentTurn(
     budget: inputBudget,
     summaryState: inputSummaryState,
     compact: compactConfig,
+    resolveModel,
   } = input;
   const { maxTurns, maxTokens, abortSignal } = options;
   const emit = onEvent ?? (() => {});
@@ -442,6 +455,30 @@ export async function runAgentTurn(
     onFileWrite: input.onFileWrite,
     // T-142：钩子总线继承——子代理的工具调用同样过 ④⑦ 钩子（统一的管线安全面）
     hooks: input.hooks,
+  });
+
+  /**
+   * 自定义 agent 派发通道（0.17.0 T-170）：注入 ToolContext 的 runAgent——
+   * agent 工具 execute 经此派出角色化子代理（复用子代理内核：独立 runAgentTurn /
+   * 独立消息历史 / 独立上下文窗口），只拿回最终结论文本。角色化增量：
+   * 系统提示词拼入角色提示词（buildAgentSystemPrompt）、注册表按角色白名单派生
+   * （deriveAgentRegistry——白名单真正强制，越界调用在 ① Resolve 即被拒）、
+   * 角色声明 model 时经 resolveModel（装配方注入）重建 provider 实例。
+   * 一层深限制与 task 工具同款（深度 ≥ 1 直接拒绝；task 工具永不进入角色注册表）。
+   */
+  const runAgent: AgentRunner = createAgentRunner({
+    runTurn: runAgentTurn,
+    provider,
+    parentRegistry: tools,
+    readFiles,
+    cwd,
+    approval,
+    abortSignal,
+    depth: input.subagentDepth ?? 0,
+    emit,
+    onFileWrite: input.onFileWrite,
+    hooks: input.hooks,
+    resolveModel,
   });
 
   /**
@@ -666,6 +703,8 @@ export async function runAgentTurn(
           ...(session !== undefined ? { sessionId: session.sessionId } : {}),
           readFiles,
           runSubagent,
+          // 0.17.0 T-170：自定义 agent 派发通道（agent 工具经此派出角色化子代理）
+          runAgent,
           // T-123 写冲突检测：write/edit 成功落盘后自报路径，按本循环 agent
           // 上报（主代理 'main' / 子代理 ID）；检出跨 agent 同文件写入时发
           // notice（warn）告知前端「改动可能互相覆盖」（ADR 0011）。

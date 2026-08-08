@@ -9,6 +9,7 @@ export * from './prompt';
 export * from './context';
 export * from './session';
 export * from './skills';
+export * from './agents';
 export * from './snapshot';
 export * from './config';
 export * from './eval';

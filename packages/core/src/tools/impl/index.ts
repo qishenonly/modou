@@ -13,7 +13,8 @@ import { writeTool } from './write';
  * 0.2.0 只读工具集：read（T-021）、grep / glob（T-022）；
  * 0.3.0 写/执行工具集：write（T-030）、edit（T-031）、bash（T-032，ADR 0005）；
  * 0.11.0 清单工具：todo_write（T-110，复用 SummaryState.todo 结构，ADR 0010）；
- * 0.12.0 子代理工具：task（T-120，supervisor 一层深，ADR 0011）。
+ * 0.12.0 子代理工具：task（T-120，supervisor 一层深，ADR 0011）；
+ * 0.17.0 角色派发工具：agent（T-170，自定义 agents 复用子代理运行时）。
  */
 export * from './read';
 export * from './grep';
@@ -24,6 +25,7 @@ export * from './bash';
 export * from './todo';
 export * from './task';
 export * from './skill';
+export * from './agent';
 
 /**
  * 便捷装配：把全部只读工具（read / grep / glob）加入一个工具注册表
