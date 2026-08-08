@@ -26,6 +26,10 @@ import type { EvalTask } from './types';
  * `fixtures/longtask`）：实现 mathlib 五个函数，maxTurns 44，启用压缩配置
  * （T-070）——验证「压缩后任务延续率」：会话中途压缩后，judge 仍通过。
  *
+ * 另含 1 个**技能触发用例**（skill-code-review，0.15.0）：「审查本次改动」应
+ * 命中 code-review——judge 断言模型调用 skill 工具且 name 参数为期望技能
+ * （runSuite 聚合「技能触发准确率」，G-0.15.0 验收门）。
+ *
  * 每个任务的 judge 只依赖 fixture 副本 + 模型输出，可离线手工断言。
  */
 
@@ -603,6 +607,47 @@ export const TASKS: readonly EvalTask[] = [
     prompt:
       '在 src/mathlib.ts 中实现五个缺失函数：add / subtract / multiply / divide / modulo（规格见 tests/final.test.ts 的断言）。这是一个长任务：请先完整读取相关文件，再逐一实现，最后运行 `bun test tests/final.test.ts` 验证全部通过。不要改动其他文件。',
     judge: (ctx) => runBunTest(ctx.dir, 'tests/final.test.ts'),
+  },
+
+  // ---- 技能触发（1，0.15.0）：judge 断言模型调用 skill 工具并命中期望技能 ----
+  // 技能触发任务测的是「触发准确率可测」：系统提示词常驻技能清单（渐进式披露，
+  // 只有 name + description），模型应自行判断任务命中 code-review 技能并调用
+  // skill 工具加载正文。judge 依据 ctx.toolCalls（runEval 从事件流重建）断言
+  // 触发了 skill 且 name 参数为期望技能——不检查正文质量（那是审查任务的延伸，
+  // 本任务只测触发准确性）。runner 需注入 skills（RunEvalOptions.skills）装配
+  // skill 工具；未注入时模型调用得到「无可用技能」，judge 判 fail。
+  {
+    id: 'skill-code-review',
+    kind: 'skill',
+    title: '技能触发：审查本次改动应命中 code-review',
+    fixture: 'skills-review',
+    expectedSkill: 'code-review',
+    prompt:
+      '请审查本次改动（当前工作区的代码）：逐文件核对改动，按严重度输出审查意见。' +
+      '动手前先判断是否命中系统提示词里的技能清单——命中就先调用 skill 工具加载' +
+      '对应技能的正文，再按正文执行。',
+    judge: (ctx) => {
+      const skillCall = (ctx.toolCalls ?? []).find(
+        (call) => call.name === 'skill',
+      );
+      if (skillCall === undefined) {
+        return {
+          pass: false,
+          reason: '模型未调用 skill 工具（技能触发缺失）',
+        };
+      }
+      const input = skillCall.input;
+      const hit =
+        typeof input === 'object' &&
+        input !== null &&
+        (input as { name?: unknown }).name === 'code-review';
+      return hit
+        ? { pass: true, reason: '模型调用 skill 工具命中 code-review' }
+        : {
+            pass: false,
+            reason: `模型调用了 skill 但命中 ${JSON.stringify(input)}，期望 code-review`,
+          };
+    },
   },
 ];
 

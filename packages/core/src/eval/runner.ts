@@ -8,11 +8,12 @@ import type { ModelProvider } from '../provider/types';
 import { runAgentTurn } from '../runtime/loop';
 import type { RuntimeEvent, TurnResult } from '../runtime/loop';
 import { defaultWriteTools } from '../tools';
-import type { ToolRegistry } from '../tools/registry';
+import { ToolRegistry } from '../tools/registry';
+import { createSkillTool, type SkillInfo } from '../tools/impl/skill';
 import { copyFixture } from './fixtures';
 import { collectMetrics } from './metrics';
 import type { EvalMetrics } from './metrics';
-import type { EvalTask, JudgeResult } from './types';
+import type { EvalTask, JudgeResult, ToolCallRecord } from './types';
 
 /**
  * 评测运行器（T-035 骨架 / T-090 扩充）。
@@ -61,6 +62,13 @@ export interface RunEvalOptions {
   readonly system?: string;
   /** 工具注册表（缺省 defaultWriteTools()：read/grep/glob/write/edit/bash）。 */
   readonly tools?: ToolRegistry;
+  /**
+   * 技能清单（0.15.0 技能触发用例）：提供时，评测装配 Skill 工具
+   * （resolve 由本清单建索引）并把 name + description 渲染进系统提示词技能段
+   * ——模型能调用 skill 工具拉取正文，技能触发任务的 judge 据此判定触发准确率。
+   * 缺省 = 不装配技能（模型看不到 skill 工具，调用即「无可用技能」）。
+   */
+  readonly skills?: readonly SkillInfo[];
   /** 运行后是否删除自动创建的临时目录（缺省 true；注入 cwd 时忽略）。 */
   readonly cleanup?: boolean;
 }
@@ -72,6 +80,11 @@ export interface EvalTaskRunResult {
   readonly pass: boolean;
   readonly judge: JudgeResult;
   readonly metrics: EvalMetrics;
+  /**
+   * 0.15.0：模型发出的全部工具调用（tool_use → tool_result 配对）——技能触发
+   * 准确率的观测源（runSuite 据此统计期望技能是否被命中）。
+   */
+  readonly toolCalls: readonly ToolCallRecord[];
   /** 模型最终文本（读代码答问判定依据；可留档回放）。 */
   readonly text: string;
   /** 终止原因（end_turn / halted / error / interrupted）。 */
@@ -92,6 +105,49 @@ function evalApprovalGate(): ApprovalGate {
 }
 
 /**
+ * 在既有注册表副本上追加 Skill 工具（0.15.0）：复制而非原地注册——不修改调用方
+ * 传入的注册表；resolve / names 由评测技能清单建索引。缺省 Skill 工具（空解析器）
+ * 会返回「无可用技能」，评测注入清单时用本函数替换。
+ */
+function withEvalSkillTool(
+  registry: ToolRegistry,
+  skills: readonly SkillInfo[],
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  const index = new Map(skills.map((skill) => [skill.name, skill] as const));
+  copy.register(
+    createSkillTool({
+      resolve: (name) => index.get(name),
+      names: () => [...index.keys()],
+    }),
+  );
+  return copy;
+}
+
+/**
+ * 从运行时事件流重建工具调用观测记录（0.15.0）：`tool_use`（id → name/input）
+ * 与 `tool_result`（id → ok）配对——loop 保证「先发 tool_use、后发对应
+ * tool_result」的顺序（与 collectMetrics 同一配对思路）。返回按调用顺序的清单。
+ */
+function collectToolCalls(
+  events: readonly RuntimeEvent[],
+): readonly ToolCallRecord[] {
+  // 内部用可变副本（ToolCallRecord 对外只读，ok 在 tool_result 到达时回填）
+  type MutableRecord = { name: string; input: unknown; ok: boolean };
+  const byId = new Map<string, MutableRecord>();
+  for (const event of events) {
+    if (event.type === 'tool_use') {
+      byId.set(event.id, { name: event.name, input: event.input, ok: false });
+    } else if (event.type === 'tool_result') {
+      const record = byId.get(event.id);
+      if (record !== undefined) record.ok = event.ok;
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
  * 运行一条评测任务。
  * 运行本身异常（loop 不变量破坏等）时先释放临时目录再原样抛出；
  * judge 判定失败只是返回 pass=false，不算异常。
@@ -101,8 +157,26 @@ export async function runEval(
 ): Promise<EvalTaskRunResult> {
   const { task, provider } = options;
   const maxTurns = options.maxTurns ?? task.maxTurns ?? 10;
-  const tools = options.tools ?? defaultWriteTools();
-  const system = options.system ?? buildSystemPrompt({ tools });
+  // 0.15.0：提供技能清单时在工具集副本上追加 Skill 工具（模型能调用 skill 工具
+  // 拉取正文）；缺省保持既有工具集。
+  const skills = options.skills ?? [];
+  const tools =
+    skills.length > 0
+      ? withEvalSkillTool(options.tools ?? defaultWriteTools(), skills)
+      : (options.tools ?? defaultWriteTools());
+  const system =
+    options.system ??
+    buildSystemPrompt({
+      tools,
+      ...(skills.length > 0
+        ? {
+            skills: skills.map((skill) => ({
+              name: skill.name,
+              description: skill.description,
+            })),
+          }
+        : {}),
+    });
 
   // 初始消息：注入 messages（长任务离线用例的 40+ 轮线程）或缺省任务 prompt
   const initialMessages: ModelMessage[] =
@@ -166,10 +240,13 @@ export async function runEval(
     result.turns,
     result.usage,
   );
+  // 0.15.0：工具调用观测记录（技能触发判定依据）与度量同源同事件流。
+  const toolCalls = collectToolCalls(events);
   const judge = await task.judge({
     dir: workspace,
     text: result.text,
     task,
+    toolCalls,
   });
 
   if (createdTempDir && cleanup) {
@@ -181,6 +258,7 @@ export async function runEval(
     pass: judge.pass,
     judge,
     metrics,
+    toolCalls,
     text: result.text,
     termination: result.termination,
     turns: result.turns,
@@ -238,6 +316,20 @@ export interface EvalSuiteResult {
   readonly compactionContinuationRate?: number;
   /** 度量五：token 基线（累计 usage 聚合）。 */
   readonly tokenBaseline: EvalTokenBaseline;
+  /**
+   * 度量六（0.15.0）：技能触发准确率的分母——声明了 expectedSkill 的任务数。
+   */
+  readonly skillTriggerCandidates: number;
+  /**
+   * 度量六分子：模型调用了 skill 工具且命中任务声明技能的触发命中任务数。
+   */
+  readonly skillTriggerHits: number;
+  /**
+   * 度量六：技能触发准确率（命中 / 候选）。语义 = 声明了期望技能的任务里，模型
+   * 正确调用 skill 工具并命中该技能的比例——「触发准确率可测」的观测值
+   * （G-0.15.0 验收门）。无技能触发任务时 undefined。
+   */
+  readonly skillTriggerRate?: number;
   readonly totalDurationMs: number;
 }
 
@@ -270,6 +362,26 @@ export async function runSuite(
   const compactionCandidates = compactedResults.length;
   const compactionContinuations = compactedResults.filter((r) => r.pass).length;
 
+  // 技能触发准确率（0.15.0）：声明了 expectedSkill 的任务里，模型调用了 skill
+  // 工具且 name 参数 == 期望技能的比例。input 是 unknown，用小工具安全取值。
+  const skillNameOf = (input: unknown): string | undefined => {
+    if (typeof input !== 'object' || input === null) return undefined;
+    const name = (input as { name?: unknown }).name;
+    return typeof name === 'string' ? name : undefined;
+  };
+  const skillTriggerCandidates = results.filter(
+    (r) => r.task.expectedSkill !== undefined,
+  ).length;
+  const skillTriggerHits = results.filter(
+    (r) =>
+      r.task.expectedSkill !== undefined &&
+      r.toolCalls.some(
+        (call) =>
+          call.name === 'skill' &&
+          skillNameOf(call.input) === r.task.expectedSkill,
+      ),
+  ).length;
+
   // token 基线：从各任务的 TurnResult.usage（供应商校准口径）聚合
   const totalInputTokens = results.reduce(
     (acc, r) => acc + (r.metrics.usage.inputTokens ?? 0),
@@ -298,6 +410,12 @@ export async function runSuite(
       totalTokens,
       avgTokensPerTask: results.length > 0 ? totalTokens / results.length : 0,
     },
+    skillTriggerCandidates,
+    skillTriggerHits,
+    skillTriggerRate:
+      skillTriggerCandidates > 0
+        ? skillTriggerHits / skillTriggerCandidates
+        : undefined,
     totalDurationMs: Date.now() - startedAt,
   };
 }

@@ -166,14 +166,18 @@ function buildLongRounds(): StreamEvent[][] {
 // ---------------------------------------------------------------------------
 
 describe('评测集扩充（T-090）', () => {
-  test('评测集共 27 个任务，覆盖 fix / feature / refactor / read / plan 五类 + 1 个长任务', () => {
-    expect(TASKS).toHaveLength(27);
-    expect(new Set(TASKS.map((t) => t.id)).size).toBe(27);
+  test('评测集共 28 个任务，覆盖 fix / feature / refactor / read / plan / skill 六类 + 1 个长任务', () => {
+    expect(TASKS).toHaveLength(28);
+    expect(new Set(TASKS.map((t) => t.id)).size).toBe(28);
     expect(TASKS.filter((t) => t.kind === 'fix')).toHaveLength(9);
     expect(TASKS.filter((t) => t.kind === 'feature')).toHaveLength(7);
     expect(TASKS.filter((t) => t.kind === 'refactor')).toHaveLength(4);
     expect(TASKS.filter((t) => t.kind === 'read')).toHaveLength(5);
     expect(TASKS.filter((t) => t.kind === 'plan')).toHaveLength(2);
+    // 技能触发任务（0.15.0）：恰好一个，声明了期望技能
+    const skillTasks = TASKS.filter((t) => t.kind === 'skill');
+    expect(skillTasks).toHaveLength(1);
+    expect(skillTasks[0].expectedSkill).toBe('code-review');
     // 恰好一个长任务压缩用例（40+ 轮、触发压缩、压缩后延续率主要来源）
     const longTasks = TASKS.filter((t) => t.long === true);
     expect(longTasks).toHaveLength(1);
@@ -183,7 +187,7 @@ describe('评测集扩充（T-090）', () => {
       expect(task.id.length).toBeGreaterThan(0);
       expect(task.prompt.length).toBeGreaterThan(0);
       expect(typeof task.judge).toBe('function');
-      expect(['fix', 'feature', 'refactor', 'read', 'plan']).toContain(
+      expect(['fix', 'feature', 'refactor', 'read', 'plan', 'skill']).toContain(
         task.kind,
       );
     }
@@ -939,5 +943,158 @@ export function taxPrice(price: number, rate: number): number {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 技能触发用例（0.15.0）：RunEvalOptions.skills 装配 skill 工具 + 触发准确率
+  // -------------------------------------------------------------------------
+
+  /** 评测用离线技能（与内置 code-review 同构；正文可注入，不访问仓库 skills/）。 */
+  const REVIEW_SKILL = {
+    name: 'code-review',
+    description: '逐文件审查代码改动',
+    body: '# 代码审查\n\n先看 diff 全貌，再逐文件核对。',
+  };
+
+  test('skill-code-review：judge 断言工具调用（离线手工断言，不跑模型）', async () => {
+    const task = findTask('skill-code-review');
+    const dir = await copyFixture('skills-review');
+    try {
+      // 未触发：toolCalls 无 skill → fail
+      const noCall = await task.judge({
+        dir,
+        text: '我审查完了。',
+        task,
+        toolCalls: [
+          { name: 'read', input: { path: 'src/calculator.ts' }, ok: true },
+        ],
+      });
+      expect(noCall.pass).toBe(false);
+      expect(noCall.reason).toContain('未调用 skill 工具');
+
+      // 触发但名字不对 → fail
+      const wrongName = await task.judge({
+        dir,
+        text: '用写测试流程。',
+        task,
+        toolCalls: [
+          { name: 'skill', input: { name: 'write-tests' }, ok: true },
+        ],
+      });
+      expect(wrongName.pass).toBe(false);
+      expect(wrongName.reason).toContain('期望 code-review');
+
+      // 命中 → pass
+      const hit = await task.judge({
+        dir,
+        text: '按 code-review 审查。',
+        task,
+        toolCalls: [
+          { name: 'skill', input: { name: 'code-review' }, ok: true },
+        ],
+      });
+      expect(hit.pass).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('runEval 技能触发：stub 调用 skill 命中 → pass 且 toolCalls 记录；未调用 → fail', async () => {
+    const task = findTask('skill-code-review');
+    // 命中：第一轮调用 skill(code-review)，第二轮纯文本收尾
+    const hitRounds: StreamEvent[][] = [
+      [
+        {
+          type: 'tool_use',
+          id: 's1',
+          name: 'skill',
+          input: { name: 'code-review' },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textRound('已按 code-review 流程完成审查。'),
+    ];
+    const hitResult = await runEval({
+      provider: new StubProvider(hitRounds),
+      task,
+      skills: [REVIEW_SKILL],
+    });
+    expect(hitResult.pass).toBe(true);
+    const skillCall = hitResult.toolCalls.find((c) => c.name === 'skill');
+    expect(skillCall).toBeDefined();
+    expect((skillCall?.input as { name?: string })?.name).toBe('code-review');
+    expect(hitResult.toolCalls.every((c) => c.ok)).toBe(true);
+
+    // 未触发：stub 只读文件不调 skill → judge fail
+    const missRounds: StreamEvent[][] = [
+      [
+        {
+          type: 'tool_use',
+          id: 'r1',
+          name: 'read',
+          input: { path: 'src/calculator.ts' },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textRound('我直接审查了。'),
+    ];
+    const missResult = await runEval({
+      provider: new StubProvider(missRounds),
+      task,
+      skills: [REVIEW_SKILL],
+    });
+    expect(missResult.pass).toBe(false);
+    expect(missResult.toolCalls.some((c) => c.name === 'skill')).toBe(false);
+  });
+
+  test('runSuite 聚合技能触发准确率：命中 1/1；未声明期望技能的任务不进分母', async () => {
+    const task = findTask('skill-code-review');
+    const hitRounds: StreamEvent[][] = [
+      [
+        {
+          type: 'tool_use',
+          id: 's1',
+          name: 'skill',
+          input: { name: 'code-review' },
+        },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      textRound('已审查。'),
+    ];
+    const missRounds: StreamEvent[][] = [textRound('我直接审查了。')];
+    const suite = await runSuite({
+      tasks: [task, findTask('read-average-empty')],
+      provider: (t) => {
+        if (t.id === 'skill-code-review') return new StubProvider(hitRounds);
+        return new StubProvider([textRound('average 对空数组返回 NaN。')]);
+      },
+      runForTask: (t) =>
+        t.id === 'skill-code-review' ? { skills: [REVIEW_SKILL] } : {},
+    });
+    expect(suite.results).toHaveLength(2);
+    // 技能触发任务 1 个（read 任务未声明期望技能，不进分母），命中 1 → 100%
+    expect(suite.skillTriggerCandidates).toBe(1);
+    expect(suite.skillTriggerHits).toBe(1);
+    expect(suite.skillTriggerRate).toBe(1);
+
+    // 未命中：同一技能任务但模型没调用 skill → 准确率 0
+    const suiteMiss = await runSuite({
+      tasks: [task],
+      provider: () => new StubProvider(missRounds),
+      runForTask: () => ({ skills: [REVIEW_SKILL] }),
+    });
+    expect(suiteMiss.skillTriggerCandidates).toBe(1);
+    expect(suiteMiss.skillTriggerHits).toBe(0);
+    expect(suiteMiss.skillTriggerRate).toBe(0);
+
+    // 无技能触发任务：准确率 undefined，报告不渲染该指标行
+    const noSkillSuite = await runSuite({
+      tasks: [findTask('read-average-empty')],
+      provider: () =>
+        new StubProvider([textRound('average 对空数组返回 NaN。')]),
+    });
+    expect(noSkillSuite.skillTriggerCandidates).toBe(0);
+    expect(noSkillSuite.skillTriggerRate).toBeUndefined();
+    expect(formatSuiteReport(noSkillSuite)).not.toContain('技能触发准确率');
   });
 });

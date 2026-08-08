@@ -1,21 +1,38 @@
 import type { CompactOptions } from '../context/compact';
 
 /**
- * 评测任务类型（T-090 四类 + T-115 规划）：修 bug / 加功能 / 重构（行为不变
- * 断言）/ 读代码答问 / 规划（输出结构化实施计划，judge 断言计划结构）。
+ * 评测任务类型（T-090 四类 + T-115 规划 + T-15x 技能触发）：修 bug / 加功能 /
+ * 重构（行为不变断言）/ 读代码答问 / 规划（输出结构化实施计划，judge 断言计划
+ * 结构）/ 技能触发（judge 断言模型调用了 skill 工具且命中期望技能）。
  */
-export type EvalTaskKind = 'fix' | 'feature' | 'refactor' | 'read' | 'plan';
+export type EvalTaskKind =
+  'fix' | 'feature' | 'refactor' | 'read' | 'plan' | 'skill';
 
 /**
  * 评测任务判定上下文：judge 拿到的全部信息。
  * - `dir`：临时工作目录（fixture 副本根，模型在此目录里干活）；
  * - `text`：模型最终文本输出（读代码答问类任务据此判定）；
- * - `task`：任务定义本身（judge 可能需要参考 prompt / fixture 名）。
+ * - `task`：任务定义本身（judge 可能需要参考 prompt / fixture 名）；
+ * - `toolCalls`：本轮模型发出的全部工具调用（0.15.0 技能触发判定依据——judge
+ *   据此断言模型是否调用了 skill 工具、命中的技能名）。
  */
 export interface JudgeContext {
   readonly dir: string;
   readonly text: string;
   readonly task: EvalTask;
+  /**
+   * 本轮模型发出的全部工具调用（tool_use → tool_result 配对；0.15.0 起注入）。
+   * 技能触发任务的 judge 据此断言 skill 工具命中；既有 judge 忽略该字段。
+   */
+  readonly toolCalls?: readonly ToolCallRecord[];
+}
+
+/** 一次工具调用的观测记录（评测用；skill 触发准确率的观测源）。 */
+export interface ToolCallRecord {
+  readonly name: string;
+  readonly input: unknown;
+  /** 工具执行是否成功（tool_result.ok）。 */
+  readonly ok: boolean;
 }
 
 /** 判定结果：通过 + 理由（供度量采集与调试留档）。 */
@@ -59,4 +76,10 @@ export interface EvalTask {
   readonly compact?: CompactOptions;
   /** 是否长任务压缩用例（40+ 轮、触发压缩、压缩后延续率的主要来源）。 */
   readonly long?: boolean;
+  /**
+   * 期望触发的技能名（0.15.0 技能触发任务）：提供时该任务成为「技能触发准确率」
+   * 的观测对象——runSuite 按「模型调用了 skill 工具且 name 参数 == 本字段」统计
+   * 触发命中。缺省 = 非技能触发任务（不参与触发准确率分母）。
+   */
+  readonly expectedSkill?: string;
 }
