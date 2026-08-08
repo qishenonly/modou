@@ -116,6 +116,11 @@ export interface SubagentRunnerOptions {
     path: string,
     agent: string,
   ) => WriteConflictReport | undefined;
+  /**
+   * 钩子总线（T-142，0.14.0）：子代理继承主代理的 ④⑦ 钩子——钩子是统一的
+   * 管线安全面，子代理的工具调用同样过钩子（deny / 改写 / 观察）。缺省 = 不挂。
+   */
+  readonly hooks?: import('../hooks/bus').HookBus;
 }
 
 /** 把子代理的终止归一为 SubagentResult（错误即数据）。 */
@@ -252,6 +257,8 @@ export function createSubagentRunner(
           // T-123：子代理的写入按自身 agentId 上报写冲突检测
           agentId,
           onFileWrite: (path) => options.onFileWrite?.(path, agentId),
+          // T-142：子代理继承主代理的钩子总线（统一的管线安全面）
+          ...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
         },
         // T-122：子代理运行时事件包上 agentId 转出（bridge 据此按 agent 分发
         // 信封；前端按 ID 分组折叠展示子代理完整过程，主上下文不受污染）。

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { ApprovalGate } from '../permission/approval';
 import type { ApprovalRequestInput } from '../permission/approval';
+import type { HookBus } from '../hooks/bus';
+import { runPostToolUse, runPreToolUse } from '../hooks/run';
 import type { ProtocolEvent } from '../protocol/events';
 import { redactSecrets, redactValue } from './redact';
 import type { ToolRegistry } from './registry';
@@ -17,19 +19,22 @@ import type {
 import { isToolOutcome } from './types';
 
 /**
- * 工具执行管线（design 002 5.1）——0.3.0 子集：
+ * 工具执行管线（design 002 5.1）——0.14.0 全量：
  *
- * ① Resolve → ② Validate → ③ Authorize → ⑤ Execute → ⑥ Normalize → ⑧ Record
+ * ① Resolve → ② Validate → ③ Authorize → ④ PreToolUse → ⑤ Execute
+ *          → ⑥ Normalize → ⑦ PostToolUse → ⑧ Record
  *
  * - ③ Authorize（T-033，T-050 接入权限内核）：注入 ApprovalGate 时，闸门先按
  *   PermissionConfig 裁决（allow 直通 / deny 拒绝 / ask 发 approval_request 阻塞
  *   等裁决）；deny → ok:false「被拒绝，别重试同样的操作」（002 5.3 第三类策略性
  *   拒绝，明示模型不要反复触发审批）；read 是否拦截由矩阵决定（缺省不拦）。
- * - ④ PreToolUse / ⑦ PostToolUse：0.14.0 在此挂载 hooks。
+ * - ④ PreToolUse / ⑦ PostToolUse（0.14.0）：注入 HookBus 时挂载钩子——④ 可
+ *   deny 阻止（理由回喂模型）/ 改写参数（改写后重新校验），⑦ 观察 / 副作用
+ *   （恒 continue）；缺省直通（0.13.0 及之前行为）。
  *
- * 失败不是异常（002 5.3 错误即数据）：参数错误 / 权限拒绝 / 执行错误 / 超时全部归为
- * `ToolOutcome { ok: false, forModel: <可诊断文本> }` 回喂模型自纠；只有
- * 管线自身的不变量破坏（如重复注册）才以异常形式向上抛（内部错误，不回喂模型）。
+ * 失败不是异常（002 5.3 错误即数据）：参数错误 / 权限拒绝 / 钩子拒绝 / 执行错误 /
+ * 超时全部归为 `ToolOutcome { ok: false, forModel: <可诊断文本> }` 回喂模型自纠；
+ * 只有管线自身的不变量破坏（如重复注册）才以异常形式向上抛（内部错误，不回喂模型）。
  */
 
 /** 一次工具调用请求（来自模型的 tool_use）。 */
@@ -43,6 +48,8 @@ export interface ToolCallRequest {
 export interface ToolPipelineContext {
   readonly cwd?: string;
   readonly projectRoot?: string;
+  /** 会话 ID（0.14.0 钩子输入契约的一部分：PreToolUse / PostToolUse 透传给钩子）。 */
+  readonly sessionId?: string;
   /** 本会话已读文件集合（绝对路径），透传给工具 ctx.readFiles（T-030 防盲写）。 */
   readonly readFiles?: ReadonlySet<string>;
   /** 已读文件上报回调：透传给工具 ctx.onFileRead（read 工具成功读后调用，运行时维护已读集合）。 */
@@ -77,6 +84,12 @@ export interface ToolPipelineOptions {
   readonly truncate?: TruncationOptions;
   /** 执行上下文（cwd 等）。 */
   readonly context?: ToolPipelineContext;
+  /**
+   * 钩子总线（0.14.0，design 002 5.1 ④⑦ 挂载点）：提供时，④ PreToolUse
+   * （deny 阻止执行且理由回喂模型 / 可改写参数）、⑦ PostToolUse（观察 /
+   * 副作用，如编辑后自动 format）挂载钩子。缺省 = 直通（0.13.0 及之前行为）。
+   */
+  readonly hooks?: HookBus;
   /** ⑧ Record：协议事件出口。缺省静默（不发事件）。 */
   readonly emit?: (event: ProtocolEvent) => void;
 }
@@ -123,15 +136,38 @@ function unknownToolOutcome(name: string, registry: ToolRegistry): ToolOutcome {
 
 /** 参数校验失败的错误：逐字段列明原因，并附正确用法（JSON Schema）。 */
 function validationFailureOutcome(tool: Tool, error: z.ZodError): ToolOutcome {
-  const issues = error.issues
+  return failure(
+    `参数校验失败（工具 "${tool.name}"）：入参不符合其声明的 schema。\n${formatValidationIssues(
+      error,
+    )}\n正确用法（JSON Schema）：\n${JSON.stringify(
+      z.toJSONSchema(tool.schema),
+    )}\n请按正确用法修正参数后重试。`,
+  );
+}
+
+/** zod 校验错误 → 逐字段问题清单（参数校验失败 / 钩子改写校验共用）。 */
+function formatValidationIssues(error: z.ZodError): string {
+  return error.issues
     .map((issue) => {
       const path = issue.path.length === 0 ? '(根)' : issue.path.join('.');
       return `  - ${path}：${issue.message}`;
     })
     .join('\n');
-  const usage = JSON.stringify(z.toJSONSchema(tool.schema));
+}
+
+/**
+ * 钩子改写参数未通过校验的失败结果（④ PreToolUse 改写后重新校验）。
+ * 与原参数校验失败同样逐字段列明原因；文案点名「钩子改写」以便模型理解
+ * 问题出在钩子侧而非模型侧。
+ */
+function hookRewriteValidationOutcome(
+  tool: Tool,
+  error: z.ZodError,
+): ToolOutcome {
   return failure(
-    `参数校验失败（工具 "${tool.name}"）：入参不符合其声明的 schema。\n${issues}\n正确用法（JSON Schema）：\n${usage}\n请按正确用法修正参数后重试。`,
+    `参数校验失败（工具 "${tool.name}"）：PreToolUse 钩子改写的参数不符合其声明的 schema。\n${formatValidationIssues(
+      error,
+    )}\n钩子改写不合法，请按正确用法重新调用工具。`,
   );
 }
 
@@ -397,12 +433,48 @@ export async function runToolPipeline(
       return outcome;
     }
   }
-  // ④ PreToolUse —— 0.14.0 在此挂载钩子（design 002 5.1）
+
+  // ④ PreToolUse（0.14.0 挂载点，design 002 5.1）：注入钩子总线时——
+  // 任一钩子 deny → 阻止执行，deny 理由原样回喂模型（策略性拒绝：别重试
+  // 同样的操作）；钩子改写参数 → 用改写后的参数执行（改写不合法时按参数
+  // 校验失败回喂模型，点名问题在钩子侧）；⑧ Record 与会话日志记录的都是
+  // 改写后的形态。缺省 = 直通（0.13.0 及之前行为）。
+  let args = parsed.data;
+  if (options.hooks !== undefined) {
+    const pre = await runPreToolUse(options.hooks, {
+      ...(options.context?.cwd !== undefined
+        ? { cwd: options.context.cwd }
+        : {}),
+      ...(options.context?.sessionId !== undefined
+        ? { sessionId: options.context.sessionId }
+        : {}),
+      toolName: tool.name,
+      toolInput: parsed.data,
+    });
+    if (pre.decision === 'deny') {
+      const reason =
+        pre.reasons.length > 0 ? pre.reasons.join('\n') : '钩子未说明理由';
+      const outcome = failure(
+        `工具 "${tool.name}" 的调用被钩子拒绝（PreToolUse）。\n原因：${reason}\n被拒绝，别重试同样的操作；如需继续，请先向用户说明你要做什么，等待用户明确同意后再调用。`,
+      );
+      emitToolResult(emit, call.id, outcome);
+      return outcome;
+    }
+    if (pre.modifiedInput !== undefined) {
+      const reparsed = tool.schema.safeParse(pre.modifiedInput);
+      if (!reparsed.success) {
+        const outcome = hookRewriteValidationOutcome(tool, reparsed.error);
+        emitToolResult(emit, call.id, outcome);
+        return outcome;
+      }
+      args = reparsed.data;
+    }
+  }
 
   // ⑤ Execute：带超时 + 组合 AbortSignal
   const rawOutcome = await executeWithTimeout(
     tool,
-    parsed.data,
+    args,
     timeoutMs,
     options.abortSignal,
     options.context ?? {},
@@ -411,7 +483,22 @@ export async function runToolPipeline(
   // ⑥ Normalize：截断 + 脱敏（先脱敏后截断，见 normalizeOutcome 注释）
   const outcome = normalizeOutcome(rawOutcome, options.truncate);
 
-  // ⑦ PostToolUse —— 0.14.0 在此挂载钩子
+  // ⑦ PostToolUse（0.14.0 挂载点）：注入钩子总线时执行观察 / 副作用钩子
+  // （如编辑后自动 format）。结果已产生、无法撤销——PostToolUse 恒 continue，
+  // 钩子崩溃/降级只落执行日志（executor 侧），不影响本结果与事件流。
+  if (options.hooks !== undefined) {
+    await runPostToolUse(options.hooks, {
+      ...(options.context?.cwd !== undefined
+        ? { cwd: options.context.cwd }
+        : {}),
+      ...(options.context?.sessionId !== undefined
+        ? { sessionId: options.context.sessionId }
+        : {}),
+      toolName: tool.name,
+      toolInput: args,
+      toolResult: { ok: outcome.ok, forModel: outcome.forModel },
+    });
+  }
 
   // ⑧ Record 后半：tool_result
   emitToolResult(emit, call.id, outcome);

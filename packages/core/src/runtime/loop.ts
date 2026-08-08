@@ -17,6 +17,7 @@ import type {
 } from '../provider/types';
 import { computeCacheHitRate } from '../provider/vercel';
 import type { ApprovalGate } from '../permission/approval';
+import type { HookBus } from '../hooks/bus';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -173,6 +174,14 @@ export interface RunAgentTurnInput {
     path: string,
     agent: string,
   ) => WriteConflictReport | undefined;
+  /**
+   * 钩子总线（0.14.0，design 002 5.1 ④⑦ 挂载点）：提供时，管线 ④ PreToolUse
+   * （deny 阻止执行且理由回喂模型 / 可改写参数）、⑦ PostToolUse（观察 /
+   * 副作用，如编辑后自动 format）挂载钩子。子代理派发器继承同一总线（钩子是
+   * 统一的管线安全面——子代理的工具调用同样过钩子）。缺省 = 管线直通
+   * （0.13.0 及之前行为）。TUI 按 settings.json hooks 装配后注入。
+   */
+  readonly hooks?: HookBus;
   readonly options: TurnOptions;
 }
 
@@ -431,6 +440,8 @@ export async function runAgentTurn(
     // T-123：写冲突检测——子代理写入按自身 agentId 上报（与主代理的 'main'
     // 区分，跨 agent 同文件写入被检出冲突）
     onFileWrite: input.onFileWrite,
+    // T-142：钩子总线继承——子代理的工具调用同样过 ④⑦ 钩子（统一的管线安全面）
+    hooks: input.hooks,
   });
 
   /**
@@ -641,13 +652,18 @@ export async function runAgentTurn(
         abortSignal,
         // ③ Authorize（T-033）：write / exec 工具经审批闸门（read 不拦）。
         // 缺省不拦截（调用方未注入时保持 0.2.0 行为）。
+        // ④ PreToolUse / ⑦ PostToolUse（0.14.0）：注入钩子总线时挂载——
+        // deny 阻止执行（理由回喂模型）/ 改写参数 / 观察副作用。
         authorize: approval,
+        hooks: input.hooks,
         // 执行上下文：cwd 供相对路径解析；readFiles 供 Write/Edit 防盲写检查；
         // onFileRead 是已读集合的唯一生产者——read 工具成功读到一个文件后
         // 回调，loop 据此把该文件（realpath 已由 read 工具解析）加入会话集合，
         // 使同轮或后续轮次的 Write/Edit 放行。集合跨轮次持续。
+        // sessionId 是钩子输入契约的一部分（0.14.0）。
         context: {
           cwd,
+          ...(session !== undefined ? { sessionId: session.sessionId } : {}),
           readFiles,
           runSubagent,
           // T-123 写冲突检测：write/edit 成功落盘后自报路径，按本循环 agent

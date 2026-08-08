@@ -32,6 +32,7 @@ import {
   resumeSession,
   runAgentTurnStreaming,
   runInit,
+  runUserPromptSubmit,
   savePlanToFile,
   serializeStructuredPlan,
   SessionLog,
@@ -204,6 +205,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // decider 对每个请求挂起等待用户从弹窗选择；退出时 denyAll 清空未裁决请求，
   // 防止 pending 审批悬挂导致轮次永不结束。
   const approval = createApprovalBridge(permission);
+  // 钩子总线（0.14.0）：显式注入（TuiOptions.hooks）或 T-143 按 settings.json
+  // hooks 键装配。提供时：管线 ④⑦ 挂载钩子、用户提交提示词走 UserPromptSubmit。
+  const hooksBus = options.hooks;
 
   // —— 会话（T-060 旁路记录 / T-061 /resume）——
   const sessionStore = new SessionStore({ homeDir });
@@ -510,6 +514,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           // 写入 → loop 发 notice(warn)（主代理走主事件、子代理经 applySubagent
           // 透出），前端据此提示「改动可能互相覆盖」。
           onFileWrite: toOnFileWrite(writeConflicts),
+          // T-142 钩子总线：管线 ④⑦ 挂载（deny 阻止 / 改写参数 / 观察副作用）。
+          ...(hooksBus !== undefined ? { hooks: hooksBus } : {}),
           options: {
             maxTurns: startup.maxTurns,
             abortSignal: controller.signal,
@@ -560,6 +566,47 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           void takeSnapshot().finally(refreshHistory);
         });
     });
+  };
+
+  /**
+   * 用户提交提示词入口（T-142 UserPromptSubmit 钩子）：先过钩子——block 阻止
+   * 提交（notice 告知理由），allow + additionalContext 拼到提示词之后；再走
+   * startTurn。只在「用户提交」路径生效：计划批准 / 回滚 / 自定义斜杠命令等
+   * 程序化构造的提示词不走钩子（它们是内部流程，不是用户提交的提示词）。
+   * 无钩子时恒直通（0.13.0 及之前行为）。
+   */
+  const submitPrompt = (
+    text: string,
+    opts?: {
+      readonly tools?: ToolRegistry;
+      readonly attachments?: readonly AttachmentRef[];
+    },
+  ): void => {
+    if (hooksBus === undefined) {
+      startTurn(text, opts);
+      return;
+    }
+    void (async () => {
+      const outcome = await runUserPromptSubmit(hooksBus, text, {
+        cwd,
+        ...(sessionLog !== null ? { sessionId: sessionLog.sessionId } : {}),
+      });
+      if (outcome.decision === 'block') {
+        pushNotice(
+          'warn',
+          `提交被钩子阻止${outcome.reason !== undefined ? `：${outcome.reason}` : ''}`,
+        );
+        return;
+      }
+      let effective = text;
+      if (
+        outcome.additionalContext !== undefined &&
+        outcome.additionalContext.length > 0
+      ) {
+        effective = `${text}\n\n${outcome.additionalContext}`;
+      }
+      startTurn(effective, opts);
+    })();
   };
 
   // —— /resume（T-061）：列会话 → 选择 → 恢复并继续 ——
@@ -1347,8 +1394,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const send = (command: Command): void => {
     switch (command.type) {
       case 'submit':
-        // T-133 图片输入：submit 携带附件（AttachmentRef）时作为多模态输入
-        startTurn(command.text, {
+        // T-133 图片输入：submit 携带附件（AttachmentRef）时作为多模态输入；
+        // T-142：用户提交的提示词先过 UserPromptSubmit 钩子（block 阻止 / 注入）。
+        submitPrompt(command.text, {
           ...(command.attachments !== undefined
             ? { attachments: command.attachments }
             : {}),
@@ -1482,7 +1530,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   emitter.on('SIGINT', onSigint);
 
   if (options.prompt !== undefined) {
-    startTurn(options.prompt);
+    // T-142：初始提示词也是用户提交的提示词——先过 UserPromptSubmit 钩子
+    submitPrompt(options.prompt);
   }
 
   return new Promise<TuiResult>((resolve) => {

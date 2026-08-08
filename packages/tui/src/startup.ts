@@ -12,6 +12,7 @@ import type {
   CompactOptions,
   ConfigOverrides,
   ConfigSnapshot,
+  HookBus,
   ModelProvider,
   PermissionConfig,
   ProviderFromConfigInput,
@@ -113,6 +114,13 @@ export interface TuiOptions {
    * 缺省不记录。调用方（main.ts / CI 包装）注入；测试注入临时目录 logger 断言。
    */
   readonly structuredLog?: StructuredLogger;
+  /**
+   * 钩子总线（0.14.0）：提供时，管线 ④ PreToolUse（deny 阻止执行 / 改写参数）、
+   * ⑦ PostToolUse（观察 / 副作用）挂载钩子；用户提交提示词时执行 UserPromptSubmit
+   * 钩子（可注入附加上下文 / 阻止提交）。缺省经配置装配（settings.json hooks 键，
+   * T-143）；测试注入内存 HookBus 以离线覆盖。
+   */
+  readonly hooks?: HookBus;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */
