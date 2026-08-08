@@ -31,7 +31,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { projectHash } from '../session/log';
 
 // ---------------------------------------------------------------------------
@@ -640,7 +640,8 @@ export class SnapshotStore {
     const seen = new Set<string>();
     const result: string[] = [];
     for (const raw of paths) {
-      const normalized = join(this.cwd, raw); // 相对/绝对 → 绝对
+      // resolve：绝对路径原样、相对路径相对工作树根解析（join 对绝对路径不重置）
+      const normalized = resolve(this.cwd, raw);
       const rel = relative(this.cwd, normalized);
       if (rel.startsWith('..') || rel.length === 0) continue; // 工作树外 / 工作树本身
       if (seen.has(rel)) continue;
