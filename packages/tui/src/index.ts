@@ -649,7 +649,13 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     if (proposal === null) return;
     // T-113 计划文档化：批准即落盘 markdown（.modou/plans/<时间戳>.md）+
     // 会话日志 plan 条目（/resume 后计划仍在，002 4.1 日志是唯一真相）。
-    void savePlanToFile(cwd, proposal);
+    // 落盘失败不静默：catch 后发告警 notice（计划仍按批准继续执行，落盘只是文档化）。
+    savePlanToFile(cwd, proposal).catch((caught) => {
+      pushNotice(
+        'warn',
+        `计划落盘失败：${describeError(caught)}（计划仍将执行）`,
+      );
+    });
     void sessionLog?.appendPlan(serializeStructuredPlan(proposal));
     // 计划回填上下文（002 4.1：批准后的计划是执行的输入，入日志可重建）
     const text =

@@ -35,10 +35,12 @@ import type {
   SessionRecord,
   StreamChatInput,
   StreamEvent,
+  StructuredPlan,
 } from '@modou/core';
 import {
   projectHash,
   projectMessages,
+  serializeStructuredPlan,
   SessionLog,
   SessionStore,
 } from '@modou/core';
@@ -83,6 +85,29 @@ class RecordingProvider implements ModelProvider {
     this.messages.push(input.messages);
     this.seenTools.push(input.tools);
     const text = `回复(${this.modelId})`;
+    for (const char of text) {
+      yield { type: 'text_delta', delta: char };
+    }
+    yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } };
+    yield { type: 'finish', reason: 'stop' };
+  }
+}
+
+/**
+ * 首轮回放结构化计划文本（Plan Mode 研究轮 → 产出计划），其后各轮回放普通文本
+ * （批准后的执行轮）。驱动「/plan → 计划面板 → a 批准」的完整流程。
+ */
+class PlanThenTextProvider implements ModelProvider {
+  readonly id = 'openai-compat';
+  readonly capabilities: ProviderCapabilities = DEFAULT_CAPABILITIES;
+  readonly modelId = 'stub-model';
+  private calls = 0;
+
+  constructor(private readonly planText: string) {}
+
+  async *streamChat(): AsyncIterable<StreamEvent> {
+    const text = this.calls === 0 ? this.planText : '开始按计划执行';
+    this.calls += 1;
     for (const char of text) {
       yield { type: 'text_delta', delta: char };
     }
@@ -657,6 +682,45 @@ allowedTools: read
       // 工具白名单：模型只看到 read（allowedTools 收窄）
       const tools = provider.seenTools[0];
       expect(tools !== undefined && Object.keys(tools)).toEqual(['read']);
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('计划批准落盘失败（T-113 告警不静默）', () => {
+  test('.modou/plans 不可写时批准计划：发「计划落盘失败」warn notice，计划仍执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-planfail-'));
+    try {
+      // .modou/plans 是普通文件 → savePlanToFile 的 mkdir 抛 EEXIST/ENOTDIR
+      const modouDir = join(dir, '.modou');
+      mkdirSync(modouDir, { recursive: true });
+      writeFileSync(join(modouDir, 'plans'), '不是目录', 'utf8');
+
+      const plan: StructuredPlan = {
+        goal: '重构订单模块',
+        files: ['src/orders.ts'],
+        steps: ['读取现状', '抽取共享函数'],
+        verification: ['bun test'],
+        risks: ['保持对外行为不变'],
+      };
+      const provider = new PlanThenTextProvider(serializeStructuredPlan(plan));
+      const { stdin, stdout, exit } = await startTui({ provider, cwd: dir });
+
+      // /plan 进入计划模式 → 模型产出结构化计划 → 计划面板等待评审
+      await typeAndEnter(stdin, '/plan 重构');
+      await flush();
+      await flush();
+      // 批准 → savePlanToFile 失败 → warn notice（不静默）；计划仍回填执行
+      stdin.write('a');
+      await flush();
+      await flush();
+
+      const allFrames = stdout.frames.join('\n');
+      expect(allFrames).toContain('计划落盘失败');
+      expect(allFrames).toContain('计划仍将执行');
 
       await quit(stdin, exit);
     } finally {
