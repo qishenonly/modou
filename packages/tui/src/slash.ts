@@ -19,7 +19,11 @@
  * 纯函数（无 React / Ink 依赖），可直接单元测试。
  */
 
-import type { ModelProvider, SessionRecord } from '@modou/core';
+import type {
+  CustomCommandFile,
+  ModelProvider,
+  SessionRecord,
+} from '@modou/core';
 
 // ---------------------------------------------------------------------------
 // 命令表（/help 的数据源；新命令先加在这里，再在 dispatchSlash 加一行）
@@ -96,15 +100,32 @@ export const SUPPORTED_SLASH_LIST = BUILTIN_SLASH_COMMANDS.map(
 
 /**
  * /help 的展示文本（notice 载荷）：一行标题 + 每命令一行「usage — description」。
+ * 可附加自定义命令（T-114：`.modou/commands/*.md` 加载的命令，usage = `/名`）。
  */
-export function renderHelpText(): string {
+export function renderHelpText(
+  extraCommands: readonly SlashCommandInfo[] = [],
+): string {
   const lines = [
     '斜杠命令：',
     ...BUILTIN_SLASH_COMMANDS.map(
       (command) => `  ${command.usage}  — ${command.description}`,
     ),
+    ...extraCommands.map(
+      (command) => `  ${command.usage}  — ${command.description}`,
+    ),
   ];
   return lines.join('\n');
+}
+
+/** 自定义命令 → SlashCommandInfo（/help 展示 + 输入补全共用）。 */
+export function customToCommandInfo(
+  command: CustomCommandFile,
+): SlashCommandInfo {
+  return {
+    name: command.name,
+    usage: `/${command.name} [参数…]`,
+    description: command.description,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -122,13 +143,20 @@ export interface SlashHandlers {
   readonly rewind: () => void;
   readonly snapshots: (args?: string) => void;
   readonly plan: (args?: string) => void;
+  /**
+   * 自定义命令处理器（T-114）：dispatchSlash 未命中内置命令时，在 customCommands
+   * 表中查找并回调（runTui 负责展开占位 / 工具白名单 / 默认模型）。缺省不提供。
+   */
+  readonly custom?: (command: CustomCommandFile, args?: string) => void;
 }
 
 /**
  * 斜杠命令分发：按命令名把 (name, args) 路由到对应处理器。
  *
  * - 命中内置命令 → 调对应处理器，返回 true；
- * - 未命中 → 调 onUnimplemented（runTui 发「尚未实现」notice），返回 false。
+ * - 未命中内置但命中自定义命令表（T-114，customCommands）→ 调 handlers.custom，
+ *   返回 true；
+ * - 都没命中 → 调 onUnimplemented（runTui 发「尚未实现」notice），返回 false。
  *
  * 分发与实现分离：本函数可离线单测（替身回调断言每个命令的分发），
  * 实现细节（provider / 会话状态）留在 runTui。
@@ -138,6 +166,7 @@ export function dispatchSlash(
   args: string | undefined,
   handlers: SlashHandlers,
   onUnimplemented: (name: string, args: string | undefined) => void,
+  customCommands: readonly CustomCommandFile[] = [],
 ): boolean {
   switch (name) {
     case 'help':
@@ -167,9 +196,16 @@ export function dispatchSlash(
     case 'plan':
       handlers.plan(args);
       return true;
-    default:
+    default: {
+      // T-114 自定义斜杠命令：未命中内置 → 在命令表中查找，命中回调 handlers.custom
+      const custom = customCommands.find((command) => command.name === name);
+      if (custom !== undefined) {
+        handlers.custom?.(custom, args);
+        return true;
+      }
       onUnimplemented(name, args);
       return false;
+    }
   }
 }
 

@@ -10,8 +10,10 @@ import {
   createProviderFromConfig,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  expandCommandPlaceholders,
   isEmptyPlan,
   listSessionsForResume,
+  loadCustomCommands,
   loadInstructions,
   loadPlanFromFile,
   parseStructuredPlan,
@@ -30,12 +32,14 @@ import {
   SessionLog,
   SessionStore,
   SnapshotStore,
+  ToolRegistry,
 } from '@modou/core';
 import type {
   Command,
   CompactOptions,
   CompactionData,
   ContextStateData,
+  CustomCommandFile,
   Envelope,
   ModelMessage,
   ModelProvider,
@@ -51,7 +55,9 @@ import { App } from './app';
 import { createApprovalBridge } from './approval';
 import { performCompact } from './compact';
 import {
+  BUILTIN_SLASH_COMMANDS,
   collectModelCandidates,
+  customToCommandInfo,
   describeError,
   dispatchSlash,
   lastModelSwitchTo,
@@ -149,6 +155,16 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const tools = options.tools ?? defaultReadonlyTools();
   const cwd = startup.projectRoot;
   const homeDir = startup.homeDir;
+  // T-114 自定义斜杠命令：加载 `.modou/commands/*.md`（frontmatter + 正文提示词）。
+  // 与内置命令同名的文件被跳过并记录（不静默，启动时发 notice 告知）。
+  const loadedCommands = await loadCustomCommands(cwd);
+  const customCommands = loadedCommands.commands;
+  const customCommandInfos = customCommands.map(customToCommandInfo);
+  // 输入框补全候选：内置 + 自定义命令（`/name` 形态，T-114）。
+  const slashCompletion: readonly string[] = [
+    ...BUILTIN_SLASH_COMMANDS.map((command) => `/${command.name}`),
+    ...customCommands.map((command) => `/${command.name}`),
+  ];
   // T-081 指令文件加载：AGENTS.md 三级指令（全局 → 项目根 → 子目录，002 九节），
   // 渲染结果拼进系统提示词 extra（options.system 显式提供时视为用户接管提示词，
   // 不注入）；超限截断的告警文本留待 pushNotice 就绪后发出——不静默，用户要能
@@ -286,6 +302,15 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   if (instructions?.notice !== undefined) {
     pushNotice('warn', instructions.notice);
   }
+  // T-114：自定义斜杠命令中被跳过的文件（缺 name/description/正文或与内置
+  // 命令同名）如实告警——用户要知道自己写的命令哪份没生效。
+  if (loadedCommands.skipped.length > 0) {
+    pushNotice(
+      'warn',
+      `自定义斜杠命令：跳过 ${loadedCommands.skipped.length} 个文件` +
+        `（${loadedCommands.skipped.join('、')}）——缺 name/description/正文，或与内置命令同名`,
+    );
+  }
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
@@ -365,7 +390,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     }
   };
 
-  const startTurn = (text: string): void => {
+  const startTurn = (
+    text: string,
+    opts?: { readonly tools?: ToolRegistry },
+  ): void => {
     if (currentController !== null) return; // 已在运行，忽略（T-041 完善排队/并入）
     // 新一轮输入开始：关闭 /context 面板（避免模态遮挡新任务；Esc 也可随时关闭）
     if (contextSnapshot !== null) {
@@ -391,10 +419,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           provider,
           system,
           messages,
-          // T-112 Plan Mode：计划模式下工具集收窄到只读白名单（read/grep/glob），
-          // 写/执行工具从注册表拿掉——模型即使发出 write 调用也被管线拒绝，
-          // 拒绝 = 零文件改动由只读白名单保证。退出计划模式后恢复完整工具集。
-          tools: planMode ? planReadonlyRegistry(tools) : tools,
+          // 生效工具集：显式覆盖（T-114 自定义命令的 allowedTools 白名单）优先；
+          // 否则 Plan Mode 收窄到只读白名单（read/grep/glob，T-112）——写/执行
+          // 工具从注册表拿掉，模型即使发出 write 调用也被管线拒绝，拒绝 = 零
+          // 文件改动由只读白名单保证。退出计划模式后恢复完整工具集。
+          tools:
+            opts?.tools ?? (planMode ? planReadonlyRegistry(tools) : tools),
           readFiles,
           cwd,
           // 审批闸门（T-044/T-050）：注入的 gate 先按 permission 矩阵裁决
@@ -509,18 +539,26 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         void handleSlashSnapshots(args);
       },
       plan: handleSlashPlan,
+      // T-114 自定义斜杠命令：.modou/commands/*.md 注册的命令
+      custom: handleCustomCommand,
     };
-    dispatchSlash(name, args, handlers, (unimplemented) => {
-      pushNotice(
-        'info',
-        `斜杠命令 /${unimplemented} 尚未实现（0.8.0 支持 ${SUPPORTED_SLASH_LIST}）`,
-      );
-    });
+    dispatchSlash(
+      name,
+      args,
+      handlers,
+      (unimplemented) => {
+        pushNotice(
+          'info',
+          `斜杠命令 /${unimplemented} 尚未实现（0.8.0 支持 ${SUPPORTED_SLASH_LIST}）`,
+        );
+      },
+      customCommands,
+    );
   };
 
-  /** /help（T-082）：列出全部命令与用法（BUILTIN_SLASH_COMMANDS 渲染）。 */
+  /** /help（T-082）：列出全部命令与用法（BUILTIN_SLASH_COMMANDS + 自定义命令）。 */
   const handleSlashHelp = (): void => {
-    pushNotice('info', renderHelpText());
+    pushNotice('info', renderHelpText(customCommandInfos));
   };
 
   // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
@@ -644,6 +682,59 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         '计划已回显为 markdown。请复制到编辑器修改后重新提交，或直接输入修改意见（仍在计划模式，只读研究）。',
       );
     }
+  };
+
+  // —— 自定义斜杠命令（T-114）：.modou/commands/*.md 即命令 ——
+
+  /** 按工具名过滤注册表（自定义命令的 allowedTools 白名单）。 */
+  const filterToolsByName = (
+    source: ToolRegistry,
+    names: readonly string[],
+  ): ToolRegistry => {
+    const filtered = new ToolRegistry();
+    for (const name of names) {
+      const tool = source.find(name);
+      if (tool !== undefined) filtered.register(tool);
+    }
+    return filtered;
+  };
+
+  /**
+   * 执行自定义斜杠命令：展开 `$1` 参数占位 → 应用工具白名单（allowedTools，
+   * 与 Plan Mode 白名单取交集）→ 切换默认模型（声明 model 时）→ 提交一轮。
+   * 命令正文作为 user 消息注入（002 3.3：slash 是前端唯一命令入口）。
+   */
+  const handleCustomCommand = (
+    command: CustomCommandFile,
+    args?: string,
+  ): void => {
+    if (currentController !== null) {
+      pushNotice(
+        'warn',
+        `任务运行中，暂不能执行 /${command.name}（等当前轮次结束后再试）`,
+      );
+      return;
+    }
+    const prompt = expandCommandPlaceholders(command.prompt, args);
+    // 工具白名单：命令声明 allowedTools 时收窄（Plan Mode 下与只读白名单取
+    // 交集——白名单外的工具不存在即不可用）；未声明 = 当前工具集。
+    const base = planMode ? planReadonlyRegistry(tools) : tools;
+    const turnTools =
+      command.allowedTools !== undefined && command.allowedTools.length > 0
+        ? filterToolsByName(base, command.allowedTools)
+        : base;
+    // 默认模型：命令声明 model 且与当前不同 → 先切换再提交（002 8.2）。
+    if (
+      command.model !== undefined &&
+      command.model.trim().length > 0 &&
+      command.model !== provider.modelId
+    ) {
+      void switchModel(command.model).then(() => {
+        startTurn(prompt, { tools: turnTools });
+      });
+      return;
+    }
+    startTurn(prompt, { tools: turnTools });
   };
 
   /**
@@ -1132,6 +1223,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       // T-112 Plan Mode：计划模式指示 + 待评审计划（裁决经 Command 回传）
       planMode,
       planProposal,
+      // T-114 自定义斜杠命令：输入框补全候选（内置 + 自定义）
+      slashCommands: slashCompletion,
       // /resume（T-061）：非空时 App 显示会话选择器并隐藏输入行
       resumeCandidates,
       onResumeSelect: (sessionId) => {

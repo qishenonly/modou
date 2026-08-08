@@ -111,6 +111,11 @@ export interface AppProps {
    * `plan_reject` / `plan_modify` Command 回传 runTui）。
    */
   readonly planProposal?: StructuredPlan | null;
+  /**
+   * 输入框的斜杠命令补全候选（`/name` 形态；runTui 注入内置 + 自定义命令）。
+   * 缺省 = input.tsx 的 DEFAULT_SLASH_COMMANDS（内置子集）。
+   */
+  readonly slashCommands?: readonly string[];
 }
 
 /**
@@ -156,6 +161,7 @@ export function App(props: AppProps): ReactElement {
     onSnapshotCancel,
     planMode,
     planProposal,
+    slashCommands,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -517,7 +523,11 @@ export function App(props: AppProps): ReactElement {
           <Box>
             <Text color="cyan">&gt; </Text>
             <Box flexGrow={1}>
-              <Input onSubmit={handleSubmit} onSlash={handleSlash} />
+              <Input
+                onSubmit={handleSubmit}
+                onSlash={handleSlash}
+                slashCommands={slashCommands}
+              />
             </Box>
           </Box>
         )}

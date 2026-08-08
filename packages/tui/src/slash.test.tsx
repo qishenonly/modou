@@ -17,7 +17,14 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
@@ -40,6 +47,7 @@ import { ModelPicker } from './model';
 import {
   BUILTIN_SLASH_COMMANDS,
   collectModelCandidates,
+  customToCommandInfo,
   dispatchSlash,
   lastModelSwitchTo,
   renderHelpText,
@@ -66,11 +74,14 @@ class RecordingProvider implements ModelProvider {
   readonly capabilities: ProviderCapabilities = DEFAULT_CAPABILITIES;
   /** 每次 streamChat 收到的 messages（断言上下文延续）。 */
   readonly messages: ModelMessage[][] = [];
+  /** 每次 streamChat 收到的 tools（断言自定义命令工具白名单）。 */
+  readonly seenTools: Array<Record<string, unknown> | undefined> = [];
 
   constructor(readonly modelId: string) {}
 
   async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
     this.messages.push(input.messages);
+    this.seenTools.push(input.tools);
     const text = `回复(${this.modelId})`;
     for (const char of text) {
       yield { type: 'text_delta', delta: char };
@@ -565,5 +576,91 @@ describe('ModelPicker（T-082 /model 模型选择器）', () => {
     stdin.write('\x1b');
     expect(cancelled).toBe(1);
     unmount();
+  });
+});
+
+describe('自定义斜杠命令分发（T-114）', () => {
+  test('未命中内置但命中自定义命令表：调 handlers.custom，返回 true', () => {
+    const custom = {
+      name: 'fix-lint',
+      description: '修复 lint 错误',
+      allowedTools: ['read', 'grep', 'glob', 'write', 'edit', 'bash'],
+      prompt: '请修复 lint：$1',
+    };
+    const called: string[] = [];
+    const handlers: SlashHandlers = {
+      help: () => called.push('help'),
+      model: () => called.push('model'),
+      compact: () => called.push('compact'),
+      resume: () => called.push('resume'),
+      context: () => called.push('context'),
+      clear: () => called.push('clear'),
+      rewind: () => called.push('rewind'),
+      snapshots: () => called.push('snapshots'),
+      plan: () => called.push('plan'),
+      custom: (command, args) =>
+        called.push(`custom:${command.name}:${args ?? ''}`),
+    };
+    expect(
+      dispatchSlash('fix-lint', 'src/a.ts', handlers, () => {}, [custom]),
+    ).toBe(true);
+    expect(dispatchSlash('nope', undefined, handlers, () => {}, [custom])).toBe(
+      false,
+    );
+    expect(called).toEqual(['custom:fix-lint:src/a.ts']);
+  });
+
+  test('customToCommandInfo：转 /help 可展示的命令信息', () => {
+    const info = customToCommandInfo({
+      name: 'deploy',
+      description: '部署到测试环境',
+      prompt: '部署',
+    });
+    expect(info.usage).toBe('/deploy [参数…]');
+    expect(info.description).toBe('部署到测试环境');
+  });
+
+  test('renderHelpText 附加自定义命令', () => {
+    const text = renderHelpText([
+      { name: 'deploy', usage: '/deploy [参数…]', description: '部署' },
+    ]);
+    expect(text).toContain('/deploy [参数…]');
+    expect(text).toContain('部署');
+  });
+});
+
+describe('自定义斜杠命令集成（T-114 runTui 接线）', () => {
+  test('.modou/commands/*.md 注册的命令：占位展开 + 工具白名单 + /help 展示', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-custom-'));
+    try {
+      const commandsDir = join(dir, '.modou', 'commands');
+      mkdirSync(commandsDir, { recursive: true });
+      writeFileSync(
+        join(commandsDir, 'greet.md'),
+        `---
+name: greet
+description: 只读打招呼
+allowedTools: read
+---
+你好，$1！请只读研究，不要改文件。`,
+        'utf8',
+      );
+      const provider = new RecordingProvider('stub-model');
+      const { stdin, exit } = await startTui({ provider, cwd: dir });
+
+      // 提交 /greet 世界：占位 $1 → 世界，工具白名单只有 read
+      await typeAndEnter(stdin, '/greet 世界');
+      expect(provider.messages).toHaveLength(1);
+      const content = provider.messages[0]?.[0]?.content;
+      expect(typeof content).toBe('string');
+      expect(content as string).toContain('你好，世界！');
+      // 工具白名单：模型只看到 read（allowedTools 收窄）
+      const tools = provider.seenTools[0];
+      expect(tools !== undefined && Object.keys(tools)).toEqual(['read']);
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
