@@ -30,10 +30,13 @@ modou is named after the carpenter's ink line — _墨斗_, a marking tool attri
 - **Knows your project.** Reads `AGENTS.md` (with `CLAUDE.md` compatibility), stacked global → project → subdirectory.
 - **Skills — how-to knowledge, loaded on demand.** Follows the [Agent Skills](https://agentskills.io) open standard: drop a `SKILL.md` directory into any of three layers and it just works. Only name + description live in context; the body is injected only when the model triggers it.
 - **MCP — bring your own tools.** Model Context Protocol servers (stdio or Streamable HTTP) plug in as tools: they flow through the **same permission pipeline** as built-ins (approval required by default — `network` risk), with per-server `risk` / tool filtering / timeouts. See `/mcp` for connection status and `/context` for their token footprint.
+- **Web — search and fetch.** `websearch` (configurable search provider) and `webfetch` (page → plain text) bring web data in: approval-required by default, domain whitelist / blacklist under the `web` settings key, and redirects can never leave the whitelist. Fetched content is wrapped as external data — instructions inside it are data, never commands.
+- **Custom agents — role playbook.** Drop a `*.md` role definition into `.modou/agents/` (or global `~/.modou/agents/`): role prompt, allowed-tools whitelist (truly enforced), optional model. The `agent` tool dispatches the role as an isolated sub-agent turn — only the final conclusion comes back.
+- **File-based long-term memory.** Notes are plain markdown files in `<project>/.modou/memory/<key>.md` — human-readable, version-controllable. `memory_write` / `memory_read` / `memory_list` manage them; session start loads the notes back into context.
 
 ### Roadmap
 
-Planned (not yet in this build): lifecycle hooks, custom agents, and an OS-level sandbox (see [Security Model](#security-model--limitations)).
+Planned (not yet in this build): an OS-level sandbox (see [Security Model](#security-model--limitations)).
 
 ## Requirements
 
@@ -134,25 +137,32 @@ Files are schema-validated; unknown fields or wrong types produce a friendly err
       }
     }
   },
+  "web": {
+    "allowedDomains": ["example.com"],
+    "deniedDomains": ["ads.example.com"],
+    "timeoutMs": 15000,
+    "maxBytes": 262144
+  },
   "maxTurns": 10,
   "keepTurns": 6,
   "homeDir": "/absolute/path/to/home"
 }
 ```
 
-| Field                | Meaning                                                                                                                                      |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider`           | `anthropic` or `openai-compat` (default `openai-compat`)                                                                                     |
-| `model`              | Model ID (falls back to environment variables)                                                                                               |
-| `baseURL`            | Endpoint prefix (required for `openai-compat`)                                                                                               |
-| `permission.sandbox` | `read-only` · `workspace-write` (default) · `full-access`                                                                                    |
-| `permission.policy`  | `untrusted` · `on-request` (default) · `never`                                                                                               |
-| `permission.addDirs` | Extra directories the agent may write to (absolute paths)                                                                                    |
-| `permission.rules`   | `allow` / `deny` prefix rules, optional `tool` filter                                                                                        |
-| `mcp.servers`        | MCP server table: `<name>.command` (stdio) xor `<name>.url` (Streamable HTTP); `risk`, `tools`, `connectTimeoutMs`, `callTimeoutMs` optional |
-| `maxTurns`           | Turn limit per task (default 10)                                                                                                             |
-| `keepTurns`          | Recent turns kept verbatim after compaction (default 6)                                                                                      |
-| `homeDir`            | modou data root (sessions / logs live under `<homeDir>/.modou`)                                                                              |
+| Field                | Meaning                                                                                                                                                                                                                                              |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`           | `anthropic` or `openai-compat` (default `openai-compat`)                                                                                                                                                                                             |
+| `model`              | Model ID (falls back to environment variables)                                                                                                                                                                                                       |
+| `baseURL`            | Endpoint prefix (required for `openai-compat`)                                                                                                                                                                                                       |
+| `permission.sandbox` | `read-only` · `workspace-write` (default) · `full-access`                                                                                                                                                                                            |
+| `permission.policy`  | `untrusted` · `on-request` (default) · `never`                                                                                                                                                                                                       |
+| `permission.addDirs` | Extra directories the agent may write to (absolute paths)                                                                                                                                                                                            |
+| `permission.rules`   | `allow` / `deny` prefix rules, optional `tool` filter                                                                                                                                                                                                |
+| `mcp.servers`        | MCP server table: `<name>.command` (stdio) xor `<name>.url` (Streamable HTTP); `risk`, `tools`, `connectTimeoutMs`, `callTimeoutMs` optional                                                                                                         |
+| `web`                | Web-tool settings (WebFetch / WebSearch): `allowedDomains` (whitelist — when non-empty only these domains + subdomains; redirects re-checked every hop), `deniedDomains` (blacklist, wins), `timeoutMs` (default 15000), `maxBytes` (default 262144) |
+| `maxTurns`           | Turn limit per task (default 10)                                                                                                                                                                                                                     |
+| `keepTurns`          | Recent turns kept verbatim after compaction (default 6)                                                                                                                                                                                              |
+| `homeDir`            | modou data root (sessions / logs live under `<homeDir>/.modou`)                                                                                                                                                                                      |
 
 ### Environment variables
 
@@ -193,6 +203,19 @@ Skills are discovered from three layers (a later layer overrides an earlier one 
 3. Project `<project>/.modou/skills/` — highest priority
 
 **Progressive disclosure.** Only each skill's `name` + one-line `description` live in the system prompt (near-zero token cost); the body and accompanying files are injected only when the model decides a task hits a skill and calls the `skill` tool. The model makes the trigger call, not keyword matching.
+
+### Custom agents (`.modou/agents/`)
+
+Custom agents are role definitions — the same YAML-frontmatter format as custom commands — discovered from two layers:
+
+1. Global `~/.modou/agents/` — lowest priority
+2. Project `<project>/.modou/agents/` — overrides a global agent with the same name
+
+Each file declares `name` / `description`, an optional `allowedTools` whitelist and an optional `model`; the body is the role system prompt. The `agent` tool dispatches the role as an isolated sub-agent turn (own message history, own context window), with a registry **derived from the whitelist** — tools outside it simply don't exist for the role, so out-of-bounds calls are rejected at resolve time. One level deep: a role cannot dispatch further roles or sub-agents.
+
+### Long-term memory (`.modou/memory/`)
+
+File-based long-term memory: each note is a plain markdown file at `<project>/.modou/memory/<key>.md` with an `updated` frontmatter timestamp — human-readable, version-controllable, greppable. `memory_write` / `memory_read` / `memory_list` manage notes during a session; at session start the notes are loaded back into context (bounded, 32 KB total). Keys are restricted to `[A-Za-z0-9_-]`, structurally excluding path traversal.
 
 ## How It Works
 
