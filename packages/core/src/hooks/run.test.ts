@@ -132,6 +132,43 @@ describe('runPreToolUse：deny 阻止与理由回喂', () => {
     expect(aggregate.decision).toBe('deny');
     expect(aggregate.reasons).toEqual(['第一条理由', '第二条理由']);
   });
+
+  test('deny 无 reason 仍阻止（补缺省文案，不静默放行）', async () => {
+    const bus = new HookBus();
+    let executed = 0;
+    bus.register(
+      'PreToolUse',
+      async () => ({ decision: 'deny' }), // 忘了写 reason
+      { id: 'deny-no-reason', matcher: { tools: ['echo'] } },
+    );
+    const registry = new ToolRegistry().register({
+      ...echoTool,
+      execute: async () => {
+        executed += 1;
+        return { ok: true, forModel: 'SHOULD NOT RUN' };
+      },
+    });
+    const { events, emit } = collectEvents();
+    const outcome = await runToolPipeline(
+      { id: 'c1', name: 'echo', input: { text: 'hi' } },
+      { registry, hooks: bus, emit },
+    );
+    expect(executed).toBe(0); // deny 无 reason 也必须阻止执行
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('被钩子拒绝');
+    const result = lastToolResult(events);
+    expect(result?.ok).toBe(false);
+
+    // 聚合层：reason 缺省时补缺省文案
+    const aggregate = await runPreToolUse(bus, {
+      toolName: 'echo',
+      toolInput: { text: 'hi' },
+    });
+    expect(aggregate.decision).toBe('deny');
+    expect(aggregate.reasons).toEqual([
+      '钩子未说明理由（deny 无 reason，按拦截处理）',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

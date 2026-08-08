@@ -2,11 +2,12 @@
  * 钩子聚合函数（T-142 拦截与改写）：把 HookBus 的原始结果（HookOutcome[]）翻译成
  * 管线 / 前端可消费的语义。每个钩子点的聚合语义：
  *
- * - `runPreToolUse`：任一钩子 deny → 整体 deny（理由回喂模型，可多条）；均 allow
- *   时取**最后一个**钩子改写的参数（modifiedInput，注册顺序靠后的有最终话语权）；
- *   内联钩子崩溃（非进程钩子）按保守策略视为 deny——PreToolUse 是 deny 语义的
- *   安全钩子点，防护不能因为钩子静默失败而消失（进程钩子崩溃已在执行器层按
- *   failBehavior 降级，此处只兜底内联钩子）。
+ * - `runPreToolUse`：任一钩子 deny → 整体 deny（理由回喂模型，可多条；deny 无
+ *   reason 时补缺省文案，绝不因钩子忘了写理由而静默放行）；均 allow 时取**最后
+ *   一个**钩子改写的参数（modifiedInput，注册顺序靠后的有最终话语权）；内联钩子
+ *   崩溃（非进程钩子）按保守策略视为 deny——PreToolUse 是 deny 语义的安全钩子点，
+ *   防护不能因为钩子静默失败而消失（进程钩子崩溃已在执行器层按 failBehavior
+ *   降级，此处只兜底内联钩子）。最终判定：`denied || errors.length > 0`。
  * - `runPostToolUse`：恒 continue（观察 / 副作用，不改变工具结果）；崩溃记录在
  *   errors（执行器已落日志，这里不打断管线）。
  * - `runUserPromptSubmit`：任一钩子 block → 整体 block（首个 block 理由）；均
@@ -68,6 +69,7 @@ export function aggregatePreToolUse(
   const reasons: string[] = [];
   const errors: unknown[] = [];
   let modifiedInput: unknown;
+  let denied = false;
   for (const outcome of outcomes) {
     if (outcome.error !== undefined) {
       errors.push(outcome.error);
@@ -76,8 +78,12 @@ export function aggregatePreToolUse(
     const result = outcome.result;
     if (result === undefined) continue;
     if (result.decision === 'deny') {
+      denied = true;
       if (result.reason !== undefined && result.reason.length > 0) {
         reasons.push(result.reason);
+      } else {
+        // deny 无 reason：补缺省文案（防护不因钩子忘了写理由而静默失效）
+        reasons.push('钩子未说明理由（deny 无 reason，按拦截处理）');
       }
     } else if ('modifiedInput' in result) {
       // `in` 收窄：只有 PreToolUse 结果带 modifiedInput；最后一个改写的钩子
@@ -91,9 +97,11 @@ export function aggregatePreToolUse(
     reasons.push(
       `钩子执行失败（内联钩子崩溃，按拦截处理）：${describeErrors(errors)}`,
     );
+  }
+  // 最终判定：任一 deny（无论是否带理由）或内联崩溃 → deny
+  if (denied || errors.length > 0) {
     return { decision: 'deny', reasons, errors };
   }
-  if (reasons.length > 0) return { decision: 'deny', reasons, errors };
   return {
     decision: 'allow',
     reasons,
