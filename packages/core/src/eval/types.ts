@@ -1,10 +1,10 @@
 import type { CompactOptions } from '../context/compact';
 
 /**
- * 评测任务类型（T-090 四类）：修 bug / 加功能 / 重构（行为不变断言）/
- * 读代码答问。
+ * 评测任务类型（T-090 四类 + T-115 规划）：修 bug / 加功能 / 重构（行为不变
+ * 断言）/ 读代码答问 / 规划（输出结构化实施计划，judge 断言计划结构）。
  */
-export type EvalTaskKind = 'fix' | 'feature' | 'refactor' | 'read';
+export type EvalTaskKind = 'fix' | 'feature' | 'refactor' | 'read' | 'plan';
 
 /**
  * 评测任务判定上下文：judge 拿到的全部信息。

@@ -142,6 +142,7 @@ export function formatSuiteReport(suite: EvalSuiteResult): string {
       feature: '加功能',
       refactor: '重构',
       read: '读代码',
+      plan: '规划',
     };
     lines.push(
       `| ${result.task.id} | ${kindLabel[result.task.kind] ?? result.task.kind}${result.task.long ? '·长' : ''} | ` +

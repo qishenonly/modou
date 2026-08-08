@@ -4,6 +4,7 @@ import {
   runBunTest,
   runProbeTest,
 } from './judges';
+import { isEmptyPlan, parseStructuredPlan } from '../plan/plan';
 import type { EvalTask } from './types';
 
 /**
@@ -374,6 +375,134 @@ export const TASKS: readonly EvalTask[] = [
             pass: false,
             reason: `行为不变但重复四舍五入仍在（${rounds} 处 > 1）：未完成重构`,
           };
+    },
+  },
+
+  // ---- 多文件重构 / 规划（3，T-115 新增，fixture = `fixtures/refactor-multi`）----
+  // refactor-multi-datefmt：跨 3 个文件（report/invoice/ledger）把重复的日期
+  // 格式化抽取到共享模块 src/datefmt.ts——judge 先跑回归基线断言**行为不变**，
+  // 再 grep 断言共享模块导出 + 三个模块都 import 复用；
+  // plan-restructure / plan-restructure-detailed：规划类用例——judge 对模型
+  // 最终文本做**结构化计划**断言（固定五段：目标/涉及文件/分步改动/验证方式/
+  // 风险点，parseStructuredPlan 解析，ADR 0010），检验规划质量（G-0.11.0）。
+  {
+    id: 'refactor-multi-datefmt',
+    kind: 'refactor',
+    title: '重构（多文件）：抽取重复的日期格式化到共享模块',
+    fixture: 'refactor-multi',
+    prompt:
+      '在 src/report.ts、src/invoice.ts、src/ledger.ts 中，formatReportDate / ' +
+      'formatInvoiceDate / formatLedgerDate 重复了「时间戳 → YYYY-MM-DD」的日期格式化' +
+      '逻辑（各写了一遍）。请把该逻辑抽取到共享模块 src/datefmt.ts（导出 ' +
+      '`formatDate(timestamp: number): string`），三个函数复用它，对外行为必须不变——' +
+      '`bun test tests/regression.test.ts` 必须保持通过。重构后自行运行测试验证。' +
+      '不要改动测试文件与其他文件。',
+    judge: async (ctx) => {
+      const regression = await runBunTest(ctx.dir, 'tests/regression.test.ts');
+      if (!regression.pass) return regression;
+      const shared = await fileContains(
+        ctx.dir,
+        'src/datefmt.ts',
+        /export\s+function\s+formatDate\s*\(/,
+      );
+      if (!shared.pass) return shared;
+      const modules = ['report', 'invoice', 'ledger'];
+      const reused: string[] = [];
+      for (const name of modules) {
+        const source = await readFixtureFile(ctx.dir, `src/${name}.ts`);
+        if (/from\s+['"].\/datefmt['"]/.test(source)) reused.push(name);
+      }
+      return reused.length === 3
+        ? {
+            pass: true,
+            reason: `行为不变且日期格式化已抽取到 src/datefmt.ts，report/invoice/ledger 三模块复用`,
+          }
+        : {
+            pass: false,
+            reason: `共享模块存在但未全部复用（复用 ${reused.join('、')}）：未完成多文件重构`,
+          };
+    },
+  },
+  {
+    id: 'plan-restructure',
+    kind: 'plan',
+    title: '规划：跨文件重构的实施计划（结构化五段）',
+    fixture: 'refactor-multi',
+    prompt:
+      '请只读研究 src/report.ts、src/invoice.ts、src/ledger.ts 与 tests/regression.test.ts，' +
+      '然后输出一个结构化实施计划：把重复的日期格式化逻辑抽取到共享模块。' +
+      '计划必须包含五段：目标 / 涉及文件 / 分步改动 / 验证方式 / 风险点' +
+      '（markdown 小节标题或 JSON 均可）。只输出计划，不要改动任何文件。',
+    judge: (ctx) => {
+      const plan = parseStructuredPlan(ctx.text);
+      if (plan === null || isEmptyPlan(plan)) {
+        return {
+          pass: false,
+          reason: `文本未产出结构化五段计划：${ctx.text.slice(0, 200)}`,
+        };
+      }
+      if (plan.files.length === 0 || plan.steps.length === 0) {
+        return {
+          pass: false,
+          reason:
+            '计划缺少涉及文件或分步改动（固定五段：目标/涉及文件/分步改动/验证方式/风险点）',
+        };
+      }
+      return {
+        pass: true,
+        reason: `结构化计划（目标=${plan.goal.slice(0, 40)}，文件 ${plan.files.length}，步骤 ${plan.steps.length}）`,
+      };
+    },
+  },
+  {
+    id: 'plan-restructure-detailed',
+    kind: 'plan',
+    title: '规划（严格）：跨文件重构计划须覆盖全部文件与验证方式',
+    fixture: 'refactor-multi',
+    prompt:
+      '请只读研究 src/report.ts、src/invoice.ts、src/ledger.ts 与 tests/regression.test.ts，' +
+      '输出一个结构化实施计划：抽取重复的日期格式化逻辑到共享模块 src/datefmt.ts。' +
+      '计划固定五段（目标 / 涉及文件 / 分步改动 / 验证方式 / 风险点）。' +
+      '要求：涉及文件列出全部三个模块；分步改动 ≥ 3 步；验证方式必须包含运行回归测试。' +
+      '只输出计划，不要改动任何文件。',
+    judge: (ctx) => {
+      const plan = parseStructuredPlan(ctx.text);
+      if (plan === null || isEmptyPlan(plan)) {
+        return {
+          pass: false,
+          reason: `文本未产出结构化五段计划：${ctx.text.slice(0, 200)}`,
+        };
+      }
+      const fileText = plan.files.join('\n');
+      const coversAll = ['report', 'invoice', 'ledger'].every((name) =>
+        fileText.includes(name),
+      );
+      const enoughSteps = plan.steps.length >= 3;
+      const mentionsVerify = plan.verification.some((line) =>
+        /regression|bun test|bun\s+test|测试/.test(line),
+      );
+      if (!coversAll) {
+        return {
+          pass: false,
+          reason: `计划涉及文件未覆盖全部三个模块（${plan.files.join('、')}）`,
+        };
+      }
+      if (!enoughSteps) {
+        return {
+          pass: false,
+          reason: `分步改动不足 3 步（${plan.steps.length} 步）`,
+        };
+      }
+      if (!mentionsVerify) {
+        return {
+          pass: false,
+          reason: '验证方式未包含回归测试（regression / bun test）',
+        };
+      }
+      return {
+        pass: true,
+        reason: `详细计划：文件 ${plan.files.length}，步骤 ${plan.steps.length}，验证含回归测试`,
+      };
     },
   },
 

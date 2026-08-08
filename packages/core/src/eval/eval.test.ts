@@ -166,13 +166,14 @@ function buildLongRounds(): StreamEvent[][] {
 // ---------------------------------------------------------------------------
 
 describe('评测集扩充（T-090）', () => {
-  test('评测集共 24 个任务，覆盖 fix / feature / refactor / read 四类 + 1 个长任务', () => {
-    expect(TASKS).toHaveLength(24);
-    expect(new Set(TASKS.map((t) => t.id)).size).toBe(24);
+  test('评测集共 27 个任务，覆盖 fix / feature / refactor / read / plan 五类 + 1 个长任务', () => {
+    expect(TASKS).toHaveLength(27);
+    expect(new Set(TASKS.map((t) => t.id)).size).toBe(27);
     expect(TASKS.filter((t) => t.kind === 'fix')).toHaveLength(9);
     expect(TASKS.filter((t) => t.kind === 'feature')).toHaveLength(7);
-    expect(TASKS.filter((t) => t.kind === 'refactor')).toHaveLength(3);
+    expect(TASKS.filter((t) => t.kind === 'refactor')).toHaveLength(4);
     expect(TASKS.filter((t) => t.kind === 'read')).toHaveLength(5);
+    expect(TASKS.filter((t) => t.kind === 'plan')).toHaveLength(2);
     // 恰好一个长任务压缩用例（40+ 轮、触发压缩、压缩后延续率主要来源）
     const longTasks = TASKS.filter((t) => t.long === true);
     expect(longTasks).toHaveLength(1);
@@ -182,7 +183,9 @@ describe('评测集扩充（T-090）', () => {
       expect(task.id.length).toBeGreaterThan(0);
       expect(task.prompt.length).toBeGreaterThan(0);
       expect(typeof task.judge).toBe('function');
-      expect(['fix', 'feature', 'refactor', 'read']).toContain(task.kind);
+      expect(['fix', 'feature', 'refactor', 'read', 'plan']).toContain(
+        task.kind,
+      );
     }
   });
 
@@ -243,6 +246,31 @@ describe('评测集扩充（T-090）', () => {
       ]) {
         expect(existsSync(join(dir, rel)), `副本缺少 ${rel}`).toBe(true);
       }
+      expect((await runBunTest(dir, 'tests/regression.test.ts')).pass).toBe(
+        true,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refactor-multi fixture 可复制：三模块重复日期逻辑、回归基线通过', async () => {
+    const dir = await copyFixture('refactor-multi');
+    try {
+      for (const rel of [
+        'src/report.ts',
+        'src/invoice.ts',
+        'src/ledger.ts',
+        'tests/regression.test.ts',
+      ]) {
+        expect(existsSync(join(dir, rel)), `副本缺少 ${rel}`).toBe(true);
+      }
+      // 三模块各自内联了日期格式化（重复逻辑真实存在，可自动判定重构完成）
+      for (const rel of ['src/report.ts', 'src/invoice.ts', 'src/ledger.ts']) {
+        const source = readFileSync(join(dir, rel), 'utf8');
+        expect(source).toContain('padStart');
+      }
+      // 回归基线通过
       expect((await runBunTest(dir, 'tests/regression.test.ts')).pass).toBe(
         true,
       );
@@ -474,6 +502,82 @@ export function taxPrice(price: number, rate: number): number {
 `;
       writeFileSync(join(dir, 'src', 'pricing.ts'), refactored, 'utf8');
       expect((await task.judge({ dir, text: '', task })).pass).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('refactor-multi-datefmt：未重构 fail / 抽取共享模块后 pass', async () => {
+    const task = findTask('refactor-multi-datefmt');
+    const dir = await copyFixture('refactor-multi');
+    try {
+      // 未重构：回归基线通过（行为不变）但无共享模块 → judge fail
+      expect((await task.judge({ dir, text: '', task })).pass).toBe(false);
+
+      // 重构：新建 src/datefmt.ts，三模块 import 复用，行为不变
+      writeFileSync(
+        join(dir, 'src', 'datefmt.ts'),
+        `/** 共享日期格式化模块（已抽取）。 */\nexport function formatDate(timestamp: number): string {\n  const date = new Date(timestamp);\n  const pad = (n: number): string => String(n).padStart(2, '0');\n  return \`${'$'}{date.getFullYear()}-${'$'}{pad(date.getMonth() + 1)}-${'$'}{pad(date.getDate())}\`;\n}\n`,
+        'utf8',
+      );
+      const reuse = (fn: string): string =>
+        `import { formatDate } from './datefmt';\n/** 模块（已重构：复用共享 formatDate）。 */\nexport function ${fn}(timestamp: number): string {\n  return formatDate(timestamp);\n}\n`;
+      writeFileSync(
+        join(dir, 'src', 'report.ts'),
+        `${reuse('formatReportDate')}\nexport function reportTitle(ts: number): string {\n  return \`报表 ${'$'}{formatReportDate(ts)}\`;\n}\n`,
+        'utf8',
+      );
+      writeFileSync(
+        join(dir, 'src', 'invoice.ts'),
+        `${reuse('formatInvoiceDate')}\nexport function invoiceNumber(ts: number, seq: number): string {\n  return \`INV-${'$'}{formatInvoiceDate(ts)}-${'$'}{seq}\`;\n}\n`,
+        'utf8',
+      );
+      writeFileSync(
+        join(dir, 'src', 'ledger.ts'),
+        `${reuse('formatLedgerDate')}\nexport function ledgerEntry(ts: number, seq: number): string {\n  return \`${'$'}{formatLedgerDate(ts)} #${'$'}{seq}\`;\n}\n`,
+        'utf8',
+      );
+      expect((await task.judge({ dir, text: '', task })).pass).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('plan-restructure：无计划 fail / 结构化五段计划 pass', async () => {
+    const task = findTask('plan-restructure');
+    const dir = await copyFixture('refactor-multi');
+    try {
+      expect(
+        (await task.judge({ dir, text: '我研究了一下，可以抽取。', task }))
+          .pass,
+      ).toBe(false);
+      const planText = `## 目标\n抽取重复的日期格式化\n## 涉及文件\n- src/report.ts\n- src/invoice.ts\n- src/ledger.ts\n## 分步改动\n1. 新建 datefmt.ts\n2. 三模块改为复用\n## 验证方式\n- bun test tests/regression.test.ts\n## 风险点\n- 行为不变`;
+      expect((await task.judge({ dir, text: planText, task })).pass).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('plan-restructure-detailed：缺覆盖/步骤/验证方式 fail，完整计划 pass', async () => {
+    const task = findTask('plan-restructure-detailed');
+    const dir = await copyFixture('refactor-multi');
+    try {
+      // 只列出部分文件 → fail
+      const partial = `## 目标\n抽取\n## 涉及文件\n- src/report.ts\n## 分步改动\n1. 一\n2. 二\n3. 三\n## 验证方式\n- bun test\n## 风险点\n- 无`;
+      expect((await task.judge({ dir, text: partial, task })).pass).toBe(false);
+      // 步骤不足 → fail
+      const fewSteps = `## 目标\n抽取\n## 涉及文件\n- src/report.ts\n- src/invoice.ts\n- src/ledger.ts\n## 分步改动\n1. 一\n## 验证方式\n- bun test\n## 风险点\n- 无`;
+      expect((await task.judge({ dir, text: fewSteps, task })).pass).toBe(
+        false,
+      );
+      // 验证方式缺回归测试 → fail
+      const noVerify = `## 目标\n抽取\n## 涉及文件\n- src/report.ts\n- src/invoice.ts\n- src/ledger.ts\n## 分步改动\n1. 一\n2. 二\n3. 三\n## 验证方式\n- 肉眼检查\n## 风险点\n- 无`;
+      expect((await task.judge({ dir, text: noVerify, task })).pass).toBe(
+        false,
+      );
+      // 完整计划 → pass
+      const full = `## 目标\n抽取重复的日期格式化到共享模块\n## 涉及文件\n- src/report.ts\n- src/invoice.ts\n- src/ledger.ts\n- src/datefmt.ts（新建）\n## 分步改动\n1. 新建 src/datefmt.ts\n2. report 改为复用 formatDate\n3. invoice 改为复用 formatDate\n4. ledger 改为复用 formatDate\n## 验证方式\n- 运行 bun test tests/regression.test.ts 保持通过\n## 风险点\n- 保持对外行为不变`;
+      expect((await task.judge({ dir, text: full, task })).pass).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
