@@ -12,7 +12,10 @@
  *   长流接收服务器主动通知（progress / log 等）——关闭即停止，不影响
  *   POST 请求路径；
  * - **超时 / abort**：每个请求独立的 AbortController（超时 + 外部信号合并），
- *   超时或中止即拒绝并清理。
+ *   超时或中止即拒绝并清理；
+ * - **崩溃检测（0.16.0 偏离 1）**：已建立会话的 GET 长流意外关闭（done / error）
+ *   时先 ping 探活——服务器失联才触发 onClose（manager 据此退避重连），服务器
+ *   仍在则视长流关闭为瞬时现象不打扰连接。详细边界见 ADR 0015「已知边界」。
  *
  * 与旧式 HTTP+SSE（2024-11-05 的 /sse 建立 + /messages POST）的区别：
  * 本实现只支持 Streamable HTTP 端点（现代实现），旧式端点不支持（ADR 0015
@@ -274,6 +277,9 @@ export class HttpTransport implements McpTransport {
   }
 
   private async runServerStream(signal: AbortSignal): Promise<void> {
+    // serverRejected：服务器显式拒绝 GET（4xx/5xx 或空 body）→ 服务器在、只是
+    // 不支持长流，POST 路径不受影响，不构成崩溃（跳过探活与 onClose）。
+    let serverRejected = false;
     try {
       const headers: Record<string, string> = {
         Accept: 'text/event-stream',
@@ -287,7 +293,10 @@ export class HttpTransport implements McpTransport {
         headers,
         signal,
       });
-      if (!response.ok || response.body === null) return;
+      if (!response.ok || response.body === null) {
+        serverRejected = true;
+        return;
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const parser = new SseParser();
@@ -300,7 +309,33 @@ export class HttpTransport implements McpTransport {
         });
       }
     } catch {
-      // 长流断开（服务器关闭 / abort）：静默停止——POST 请求路径不依赖它
+      // 长流断开（服务器宕机 / 连接重置 / abort）：落到下方统一处置
+    }
+    // 已建立会话的长流意外关闭（done / error）→ best-effort 崩溃检测（T-163 的
+    // HTTP 侧，0.16.0 design-checker 偏离 1）：先 ping 探活——服务器仍在（部分
+    // server 不保持 GET 长流，关闭是瞬时的）则不触发重连，POST 路径不受影响；
+    // 探活失败 → 服务器疑似崩溃 / 失联 → 触发 onClose，manager 据此退避重连。
+    // 主动 close() 的 abort 路径由 close() 自己触发 onClose，此处跳过（避免重复）。
+    if (!serverRejected && !this.closed) {
+      this.serverStreamController = null;
+      const alive = await this.probeAlive();
+      if (!alive) {
+        this.closeListeners.forEach((listener) => listener());
+      }
+    }
+  }
+
+  /** 崩溃判定前的轻量探活：ping 一个 JSON-RPC 请求（短超时），服务器仍在则 true。 */
+  private async probeAlive(): Promise<boolean> {
+    if (this.closed) return false;
+    try {
+      await this.request(
+        { jsonrpc: '2.0', id: -1, method: 'ping', params: {} },
+        { timeoutMs: Math.min(2_000, this.options.requestTimeoutMs) },
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -4,20 +4,29 @@ import type { AddressInfo } from 'node:net';
 import { HttpTransport } from './http';
 import { McpClient } from './client';
 import { McpError } from './types';
+import { McpManager } from './manager';
+import type { McpServerConfig } from './manager';
+import { ToolRegistry } from '../tools/registry';
+import { runToolPipeline } from '../tools/pipeline';
 
 /**
  * 最小 Streamable HTTP MCP server（仅测试用，T-161）。
  * - POST /：JSON-RPC 请求处理；响应统一以 text/event-stream 帧返回（覆盖 SSE
  *   解析路径）；initialize 时回 `Mcp-Session-Id` 头；notifications/initialized
  *   回 202 空体；tools/call 的 `hang` 不响应（超时路径测试）；
- * - GET /：保持长流，50ms 后发一条服务器主动通知（覆盖 GET SSE 长流解析）。
+ * - GET /：保持长流，50ms 后发一条服务器主动通知（覆盖 GET SSE 长流解析）；
+ *   `closeStreamAfterMs` 指定时在该时长后关闭长流（崩溃检测的「流关闭但服务器
+ *   存活」路径测试）。
+ * 崩溃检测测试用：`crash()` 强杀全部连接并关停服务器（模拟 HTTP server 崩溃）。
  */
 class MinimalHttpMcpServer {
   readonly server: Server;
   private readonly sessionCounters: Record<string, number> = {};
+  private readonly closeStreamAfterMs?: number;
   private connections = 0;
 
-  constructor() {
+  constructor(options: { readonly closeStreamAfterMs?: number } = {}) {
+    this.closeStreamAfterMs = options.closeStreamAfterMs;
     this.server = createServer((req, res) => {
       if (req.method === 'GET') {
         this.handleGet(req, res);
@@ -31,13 +40,28 @@ class MinimalHttpMcpServer {
     });
   }
 
-  listen(): Promise<{ url: string; sessions: () => number }> {
+  /** 监听（缺省随机端口；显式端口用于崩溃后同端口重启）。 */
+  listen(
+    port?: number,
+  ): Promise<{ url: string; sessions: () => number; port: number }> {
     return new Promise((resolve) => {
-      this.server.listen(0, '127.0.0.1', () => {
-        const { port } = this.server.address() as AddressInfo;
+      this.server.listen(port ?? 0, '127.0.0.1', () => {
+        const bound = this.server.address() as AddressInfo;
         const sessions = (): number => this.connections;
-        resolve({ url: `http://127.0.0.1:${port}/`, sessions });
+        resolve({
+          url: `http://127.0.0.1:${bound.port}/`,
+          sessions,
+          port: bound.port,
+        });
       });
+    });
+  }
+
+  /** 模拟崩溃：强杀全部连接（含 GET 长流）并关停服务器。 */
+  crash(): Promise<void> {
+    return new Promise((resolve) => {
+      this.server.closeAllConnections();
+      this.server.close(() => resolve());
     });
   }
 
@@ -69,7 +93,10 @@ class MinimalHttpMcpServer {
             params: { progressToken: 'token-1', progress: 0.5 },
           })}\n\n`,
       );
-    }, 50);
+      if (this.closeStreamAfterMs !== undefined) {
+        res.end(); // 模拟服务器主动关闭长流（服务器仍存活）
+      }
+    }, this.closeStreamAfterMs ?? 50);
     req.on('close', () => res.end());
   }
 
@@ -212,6 +239,46 @@ async function setup() {
   return { server, url, sessions, transport, client };
 }
 
+/** 构造 HTTP 形态的 McpServerConfig（manager 崩溃重连测试用）。 */
+function httpServerConfig(
+  name: string,
+  url: string,
+  overrides: Partial<McpServerConfig> = {},
+): McpServerConfig {
+  return {
+    name,
+    transport: 'http',
+    url,
+    enabled: true,
+    risk: 'network',
+    connectTimeoutMs: 5000,
+    callTimeoutMs: 2000,
+    ...overrides,
+  };
+}
+
+/** 轮询状态直到满足谓词（崩溃重连测试用；超时抛错）。 */
+async function waitForStatus(
+  manager: McpManager,
+  name: string,
+  predicate: (state: string) => boolean,
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = manager.status().find((s) => s.name === name);
+    if (status !== undefined && predicate(status.state)) return;
+    if (Date.now() > deadline) {
+      const all = manager
+        .status()
+        .map((s) => `${s.name}:${s.state}`)
+        .join('，');
+      throw new Error(`等待 ${name} 状态超时（当前：${all}）`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 describe('HttpTransport / McpClient over HTTP（T-161）', () => {
   test('connect：initialize 握手（SSE 响应）+ initialized 通知 + 会话头', async () => {
     const { client, server } = await setup();
@@ -284,5 +351,92 @@ describe('HttpTransport / McpClient over HTTP（T-161）', () => {
     expect(notifications).toContain('notifications/progress');
     await client.close();
     await server.close();
+  });
+
+  test('崩溃检测：长流关闭但服务器存活 → 不触发 onClose（ping 探活通过）', async () => {
+    // closeStreamAfterMs：服务器在发完通知后主动关闭 GET 长流，但 POST 照常服务
+    const server = new MinimalHttpMcpServer({ closeStreamAfterMs: 60 });
+    const { url } = await server.listen();
+    const transport = new HttpTransport({
+      url,
+      requestTimeoutMs: 500,
+      openServerStream: true,
+    });
+    const client = new McpClient('http-minimal', transport, {
+      connectTimeoutMs: 500,
+      callTimeoutMs: 800,
+    });
+    let closed = false;
+    transport.onClose(() => {
+      closed = true;
+    });
+    await client.connect();
+    // 等长流关闭 + 探活完成（探活成功 → 不触发 onClose，连接保持 connected）
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(closed).toBe(false);
+    expect(client.connected).toBe(true);
+    // POST 路径不受影响：工具照常可调
+    const echo = await client.callTool('echo', { text: 'stream-closed' });
+    expect(echo.content[0]).toMatchObject({
+      type: 'text',
+      text: 'stream-closed',
+    });
+    await client.close();
+    await server.close();
+  });
+
+  test('崩溃检测：服务器崩溃（连接断开 + 探活失败）→ 触发 onClose', async () => {
+    const server = new MinimalHttpMcpServer();
+    const { url } = await server.listen();
+    const transport = new HttpTransport({
+      url,
+      requestTimeoutMs: 500,
+      openServerStream: true,
+    });
+    const client = new McpClient('http-minimal', transport, {
+      connectTimeoutMs: 500,
+      callTimeoutMs: 800,
+    });
+    let closed = false;
+    transport.onClose(() => {
+      closed = true;
+    });
+    await client.connect();
+    await server.crash(); // 强杀连接 + 关停
+    const deadline = Date.now() + 3000;
+    while (!closed && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(closed).toBe(true);
+    expect(client.connected).toBe(false); // McpClient 回落未连接态
+  });
+
+  test('崩溃重连：HTTP server 崩溃 → manager disconnected → 同端口恢复 → 工具可用', async () => {
+    const first = new MinimalHttpMcpServer();
+    const { url, port } = await first.listen();
+    const registry = new ToolRegistry();
+    const manager = new McpManager({
+      servers: [httpServerConfig('web', url)],
+      registry,
+      reconnectBaseMs: 100,
+      reconnectMaxMs: 500,
+    });
+    await manager.start();
+    expect(manager.status()[0].state).toBe('connected');
+    // 崩溃：GET 长流断开 + 探活失败 → onClose → disconnected + 退避重连
+    await first.crash();
+    await waitForStatus(manager, 'web', (s) => s === 'disconnected');
+    // 服务器在同端口回来 → 重连成功，工具恢复可用
+    const second = new MinimalHttpMcpServer();
+    await second.listen(port);
+    await waitForStatus(manager, 'web', (s) => s === 'connected');
+    const echo = await runToolPipeline(
+      { id: 'e1', name: 'mcp_web_echo', input: { text: 'back-online' } },
+      { registry },
+    );
+    expect(echo.ok).toBe(true);
+    expect(echo.forModel).toBe('back-online');
+    await manager.stop();
+    await second.close();
   });
 });
