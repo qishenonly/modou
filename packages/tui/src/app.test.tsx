@@ -561,4 +561,63 @@ describe('App 子代理事件流（T-122 折叠展示）', () => {
     expect(frame).toContain('已汇总子代理结论');
     unmount();
   });
+
+  test('子代理审批请求转发到主弹窗：按 requestId 裁决后子代理继续（不悬挂）', async () => {
+    const { stream, push } = createEventChannel();
+    const calls: Command[] = [];
+    const { stdin, lastFrame, unmount } = render(
+      <App stream={stream} send={(c) => calls.push(c)} />,
+    );
+
+    const subAgent = 'sub-abc123';
+    push(
+      subEnv(
+        {
+          type: 'approval_request',
+          data: {
+            id: 'req-sub',
+            description: '执行命令：git push --force',
+            risk: 'exec',
+            options: [
+              { id: 'allow_once', label: '允许本次' },
+              { id: 'deny', label: '拒绝' },
+            ],
+          },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    // 主弹窗出现：子代理的审批请求不再被折叠——描述与选项可见，输入行隐藏
+    expect(frame).toContain('审批请求');
+    expect(frame).toContain('执行命令：git push --force');
+    expect(frame).toContain('允许本次');
+    expect(frame).not.toContain('>');
+
+    // 按 2 → 拒绝：approve Command 带子代理请求的 requestId（弹窗按 id 裁决，
+    // 审批桥 pending map 按 id 命中、agent 无关——子代理据此继续执行）
+    stdin.write('2');
+    await flush();
+    expect(calls).toEqual([
+      { type: 'approve', requestId: 'req-sub', decision: 'deny' },
+    ]);
+
+    // 子代理的 approval_resolved（agent 为子代理）→ 弹窗关闭、输入行恢复
+    push(
+      subEnv(
+        {
+          type: 'approval_resolved',
+          data: { id: 'req-sub', decision: 'deny', source: 'user' },
+        },
+        subAgent,
+      ),
+    );
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).not.toContain('执行命令：git push --force');
+    expect(frame).toContain('>');
+
+    unmount();
+  });
 });

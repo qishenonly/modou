@@ -274,6 +274,20 @@ export function App(props: AppProps): ReactElement {
             `子代理 ${envelope.agent} 出错：${envelope.data.message}`,
           ]);
           break;
+        case 'approval_request':
+          // 0.12.1 修复：子代理的审批请求转发到主弹窗。弹窗按 requestId 裁决，
+          // 审批桥（createApprovalBridge）的 pending map 按 id 命中、agent 无关
+          // ——子代理若被折叠掉，它的 decider 永远等不到裁决，子代理整轮悬挂
+          // （主代理也停在等 task 结论，整轮卡死）。转发到主弹窗即可让用户裁决。
+          setPendingApproval(envelope.data);
+          break;
+        case 'approval_resolved':
+          // 子代理裁决收尾：与主代理同款语义——id 匹配才关闭弹窗（迟到旧请求
+          // 的收尾事件不误关当前弹窗）。
+          setPendingApproval((prev) =>
+            prev !== null && prev.id === envelope.data.id ? null : prev,
+          );
+          break;
         default:
           // text_delta / tool_call / tool_result / usage / context_state 等
           // 子代理过程细节：折叠（不展示）。子代理的最终结论文本会经主代理的
