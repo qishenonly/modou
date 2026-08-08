@@ -161,6 +161,17 @@ export interface TodoUpdateEntryData {
   }[];
 }
 
+/**
+ * plan 条目负载（T-113 计划文档化；002 4.2「日志是唯一真相」）。计划批准 / 落盘
+ * 时把序列化的计划 markdown 存一条快照——/resume 重建结构化计划
+ * （rebuildStructuredPlan）据此恢复，计划在会话间仍在；投影时忽略
+ * （计划的执行输入是批准时的 user 消息，已由 user 条目承载）。
+ */
+export interface PlanEntryData {
+  /** 序列化的结构化计划 markdown（parseStructuredPlan 可解析回 StructuredPlan）。 */
+  readonly text: string;
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -175,6 +186,7 @@ export interface SessionEntryDataMap {
   model_switch: ModelSwitchEntryData;
   snapshot: SnapshotEntryData;
   todo_update: TodoUpdateEntryData;
+  plan: PlanEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -193,6 +205,7 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'model_switch',
   'snapshot',
   'todo_update',
+  'plan',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -219,6 +232,7 @@ export type SessionRecord = {
   | { readonly kind: 'model_switch'; readonly data: ModelSwitchEntryData }
   | { readonly kind: 'snapshot'; readonly data: SnapshotEntryData }
   | { readonly kind: 'todo_update'; readonly data: TodoUpdateEntryData }
+  | { readonly kind: 'plan'; readonly data: PlanEntryData }
 );
 
 /**
@@ -499,6 +513,14 @@ export class SessionLog {
    */
   appendTodoUpdate(data: TodoUpdateEntryData): Promise<void> {
     return this.append('todo_update', data);
+  }
+
+  /**
+   * 追加 plan 条目（T-113 计划文档化：批准 / 落盘时存序列化计划快照）。
+   * /resume 重建结构化计划（rebuildStructuredPlan）据此恢复；投影时忽略。
+   */
+  appendPlan(text: string): Promise<void> {
+    return this.append('plan', { text });
   }
 
   /**

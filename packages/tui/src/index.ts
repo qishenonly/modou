@@ -13,16 +13,19 @@ import {
   isEmptyPlan,
   listSessionsForResume,
   loadInstructions,
+  loadPlanFromFile,
   parseStructuredPlan,
   PLAN_MODE_INSTRUCTION,
   planReadonlyRegistry,
   projectHash,
   projectMessages,
   rebuildReadFiles,
+  rebuildStructuredPlan,
   rebuildSummaryState,
   rebuildTodoState,
   resumeSession,
   runAgentTurnStreaming,
+  savePlanToFile,
   serializeStructuredPlan,
   SessionLog,
   SessionStore,
@@ -539,11 +542,19 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
    * /plan：进入 / 退出计划模式。
    * - 已处于计划模式 → 退出（工具集恢复）；
    * - `/plan`（无参）→ 进入计划模式，等用户描述任务；
-   * - `/plan <请求>` → 进入计划模式并立即以该请求启动一轮只读研究。
+   * - `/plan <请求>` → 进入计划模式并立即以该请求启动一轮只读研究；
+   * - `/plan load <路径>` → 从 markdown 文件读回计划（手动编辑后再执行，T-113），
+   *   打开计划面板评审（a 批准执行 / e 修改 / r 拒绝）。
    */
   const handleSlashPlan = (args?: string): void => {
     if (currentController !== null) {
       pushNotice('warn', '任务运行中，暂不能 /plan（等当前轮次结束后再试）');
+      return;
+    }
+    const trimmed = (args ?? '').trim();
+    const loadMatch = /^load\s+(.+)$/.exec(trimmed);
+    if (loadMatch !== null) {
+      void loadPlanFile(loadMatch[1].trim());
       return;
     }
     if (planMode) {
@@ -558,14 +569,36 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     planProposal = null;
     system = enterPlanModePrompt();
     rerender();
-    const request = (args ?? '').trim();
     pushNotice(
       'info',
-      request.length > 0
+      trimmed.length > 0
         ? '已进入计划模式（只读）。正在研究现状并产出结构化计划…'
         : '已进入计划模式（只读）。请描述要规划的任务；模型将只读研究并产出结构化计划（目标/涉及文件/分步改动/验证方式/风险点）。',
     );
-    if (request.length > 0) startTurn(request);
+    if (trimmed.length > 0) startTurn(trimmed);
+  };
+
+  /**
+   * 从文件读回计划并打开评审面板（T-113「手动编辑后再执行」的读回路径）。
+   * 读取 / 解析失败发 notice，不进入计划模式。
+   */
+  const loadPlanFile = async (filePath: string): Promise<void> => {
+    const plan = await loadPlanFromFile(filePath);
+    if (plan === null) {
+      pushNotice(
+        'warn',
+        `无法从 ${filePath} 读取计划（文件不存在或解析失败；期望五段 markdown 或 JSON）`,
+      );
+      return;
+    }
+    planMode = true;
+    system = enterPlanModePrompt();
+    planProposal = plan;
+    rerender();
+    pushNotice(
+      'info',
+      `已从 ${filePath} 加载计划（目标：${plan.goal}）。a 批准执行 / e 修改 / r 拒绝。`,
+    );
   };
 
   /** 批准计划：切回执行模式，把计划回填为 user 消息开始实施。 */
@@ -576,6 +609,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     system = baseSystem;
     rerender();
     if (proposal === null) return;
+    // T-113 计划文档化：批准即落盘 markdown（.modou/plans/<时间戳>.md）+
+    // 会话日志 plan 条目（/resume 后计划仍在，002 4.1 日志是唯一真相）。
+    void savePlanToFile(cwd, proposal);
+    void sessionLog?.appendPlan(serializeStructuredPlan(proposal));
     // 计划回填上下文（002 4.1：批准后的计划是执行的输入，入日志可重建）
     const text =
       `计划已批准，开始执行。请严格按照以下计划实施，不要擅自扩大范围：\n\n` +
@@ -747,6 +784,16 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         type: 'todo_update',
         data: { items: todoState.items },
       });
+    }
+    // T-113：/resume 后计划仍在——从会话日志 plan 条目重建并发 notice 提示
+    // （计划作为结构化状态入日志，002 4.1「日志是唯一真相」）。
+    const restoredPlan = rebuildStructuredPlan(resumed.records);
+    if (restoredPlan !== undefined) {
+      pushNotice(
+        'info',
+        `本会话有已批准的计划（目标：${restoredPlan.goal}）。` +
+          `可输入 /plan load <路径> 重新加载评审，或继续对话。`,
+      );
     }
     initialTotals = {
       inputTokens: resumed.usage.inputTokens ?? 0,

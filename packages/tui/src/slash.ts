@@ -82,9 +82,10 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
   },
   {
     name: 'plan',
-    usage: '/plan [请求]',
+    usage: '/plan [请求 | load <路径>]',
     description:
-      '进入计划模式（只读研究 → 结构化计划 → 批准/修改/拒绝；批准后切执行模式）',
+      '计划模式：只读研究 → 结构化计划 → 批准/修改/拒绝（批准后切执行模式）；' +
+      'load <路径> 从 markdown 文件读回计划（手动编辑后再执行）',
   },
 ];
 
