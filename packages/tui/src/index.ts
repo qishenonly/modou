@@ -162,7 +162,37 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const sessionStore = new SessionStore({ homeDir });
   // 快照引擎（T-102 /rewind / T-103 /snapshots）：影子 git 仓库——自动快照 +
   // 手动回滚 + 生命周期清理。cwd 即项目根（工作树），与日志同项目哈希。
-  const snapshotStore = new SnapshotStore({ homeDir, cwd });
+  // 保留策略 / 降级阈值来自配置（settings.json snapshot 键 / TuiOptions.snapshot），
+  // 缺省引擎内置默认。
+  const snapshotConfig = startup.snapshot;
+  const snapshotEnabled = snapshotConfig?.enabled ?? true;
+  const snapshotStore = new SnapshotStore({
+    homeDir,
+    cwd,
+    ...(snapshotConfig !== undefined
+      ? {
+          retention: {
+            ...(snapshotConfig.maxAgeDays !== undefined
+              ? { maxAgeMs: snapshotConfig.maxAgeDays * 24 * 60 * 60 * 1000 }
+              : {}),
+            ...(snapshotConfig.keepPerSession !== undefined
+              ? { keepPerSession: snapshotConfig.keepPerSession }
+              : {}),
+            ...(snapshotConfig.maxPerProject !== undefined
+              ? { maxPerProject: snapshotConfig.maxPerProject }
+              : {}),
+          },
+          limits: {
+            ...(snapshotConfig.maxChangedPaths !== undefined
+              ? { maxChangedPaths: snapshotConfig.maxChangedPaths }
+              : {}),
+            ...(snapshotConfig.maxBytes !== undefined
+              ? { maxBytes: snapshotConfig.maxBytes }
+              : {}),
+          },
+        }
+      : {}),
+  });
   // 当前会话日志：新建会话（缺省 sessionId）或 resume 续开（指定 sessionId）。
   let sessionLog: SessionLog | null = null;
   // 完整历史消息：每次轮次结束后从会话日志重新投影（002 4.1 日志是唯一真相），
@@ -288,6 +318,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
    * - 失败不阻断任务：告警 notice 后继续（快照是旁路安全网，不是任务前提）。
    */
   const takeSnapshot = async (): Promise<void> => {
+    if (!snapshotEnabled) return; // T-103：配置关闭自动快照（/rewind 手动快照仍可用）
     if (sessionLog === null) return;
     try {
       const read = await sessionStore.read(
@@ -424,6 +455,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       clear: handleSlashClear,
       rewind: () => {
         void handleSlashRewind();
+      },
+      snapshots: (args) => {
+        void handleSlashSnapshots(args);
       },
     };
     dispatchSlash(name, args, handlers, (unimplemented) => {
@@ -803,6 +837,48 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     rerender();
   };
 
+  // —— /snapshots（T-103）：查看占用 / 清理过期快照 ——
+
+  /** /snapshots：查看全部项目的快照占用；`--cleanup` 触发清理（按保留策略）。 */
+  const handleSlashSnapshots = async (args?: string): Promise<void> => {
+    if (currentController !== null) {
+      pushNotice(
+        'warn',
+        '任务运行中，暂不能 /snapshots（等当前轮次结束后再试）',
+      );
+      return;
+    }
+    try {
+      if ((args ?? '').includes('cleanup')) {
+        const result = await snapshotStore.cleanup();
+        pushNotice(
+          'info',
+          `快照清理完成：移除 ${result.removed} 条，保留 ${result.kept} 条；` +
+            `释放 ${formatBytes(result.freedBytes)}（${formatBytes(result.beforeBytes)} → ${formatBytes(result.afterBytes)}）`,
+        );
+        return;
+      }
+      const usage = await snapshotStore.reportUsage();
+      const lines = ['快照占用：'];
+      if (usage.projects.length === 0) lines.push('（尚无快照）');
+      for (const project of usage.projects) {
+        const marker =
+          project.projectHash === snapshotStore.projectHash
+            ? '（当前项目）'
+            : '';
+        lines.push(
+          `  ${project.projectHash}${marker}：${project.snapshotCount} 个快照` +
+            `${project.degradedCount > 0 ? ` / ${project.degradedCount} 个降级` : ''} · ` +
+            `${formatBytes(project.bytes)} · 最近 ${formatSnapshotTime(project.lastTs)}`,
+        );
+      }
+      lines.push(`合计 ${formatBytes(usage.totalBytes)}`);
+      pushNotice('info', lines.join('\n'));
+    } catch (caught) {
+      pushNotice('warn', `快照命令失败：${describeError(caught)}`);
+    }
+  };
+
   // 发 Command 通道（002 3.3 反向通道）
   const send = (command: Command): void => {
     switch (command.type) {
@@ -930,6 +1006,23 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
 export { App } from './app';
 export type { AppProps } from './app';
+
+/** 字节数 → 人类可读（B / KB / MB；/snapshots 占用展示）。 */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** epoch ms → `MM-DD HH:mm`（本地时区；ts<=0 时显示占位）。 */
+export function formatSnapshotTime(ts: number): string {
+  if (ts <= 0) return '?';
+  const date = new Date(ts);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}
 export { Input } from './input';
 export type { InputProps } from './input';
 export { performCompact } from './compact';

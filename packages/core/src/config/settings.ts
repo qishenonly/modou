@@ -46,6 +46,24 @@ export interface ConfigRule {
 }
 
 /**
+ * 快照配置（0.10.0「安全网」；缺省全部可选，引擎回落内置默认）。
+ * - `enabled`：是否自动快照（缺省 true）；
+ * - `maxAgeDays`：快照保留窗口（天；0 = 不限时间，缺省 30）；
+ * - `keepPerSession`：每会话至少保留最近 N 条快照（缺省 10）；
+ * - `maxPerProject`：每项目最多保留快照数（超限删最旧，缺省 200）；
+ * - `maxChangedPaths`：单次快照降级阈值——变更路径数（缺省 2000）；
+ * - `maxBytes`：单次快照降级阈值——变更文件总字节（缺省 128 MB）。
+ */
+export interface ConfigSnapshot {
+  readonly enabled?: boolean;
+  readonly maxAgeDays?: number;
+  readonly keepPerSession?: number;
+  readonly maxPerProject?: number;
+  readonly maxChangedPaths?: number;
+  readonly maxBytes?: number;
+}
+
+/**
  * settings.json 支持项的 schema（T-080；按现有能力集，全部字段缺省可选）。
  * 顶层与 permission 均 `.strict()`：未知字段立即报错（拼写错误可见，不静默）。
  */
@@ -83,6 +101,18 @@ export const SettingsSchema = z
     maxTurns: z.number().int().min(1).optional(),
     /** 压缩保留的近 N 轮原文（缺省 6，与 context/compact 的 DEFAULT_KEEP_TURNS 一致）。 */
     keepTurns: z.number().int().min(1).optional(),
+    /** 快照配置（T-103：保留策略 / 降级阈值；缺省引擎内置默认）。 */
+    snapshot: z
+      .object({
+        enabled: z.boolean().optional(),
+        maxAgeDays: z.number().int().min(0).optional(),
+        keepPerSession: z.number().int().min(1).optional(),
+        maxPerProject: z.number().int().min(1).optional(),
+        maxChangedPaths: z.number().int().min(1).optional(),
+        maxBytes: z.number().int().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     /** 用户主目录：会话/日志根（缺省 os.homedir()；须为绝对路径）。 */
     homeDir: z
       .string()
@@ -617,6 +647,7 @@ export interface ConfigOverrides {
   readonly rules?: readonly ConfigRule[];
   readonly maxTurns?: number;
   readonly keepTurns?: number;
+  readonly snapshot?: ConfigSnapshot;
   readonly homeDir?: string;
 }
 
@@ -647,6 +678,7 @@ export interface ResolvedConfig {
   readonly permission: ResolvedPermission;
   readonly maxTurns: number;
   readonly keepTurns: number;
+  readonly snapshot?: ConfigSnapshot;
   readonly homeDir: string;
 }
 
@@ -680,6 +712,9 @@ export function resolveConfig(input: ResolveConfigInput = {}): ResolvedConfig {
     },
     maxTurns: overrides.maxTurns ?? settings.maxTurns ?? DEFAULT_MAX_TURNS,
     keepTurns: overrides.keepTurns ?? settings.keepTurns ?? DEFAULT_KEEP_TURNS,
+    ...((overrides.snapshot ?? settings.snapshot) !== undefined
+      ? { snapshot: overrides.snapshot ?? settings.snapshot }
+      : {}),
     homeDir:
       overrides.homeDir ?? settings.homeDir ?? input.homeDir ?? homedir(),
   };

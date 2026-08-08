@@ -384,4 +384,32 @@ describe('runTui /rewind 集成（T-102）', () => {
     await flush();
     await exit;
   });
+
+  test('/snapshots 查看占用；--cleanup 触发清理', async () => {
+    const homeDir = makeHome();
+    const cwd = join(homeDir, 'proj');
+    mkdirSync(cwd, { recursive: true });
+    const store = new SnapshotStore({ homeDir, cwd });
+    writeFileSync(join(cwd, 'a.txt'), 'v1\n', 'utf8');
+    await store.snapshot({ sessionId: 'sess-1' });
+
+    const { stdout, stdin, exit } = await startTui({
+      homeDir,
+      cwd,
+      provider: new StubProvider('stub'),
+    });
+    // /snapshots：占用报告（含当前项目哈希）
+    await typeAndEnter(stdin, '/snapshots');
+    expect(stdout.lastFrame()).toContain('快照占用');
+    expect(stdout.lastFrame()).toContain(store.projectHash);
+    expect(stdout.lastFrame()).toContain('当前项目');
+    // /snapshots --cleanup：触发清理（无过期 → 移除 0）
+    await typeAndEnter(stdin, '/snapshots --cleanup');
+    expect(stdout.lastFrame()).toContain('快照清理完成');
+    expect(stdout.lastFrame()).toContain('移除 0 条');
+
+    stdin.write('\x03');
+    await flush();
+    await exit;
+  });
 });

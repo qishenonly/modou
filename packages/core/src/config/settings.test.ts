@@ -348,3 +348,71 @@ describe('resolveConfig：默认值与逐层覆盖', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 快照配置（T-103：保留策略 / 降级阈值）
+// ---------------------------------------------------------------------------
+
+describe('快照配置（T-103 snapshot 键）', () => {
+  test('settings.json 的 snapshot 键经 resolveConfig 透传', () => {
+    const config = resolveConfig({
+      homeDir: '/tmp/fake-home',
+      env: {},
+      settings: {
+        snapshot: {
+          enabled: true,
+          maxAgeDays: 7,
+          keepPerSession: 5,
+          maxPerProject: 50,
+          maxChangedPaths: 100,
+          maxBytes: 1024,
+        },
+      },
+    });
+    expect(config.snapshot).toEqual({
+      enabled: true,
+      maxAgeDays: 7,
+      keepPerSession: 5,
+      maxPerProject: 50,
+      maxChangedPaths: 100,
+      maxBytes: 1024,
+    });
+  });
+
+  test('缺省无 snapshot 配置（引擎回落内置默认）', () => {
+    const config = resolveConfig({ homeDir: '/tmp/fake-home', env: {} });
+    expect(config.snapshot).toBeUndefined();
+  });
+
+  test('显式覆盖优先于 settings', () => {
+    const config = resolveConfig({
+      homeDir: '/tmp/fake-home',
+      env: {},
+      settings: { snapshot: { maxAgeDays: 7 } },
+      overrides: { snapshot: { maxAgeDays: 1 } },
+    });
+    expect(config.snapshot).toEqual({ maxAgeDays: 1 });
+  });
+
+  test('非法 snapshot 字段报错（未知字段可见，不静默）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(home, '.modou', {
+        snapshot: { maxAgeDays: 'not-a-number' },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.field).toBe('settings.snapshot.maxAgeDays');
+        expect(error.expected).toContain('number');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+});

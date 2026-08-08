@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import type {
   CompactOptions,
   ConfigOverrides,
+  ConfigSnapshot,
   ModelProvider,
   PermissionConfig,
   ProviderFromConfigInput,
@@ -87,6 +88,11 @@ export interface TuiOptions {
    * 裁决 ask 之后的请求，矩阵中的 allow / deny 由 gate 内部直接裁决（弹窗不出现）。
    */
   readonly permission?: PermissionConfig;
+  /**
+   * 快照配置（T-103：保留策略 / 降级阈值 / 开关）。缺省经配置解析（内置默认 =
+   * 启用，30 天 / 每会话 10 条 / 每项目 200 条）；显式选项最高优先。
+   */
+  readonly snapshot?: ConfigSnapshot;
   /** Ink 输出流（测试注入；缺省 process.stdout）。 */
   readonly stdout?: NodeJS.WriteStream;
   /** Ink 输入流（测试注入；缺省 process.stdin）。 */
@@ -116,6 +122,8 @@ export interface TuiStartupConfig {
   readonly maxTurns: number;
   /** 压缩保留的近 N 轮原文（配置解析后的最终值）。 */
   readonly keepTurns: number;
+  /** 快照配置（配置解析后的最终值；缺省 undefined = 引擎内置默认）。 */
+  readonly snapshot?: ConfigSnapshot;
   /**
    * provider 装配面（T-082 /model 重建 provider 实例用）：供应商类型 +
    * 生效端点。baseURL 取「配置显式值 → opencode 测试端点 → OPENAI_BASE_URL」，
@@ -150,6 +158,7 @@ export function assembleTuiStartup(
   const overrides: ConfigOverrides = {
     maxTurns: options.maxTurns,
     keepTurns: options.compact?.keepTurns,
+    snapshot: options.snapshot,
     homeDir: options.homeDir,
   };
   const resolved = resolveConfig({
@@ -192,6 +201,7 @@ export function assembleTuiStartup(
       options.permission ?? permissionFromResolved(resolved, projectRoot),
     maxTurns: resolved.maxTurns,
     keepTurns: resolved.keepTurns,
+    ...(resolved.snapshot !== undefined ? { snapshot: resolved.snapshot } : {}),
     providerSpec: {
       type: (options.provider?.id as ProviderType) ?? resolved.provider,
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),

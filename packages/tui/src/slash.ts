@@ -75,6 +75,11 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     description:
       '列出快照点，选择后预览差异并还原文件（回滚到该点，撤销之后的改动）',
   },
+  {
+    name: 'snapshots',
+    usage: '/snapshots [--cleanup]',
+    description: '查看快照占用与保留策略（--cleanup 触发一次过期清理）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -108,6 +113,7 @@ export interface SlashHandlers {
   readonly context: (args?: string) => void;
   readonly clear: () => void;
   readonly rewind: () => void;
+  readonly snapshots: (args?: string) => void;
 }
 
 /**
@@ -146,6 +152,9 @@ export function dispatchSlash(
       return true;
     case 'rewind':
       handlers.rewind();
+      return true;
+    case 'snapshots':
+      handlers.snapshots(args);
       return true;
     default:
       onUnimplemented(name, args);
