@@ -38,6 +38,7 @@ import type {
   StructuredPlan,
 } from '@modou/core';
 import {
+  defaultWriteTools,
   projectHash,
   projectMessages,
   serializeStructuredPlan,
@@ -721,6 +722,44 @@ describe('计划批准落盘失败（T-113 告警不静默）', () => {
       const allFrames = stdout.frames.join('\n');
       expect(allFrames).toContain('计划落盘失败');
       expect(allFrames).toContain('计划仍将执行');
+
+      await quit(stdin, exit);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('自定义命令 allowedTools 未知工具名（启动校验不静默）', () => {
+  test('白名单含未注册工具名：启动 notice 列出未知名', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-tui-unknown-tools-'));
+    try {
+      const commandsDir = join(dir, '.modou', 'commands');
+      mkdirSync(commandsDir, { recursive: true });
+      writeFileSync(
+        join(commandsDir, 'deploy.md'),
+        `---
+name: deploy
+description: 部署
+allowedTools: read,no_such_tool,write
+---
+部署 $1`,
+        'utf8',
+      );
+      const provider = new RecordingProvider('stub-model');
+      const { stdin, stdout, exit } = await startTui({
+        provider,
+        cwd: dir,
+        tools: defaultWriteTools(),
+      });
+      await flush();
+
+      const allFrames = stdout.frames.join('\n');
+      expect(allFrames).toContain('/deploy 的 allowedTools 含未注册工具');
+      expect(allFrames).toContain('no_such_tool');
+      // write 已注册 → 不列入未知清单
+      expect(allFrames).not.toContain('未注册工具：no_such_tool,write');
+      expect(allFrames).not.toContain('write、');
 
       await quit(stdin, exit);
     } finally {

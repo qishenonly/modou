@@ -311,6 +311,22 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         `（${loadedCommands.skipped.join('、')}）——缺 name/description/正文，或与内置命令同名`,
     );
   }
+  // T-114：命令的 allowedTools 白名单里含注册表不存在的工具名时启动告警（不静默
+  // 丢弃）——该名在运行时被白名单过滤掉，命令实际拿到的工具集比声明少，用户要
+  // 知道自己写的哪个工具名没生效。
+  const unknownToolDeclarations = customCommands.flatMap((command) => {
+    if (command.allowedTools === undefined) return [];
+    const unknown = command.allowedTools.filter((name) => !tools.has(name));
+    return unknown.length > 0
+      ? [`/${command.name} 的 allowedTools 含未注册工具：${unknown.join('、')}`]
+      : [];
+  });
+  if (unknownToolDeclarations.length > 0) {
+    pushNotice(
+      'warn',
+      `自定义斜杠命令工具白名单：${unknownToolDeclarations.join('；')}（这些工具名将被忽略）`,
+    );
+  }
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
