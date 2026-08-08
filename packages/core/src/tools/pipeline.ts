@@ -136,11 +136,17 @@ function unknownToolOutcome(name: string, registry: ToolRegistry): ToolOutcome {
 
 /** 参数校验失败的错误：逐字段列明原因，并附正确用法（JSON Schema）。 */
 function validationFailureOutcome(tool: Tool, error: z.ZodError): ToolOutcome {
+  // 0.16.0：工具声明了 jsonSchema 覆盖（MCP 注入）时以原文为准——
+  // 「正确用法」应与模型看到的工具定义一致（registry.toJsonSchema 同源）。
+  const schema =
+    tool.jsonSchema !== undefined
+      ? tool.jsonSchema
+      : z.toJSONSchema(tool.schema);
   return failure(
     `参数校验失败（工具 "${tool.name}"）：入参不符合其声明的 schema。\n${formatValidationIssues(
       error,
     )}\n正确用法（JSON Schema）：\n${JSON.stringify(
-      z.toJSONSchema(tool.schema),
+      schema,
     )}\n请按正确用法修正参数后重试。`,
   );
 }

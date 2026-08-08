@@ -15,3 +15,4 @@ export * from './types';
 export * from './stdio';
 export * from './http';
 export * from './client';
+export * from './inject';

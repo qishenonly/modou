@@ -216,6 +216,14 @@ export interface Tool<
   readonly schema: TSchema;
   readonly risk: ToolRisk;
   /**
+   * JSON Schema 覆盖（0.16.0 T-162 MCP 工具注入）：工具对模型的参数说明以
+   * 此为准（registry.toJsonSchema 直接返回，不再 z.toJSONSchema 生成）——
+   * MCP 工具的 inputSchema 由远程 server 声明，是权威形态；round-trip 可能
+   * 丢失 additionalProperties / 描述等细节，故保留原文透传给模型。缺省 =
+   * 由 schema 生成（既有行为，本地工具不受影响）。
+   */
+  readonly jsonSchema?: unknown;
+  /**
    * 并发执行标记（T-123 子代理）：标为 true 的工具在同一轮被多次调用时由 loop
    * 并行执行（Promise.all 派发、结果按调用顺序聚合）——适用于互不共享状态、
    * 无文件写副作用的工具（如 task 子代理派发，ADR 0011 默认只读因此并行安全）。
