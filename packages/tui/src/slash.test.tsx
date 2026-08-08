@@ -239,7 +239,7 @@ function readAllSessionLines(homeDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('dispatchSlash（T-082 分发器）', () => {
-  test('九个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
+  test('十个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
     const called: string[] = [];
     const handlers: SlashHandlers = {
       help: () => called.push('help'),
@@ -252,6 +252,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
       snapshots: (args) => called.push(`snapshots:${args ?? ''}`),
       plan: (args) => called.push(`plan:${args ?? ''}`),
       init: () => called.push('init'),
+      image: (args) => called.push(`image:${args ?? ''}`),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -289,6 +290,9 @@ describe('dispatchSlash（T-082 分发器）', () => {
     expect(dispatchSlash('init', undefined, handlers, onUnimplemented)).toBe(
       true,
     );
+    expect(dispatchSlash('image', 'shot.png', handlers, onUnimplemented)).toBe(
+      true,
+    );
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -304,13 +308,14 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'snapshots:--cleanup',
       'plan:重构',
       'init',
+      'image:shot.png',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -322,6 +327,7 @@ describe('/help（T-082）', () => {
       'snapshots',
       'plan',
       'init',
+      'image',
     ]);
   });
 
@@ -631,6 +637,7 @@ describe('自定义斜杠命令分发（T-114）', () => {
       snapshots: () => called.push('snapshots'),
       plan: () => called.push('plan'),
       init: () => called.push('init'),
+      image: (args) => called.push(`image:${args ?? ''}`),
       custom: (command, args) =>
         called.push(`custom:${command.name}:${args ?? ''}`),
     };

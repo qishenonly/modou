@@ -12,7 +12,10 @@
  *
  * 全部离线：provider 用本地 StubProvider（不访问外网）。
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ProviderCapabilities } from '../provider/capabilities';
@@ -44,15 +47,23 @@ type StubRound = StreamEvent[] | { readonly throw: unknown };
 class StubProvider implements ModelProvider {
   readonly id = 'stub';
   readonly modelId = 'stub-model';
-  readonly capabilities: ProviderCapabilities = CAPABILITIES;
+  readonly capabilities: ProviderCapabilities;
+  /** 每次 streamChat 收到的消息（验证多模态构造等）。 */
+  readonly seenMessages: ModelMessage[][] = [];
   private callCount = 0;
 
-  constructor(private readonly rounds: StubRound[]) {}
+  constructor(
+    private readonly rounds: StubRound[],
+    capabilities: ProviderCapabilities = CAPABILITIES,
+  ) {
+    this.capabilities = capabilities;
+  }
 
   async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
     if (input.abortSignal?.aborted) {
       throw new ProviderError({ kind: 'aborted', message: '请求已被中断' });
     }
+    this.seenMessages.push(input.messages);
     const round = this.rounds[Math.min(this.callCount, this.rounds.length - 1)];
     this.callCount += 1;
     if ('throw' in round) throw round.throw;
@@ -89,6 +100,14 @@ function toolUseEvents(
 // ---------------------------------------------------------------------------
 // 用例
 // ---------------------------------------------------------------------------
+
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe('runAgentTurnJson（T-130 事件流 JSON 收集）', () => {
   test('成功轮：事件流可解析为 JSON，含 text/usage/turn_end，退出码 0', async () => {
@@ -163,6 +182,72 @@ describe('runAgentTurnJson（T-130 事件流 JSON 收集）', () => {
     for (const event of out.events) {
       expect(['usage', 'turn_end']).toContain(event.type);
     }
+  });
+
+  test('images 选项（T-133）：支持图片的模型收到文本 + 图片的多模态消息', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'modou-json-image-'));
+    tmpDirs.push(dir);
+    const pngPath = join(dir, 'shot.png');
+    // 1x1 最小 PNG
+    writeFileSync(
+      pngPath,
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
+    const stub = new StubProvider([textEvents('已看图')], {
+      ...CAPABILITIES,
+      images: true,
+    });
+    const out = await runAgentTurnJson(
+      {
+        provider: stub,
+        messages: [userMsg],
+        options: { maxTurns: 5 },
+      },
+      { images: [pngPath] },
+    );
+
+    // 降级 notice 为空（支持路径），消息以多模态形态发给 provider
+    expect(out.notices).toEqual([]);
+    expect(out.exitCode).toBe(RunExitCode.SUCCESS);
+    const seen = stub.seenMessages[0];
+    expect(seen).toBeDefined();
+    const last = seen[seen.length - 1];
+    expect(Array.isArray(last?.content)).toBe(true);
+    const parts = last?.content as Array<{
+      type: string;
+      mediaType?: string;
+      data?: { type: string; data?: unknown };
+    }>;
+    expect(parts.some((part) => part.type === 'file')).toBe(true);
+    expect(
+      parts.some(
+        (part) =>
+          part.type === 'file' &&
+          part.mediaType === 'image/png' &&
+          part.data?.data instanceof Uint8Array,
+      ),
+    ).toBe(true);
+  });
+
+  test('images 选项（T-133）：不支持图片的模型降级——notice 说明且消息为纯文本', async () => {
+    const stub = new StubProvider([textEvents('抱歉，我看不到图')]);
+    const out = await runAgentTurnJson(
+      {
+        provider: stub,
+        messages: [userMsg],
+        options: { maxTurns: 5 },
+      },
+      { images: ['/tmp/whatever.png'] },
+    );
+    expect(out.notices.length).toBe(1);
+    expect(out.notices[0]).toContain('不支持图片输入');
+    // provider 收到的消息是纯文本（含「不要臆测图片内容」说明）
+    const seen = stub.seenMessages[0];
+    expect(seen).toBeDefined();
+    expect(typeof seen[seen.length - 1]?.content).toBe('string');
   });
 });
 

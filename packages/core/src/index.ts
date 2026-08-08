@@ -14,3 +14,4 @@ export * from './eval';
 export * from './plan';
 export * from './logging';
 export * from './init';
+export * from './multimodal';

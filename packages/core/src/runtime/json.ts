@@ -27,6 +27,7 @@ import type { Envelope, ProtocolEvent } from '../protocol/events';
 import { ApprovalGate } from '../permission/approval';
 import type { StructuredLogger } from '../logging/structured';
 import { EnvelopeLogAdapter } from '../logging/structured';
+import { attachImagesToUserMessage } from '../multimodal/image';
 
 // ---------------------------------------------------------------------------
 // 退出码（T-130 语义化：脚本 / CI 据此路由结果）
@@ -164,6 +165,14 @@ export interface RunAgentTurnJsonOptions {
    * 缺省不记录——脚本自行决定是否要旁路日志。
    */
   readonly structuredLog?: StructuredLogger;
+  /**
+   * 图片输入（T-133）：提供时，把最后一条 user 消息替换为「文本 + 图片」的
+   * 多模态消息（本地路径读取为 data URL；http(s)/data URI 直接透传）。按
+   * 供应商能力描述（capabilities.images）决定构造多模态还是诚实降级——
+   * 不支持时消息里保留文本 + 明确说明，降级 notice 随 `notices` 返回。
+   * 缺省不处理图片（纯文本入口，0.12.0 及之前行为）。
+   */
+  readonly images?: readonly string[];
 }
 
 /** 收集一次 `runAgentTurn` 的事件流为 JSON 的产出。 */
@@ -174,6 +183,8 @@ export interface RunAgentTurnJsonResult {
   readonly events: readonly Envelope[];
   /** JSON-safe 的 turn 结果投影（文本 / 用量 / 终止原因 / 预算快照…）。 */
   readonly result: JsonSafeTurnResult;
+  /** 图片降级 / 跳过说明（T-133；无图片输入时为空数组）。 */
+  readonly notices: readonly string[];
 }
 
 /**
@@ -202,6 +213,19 @@ export async function runAgentTurnJson(
           ...input,
           approval: createUnattendedApprovalGate(),
         };
+  // T-133 图片输入：提供 images 时，把最后一条 user 消息替换为「文本 + 图片」
+  // 的多模态消息（不支持图片的模型走诚实降级，notice 返回给脚本）。
+  const notices: string[] = [];
+  let messages = input.messages;
+  if (options.images !== undefined && options.images.length > 0) {
+    const built = await attachImagesToUserMessage({
+      prompt: lastUserText(input.messages),
+      images: options.images,
+      capabilities: input.provider.capabilities,
+    });
+    notices.push(...built.notices);
+    messages = replaceLastUserMessage(input.messages, built.messages[0]);
+  }
   // T-131 结构化日志：提供 logger 时把事件流经适配器落盘（request /
   // tool_call / permission 三类，见 logging/structured.ts）。
   const adapter =
@@ -212,7 +236,7 @@ export async function runAgentTurnJson(
           model: input.provider.modelId,
         });
   const result = await runAgentTurnStreaming(
-    effectiveInput,
+    { ...effectiveInput, messages },
     (envelope) => {
       adapter?.consume(envelope);
       if (options.only === undefined || options.only.has(envelope.type)) {
@@ -228,7 +252,39 @@ export async function runAgentTurnJson(
     exitCode: exitCodeFor(envelopes, result),
     events: envelopes,
     result: jsonSafeTurnResult(result),
+    notices,
   };
+}
+
+/** 取消息序列里最后一条 user 消息的文本（无 user 消息时返回空串）。 */
+function lastUserText(messages: readonly import('ai').ModelMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'user') {
+      if (typeof message.content === 'string') return message.content;
+      const parts = message.content.filter(
+        (part): part is { readonly type: 'text'; readonly text: string } =>
+          part.type === 'text',
+      );
+      return parts.map((part) => part.text).join('\n');
+    }
+  }
+  return '';
+}
+
+/** 把最后一条 user 消息替换为多模态消息（其余原样保留）。 */
+function replaceLastUserMessage(
+  messages: readonly import('ai').ModelMessage[],
+  replacement: import('ai').ModelMessage,
+): import('ai').ModelMessage[] {
+  const copy = [...messages];
+  for (let index = copy.length - 1; index >= 0; index -= 1) {
+    if (copy[index]?.role === 'user') {
+      copy[index] = replacement;
+      return copy;
+    }
+  }
+  return [...messages, replacement];
 }
 
 /**

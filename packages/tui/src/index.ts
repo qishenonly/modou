@@ -1,6 +1,7 @@
 import { createElement, type ReactElement } from 'react';
 import { render, type Instance } from 'ink';
 import {
+  attachImagesToUserMessage,
   buildContextState,
   buildSystemPrompt,
   BudgetLedger,
@@ -39,6 +40,7 @@ import {
   WriteConflictDetector,
 } from '@modou/core';
 import type {
+  AttachmentRef,
   Command,
   CompactOptions,
   CompactionData,
@@ -417,7 +419,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
   const startTurn = (
     text: string,
-    opts?: { readonly tools?: ToolRegistry },
+    opts?: {
+      readonly tools?: ToolRegistry;
+      /** 附件引用（T-133 图片输入）：submit 的 attachments / /image 携带。 */
+      readonly attachments?: readonly AttachmentRef[];
+    },
   ): void => {
     if (currentController !== null) return; // 已在运行，忽略（T-041 完善排队/并入）
     // 新一轮输入开始：关闭 /context 面板（避免模态遮挡新任务；Esc 也可随时关闭）
@@ -445,10 +451,24 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
               provider: provider.id,
               model: provider.modelId,
             });
-      const messages: ModelMessage[] = [
-        ...historyMessages,
-        { role: 'user', content: text },
-      ];
+      // T-133 图片输入：提供附件时，把 user 消息构造成「文本 + 图片」的多模态
+      // 消息（本地路径读为 data URL；http(s)/data URI 透传）。按当前模型能力
+      // 描述（capabilities.images）决定构造多模态还是诚实降级——降级 notice
+      // 推入事件流（App 展示），消息保留文本 + 明确说明，绝不假装看懂图片。
+      const images = (opts?.attachments ?? []).map((ref) => ref.uri);
+      let userMessage: ModelMessage;
+      if (images.length > 0) {
+        const built = await attachImagesToUserMessage({
+          prompt: text,
+          images,
+          capabilities: provider.capabilities,
+        });
+        for (const notice of built.notices) pushNotice('warn', notice);
+        userMessage = built.messages[built.messages.length - 1];
+      } else {
+        userMessage = { role: 'user', content: text };
+      }
+      const messages: ModelMessage[] = [...historyMessages, userMessage];
       void runAgentTurnStreaming(
         {
           provider,
@@ -583,6 +603,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       },
       plan: handleSlashPlan,
       init: handleSlashInit,
+      image: handleSlashImage,
       // T-114 自定义斜杠命令：.modou/commands/*.md 注册的命令
       custom: handleCustomCommand,
     };
@@ -627,6 +648,30 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           '请手动合并初稿内容；需要重新生成可先移走原文件再 /init。',
       );
     }
+  };
+
+  /**
+   * /image（T-133）：以图片输入发起一轮——`/image <文件路径 | URL>`。
+   * 图片作为多模态附件（本地路径读为 data URL；http(s)/data URI 透传），
+   * 按当前模型能力描述构造多模态消息或诚实降级（notice 说明无法处理）。
+   * 轮次运行中拒绝（与其它斜杠命令同惯例）。
+   */
+  const handleSlashImage = (args?: string): void => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /image（等当前轮次结束后再试）');
+      return;
+    }
+    const target = (args ?? '').trim();
+    if (target.length === 0) {
+      pushNotice(
+        'info',
+        '用法：/image <文件路径 | URL>——以图片输入发起一轮（如 /image screenshot.png）',
+      );
+      return;
+    }
+    startTurn(`请查看并处理这张图片：${target}`, {
+      attachments: [{ uri: target }],
+    });
   };
 
   // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
@@ -1247,7 +1292,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   const send = (command: Command): void => {
     switch (command.type) {
       case 'submit':
-        startTurn(command.text);
+        // T-133 图片输入：submit 携带附件（AttachmentRef）时作为多模态输入
+        startTurn(command.text, {
+          ...(command.attachments !== undefined
+            ? { attachments: command.attachments }
+            : {}),
+        });
         break;
       case 'interrupt':
         currentController?.abort('用户中断');

@@ -97,6 +97,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     description:
       '分析仓库结构，生成 AGENTS.md 初稿（预览后写入；已存在则不覆盖）',
   },
+  {
+    name: 'image',
+    usage: '/image <文件路径 | URL>',
+    description:
+      '以图片输入发起一轮：文件路径或 URL 作为多模态附件（不支持图片的模型会降级说明）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -151,6 +157,8 @@ export interface SlashHandlers {
   readonly plan: (args?: string) => void;
   /** /init（T-132）：探测仓库 → 生成 AGENTS.md 初稿（预览后写入）。 */
   readonly init: () => void;
+  /** /image（T-133）：以图片输入发起一轮（文件路径 / URL 作为多模态附件）。 */
+  readonly image: (args?: string) => void;
   /**
    * 自定义命令处理器（T-114）：dispatchSlash 未命中内置命令时，在 customCommands
    * 表中查找并回调（runTui 负责展开占位 / 工具白名单 / 默认模型）。缺省不提供。
@@ -206,6 +214,9 @@ export function dispatchSlash(
       return true;
     case 'init':
       handlers.init();
+      return true;
+    case 'image':
+      handlers.image(args);
       return true;
     default: {
       // T-114 自定义斜杠命令：未命中内置 → 在命令表中查找，命中回调 handlers.custom
