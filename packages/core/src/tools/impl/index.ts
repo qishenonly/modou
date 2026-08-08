@@ -8,6 +8,7 @@ import { taskTool } from './task';
 import { todoTool } from './todo';
 import { writeTool } from './write';
 import { createWebFetchTool, type WebFetchConfig } from './webfetch';
+import { createWebSearchTool, type WebSearchConfig } from './websearch';
 
 /**
  * 工具实现（design 002 第十二节 `tools/impl/{read,write,edit,grep,glob,bash}.ts`）。
@@ -16,7 +17,8 @@ import { createWebFetchTool, type WebFetchConfig } from './webfetch';
  * 0.11.0 清单工具：todo_write（T-110，复用 SummaryState.todo 结构，ADR 0010）；
  * 0.12.0 子代理工具：task（T-120，supervisor 一层深，ADR 0011）；
  * 0.17.0 角色派发工具：agent（T-170，自定义 agents 复用子代理运行时）；
- * 0.17.0 联网工具：webfetch（T-171，risk: network，域名过滤 + 提示注入防护）。
+ * 0.17.0 联网工具：webfetch（T-171）/ websearch（T-172，risk: network，
+ * 域名过滤 + 提示注入防护）。
  */
 export * from './read';
 export * from './grep';
@@ -29,6 +31,7 @@ export * from './task';
 export * from './skill';
 export * from './agent';
 export * from './webfetch';
+export * from './websearch';
 
 /**
  * 便捷装配：把全部只读工具（read / grep / glob）加入一个工具注册表
@@ -77,17 +80,18 @@ export function defaultWriteTools(
 }
 
 /**
- * 在既有工具集上追加联网工具（0.17.0 T-171 webfetch）：复制注册表 + 注册
- * WebFetch 工具（域名过滤配置随 settings.json web 键传入；缺省不限制域名，
- * 联网默认需批准由权限模型 risk=network 兜底）。复制而非原地注册——不修改
- * 调用方传入的注册表（与 withSkillTool 同一约定）。T-172 起追加 websearch。
+ * 在既有工具集上追加联网工具（0.17.0 T-171 webfetch / T-172 websearch）：
+ * 复制注册表 + 注册 WebFetch / WebSearch 工具（域名过滤配置随 settings.json
+ * web 键传入；缺省不限制域名，联网默认需批准由权限模型 risk=network 兜底）。
+ * 复制而非原地注册——不修改调用方传入的注册表（与 withSkillTool 同一约定）。
  */
 export function withWebTools(
   registry: ToolRegistry,
-  config?: WebFetchConfig,
+  config?: WebFetchConfig & WebSearchConfig,
 ): ToolRegistry {
   const copy = new ToolRegistry();
   for (const tool of registry.list()) copy.register(tool);
   copy.register(createWebFetchTool({ config }));
+  copy.register(createWebSearchTool({ config }));
   return copy;
 }
