@@ -406,3 +406,47 @@ describe('App /compact（T-070）', () => {
     unmount();
   });
 });
+
+describe('App /todo_update（T-111 待办清单）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  test('todo_update 事件：渲染待办清单（进度条 + 勾选 + 进行中）', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    push(
+      env({
+        type: 'todo_update',
+        data: {
+          items: [
+            { id: 'a', text: '读取项目结构', status: 'done' },
+            { id: 'b', text: '实现 TodoWrite', status: 'in_progress' },
+            { text: '写测试', status: 'pending' },
+          ],
+        },
+      }),
+    );
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('待办清单');
+    expect(frame).toContain('1/3');
+    expect(frame).toContain('[x] 1. 读取项目结构');
+    expect(frame).toContain('[~] 2. 实现 TodoWrite');
+    unmount();
+  });
+
+  test('todo_update 事件：空清单隐藏待办区', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+    push(env({ type: 'todo_update', data: { items: [] } }));
+    await flush();
+    expect(lastFrame() ?? '').not.toContain('待办清单');
+    unmount();
+  });
+});

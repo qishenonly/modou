@@ -8,6 +8,7 @@ import type {
   ResumeCandidate,
   RewindPreview,
   SnapshotPoint,
+  TodoItemData,
 } from '@modou/core';
 import { ApprovalModal } from './approval';
 import { ContextPanel } from './context';
@@ -16,6 +17,7 @@ import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import { ModelPicker } from './model';
 import { ResumePicker } from './resume';
 import { SnapshotPicker } from './rewind';
+import { TodoList } from './todolist';
 import {
   StatusBar,
   ZERO_TOKEN_TOTALS,
@@ -190,6 +192,9 @@ export function App(props: AppProps): ReactElement {
   // 弹窗打开期间输入行被隐藏（阻塞输入提交），全局 Esc 让给弹窗（拒绝）。
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequestData | null>(null);
+  // 待办清单（T-111）：todo_update 事件（模型调用 todo_write 后发出）全量刷新；
+  // /resume 时 runTui 推合成 todo_update 信封回填。空数组不渲染。
+  const [todoItems, setTodoItems] = useState<TodoItemData[]>([]);
   // 键盘回调读到的是旧闭包：用 ref 镜像弹窗是否打开，供 App 层全局键判断
   const approvalOpenRef = useRef(false);
   approvalOpenRef.current = pendingApproval !== null;
@@ -250,6 +255,10 @@ export function App(props: AppProps): ReactElement {
             `已压缩：折叠 ${envelope.data.coveredTurns[0]}..${envelope.data.coveredTurns[1]} 轮，` +
               `${envelope.data.beforeTokens} → ${envelope.data.afterTokens} tokens`,
           ]);
+          break;
+        case 'todo_update':
+          // T-111 待办清单：模型调用 todo_write 后发来全量清单快照，全量刷新
+          setTodoItems([...envelope.data.items]);
           break;
         case 'notice':
           setNotices((prev) => [...prev, envelope.data.text]);
@@ -375,6 +384,8 @@ export function App(props: AppProps): ReactElement {
           当前轮的流式回复实时追加；工具调用单行状态（T-043）在消息之上。
           PgUp/PgDn 条目级上翻历史（隐藏最近 N 条），新轮自动回最新 */}
       <Box flexGrow={1} flexDirection="column">
+        {/* 待办清单（T-111）：模型调用 todo_write 后实时渲染，进度条 + 勾选 + 高亮 */}
+        {todoItems.length > 0 && <TodoList items={todoItems} />}
         {tools.length > 0 && <ToolCallList entries={tools} />}
         {history
           .slice(0, Math.max(0, history.length - scrollOffset))

@@ -16,6 +16,7 @@ import {
   projectMessages,
   rebuildReadFiles,
   rebuildSummaryState,
+  rebuildTodoState,
   resumeSession,
   runAgentTurnStreaming,
   SessionLog,
@@ -35,6 +36,7 @@ import type {
   RewindPreview,
   SnapshotPoint,
   SummaryState,
+  TodoState,
 } from '@modou/core';
 import { App } from './app';
 import { createApprovalBridge } from './approval';
@@ -241,6 +243,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 持久摘要状态（跨轮传回演进 / /resume 重建）：loop 把压缩后的状态随
   // TurnResult.summaryState 返回，此处接续为下一轮的种子。
   let summaryState: SummaryState | undefined = undefined;
+  // 会话级待办清单（T-110/T-111）：loop 把模型 todo_write 更新的清单随
+  // TurnResult.todoState 返回，此处接续为下一轮的种子；/resume 时从会话日志
+  // 重建并推合成 todo_update 信封回填 App（清单跨会话保留）。
+  let todoState: TodoState | undefined = undefined;
 
   // 合成 notice 信封（runTui 侧提示：/resume 结果等；App 是事件流纯消费者，
   // 直接经 channel 推信封即可展示——与 core 发出的 notice 同构）。
@@ -385,6 +391,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           // T-070 /compact：跨轮传回演进状态 + 压缩配置（loop 每轮请求前做
           // 「触发 → 压缩 → 投影」；压缩事件/日志由 loop 发出）。
           summaryState,
+          // T-110 TodoWrite：会话级待办清单种子（跨轮演进 / /resume 重建）。
+          todoState,
           compact: compactConfig,
           options: {
             maxTurns: startup.maxTurns,
@@ -399,6 +407,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           // （含迟滞记账 turnCount / lastCompactedTurn）。
           if (result.summaryState !== undefined) {
             summaryState = result.summaryState;
+          }
+          // T-110：模型更新过的待办清单随 TurnResult 演进，接续为下一轮种子。
+          if (result.todoState !== undefined) {
+            todoState = result.todoState;
           }
         })
         .catch(() => {
@@ -597,6 +609,21 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     // turnCount / lastCompactedTurn 一并恢复）——resume 后继续增量压缩，且
     // 不因阈值仍超而立即重复压缩。
     summaryState = rebuildSummaryState(resumed.records);
+    // T-111：重建待办清单（从会话日志 todo_update 条目，ADR 0010「日志是唯一
+    // 真相」——清单跨会话保留），并推合成 todo_update 信封回填 App 渲染。
+    todoState = rebuildTodoState(resumed.records);
+    if (todoState !== undefined && todoState.items.length > 0) {
+      syntheticSeq += 1;
+      channel.push({
+        v: 1 as const,
+        seq: syntheticSeq,
+        ts: Date.now(),
+        agent: 'main',
+        turn: 0,
+        type: 'todo_update',
+        data: { items: todoState.items },
+      });
+    }
     initialTotals = {
       inputTokens: resumed.usage.inputTokens ?? 0,
       outputTokens: resumed.usage.outputTokens ?? 0,
@@ -746,6 +773,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     for (const seed of options.readFiles ?? []) readFiles.add(seed);
     budget = new BudgetLedger();
     summaryState = undefined;
+    todoState = undefined;
     initialTotals = undefined;
     contextSnapshot = null;
     rerender();
@@ -1074,6 +1102,13 @@ export type {
   DiffLine,
   DiffLineKind,
 } from './tools';
+export {
+  TodoList,
+  countStatuses,
+  formatTodoBar,
+  formatTodoRows,
+} from './todolist';
+export type { TodoListProps } from './todolist';
 export { createEventChannel } from './stream';
 export type { EventChannel } from './stream';
 export { assembleTuiStartup } from './startup';
