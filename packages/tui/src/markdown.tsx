@@ -74,6 +74,15 @@ export class FrameThrottle {
     }
   }
 
+  /** 清空缓冲与计时器（新一轮回复从空开始）。 */
+  clear(): void {
+    if (this.timerId !== null) {
+      clearTimeout(this.timerId);
+      this.timerId = null;
+    }
+    this.pending = '';
+  }
+
   /** 尚未提交的累积文本。 */
   get pendingText(): string {
     return this.pending;
@@ -82,24 +91,30 @@ export class FrameThrottle {
 
 /**
  * 流式文本 hook：App 消费 text_delta 的入口。
- * 返回 { text, append, flush }：
+ * 返回 { text, append, flush, reset }：
  * - text：已提交的累积文本（每 frameMs 合并更新一次，供 Markdown 渲染）；
  * - append：追加一段 delta（帧节流，不立即渲染）；
- * - flush：立即提交缓冲（turn_end / error / 卸载时调用，幂等）。
+ * - flush：立即提交缓冲并**返回本轮完整文本**（turn_end / error 时用于封存进
+ *   会话历史；幂等，sink 同步执行所以返回值必然含最新累积）；
+ * - reset：清空缓冲与已提交文本（新一轮回复从空开始）。
  */
 export function useFrameThrottledText(frameMs: number = DEFAULT_FRAME_MS): {
   readonly text: string;
   readonly append: (delta: string) => void;
-  readonly flush: () => void;
+  readonly flush: () => string;
+  readonly reset: () => void;
 } {
   const [text, setText] = useState('');
+  // 同步镜像的完整文本：sink 同步执行，flush 后立即读到最新值
+  // （setText 是异步的，异步事件循环里不能依赖 state 变量）。
+  const fullRef = useRef('');
   // FrameThrottle 只在首次渲染时构造一次（frameMs 按挂载期固定，App 用常量）。
   const throttleRef = useRef<FrameThrottle | null>(null);
   if (throttleRef.current === null) {
-    throttleRef.current = new FrameThrottle(
-      (committed) => setText((prev) => prev + committed),
-      frameMs,
-    );
+    throttleRef.current = new FrameThrottle((committed) => {
+      fullRef.current += committed;
+      setText(fullRef.current);
+    }, frameMs);
   }
   // 卸载时提交残留缓冲（幂等，避免丢尾）。
   useEffect(() => {
@@ -110,7 +125,15 @@ export function useFrameThrottledText(frameMs: number = DEFAULT_FRAME_MS): {
   return {
     text,
     append: (delta) => throttleRef.current?.append(delta),
-    flush: () => throttleRef.current?.commit(),
+    flush: () => {
+      throttleRef.current?.commit();
+      return fullRef.current;
+    },
+    reset: () => {
+      throttleRef.current?.clear();
+      fullRef.current = '';
+      setText('');
+    },
   };
 }
 

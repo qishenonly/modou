@@ -12,7 +12,12 @@ import { findTask } from '../packages/core/src/eval/tasks';
 const ids =
   process.argv.slice(2).length > 0
     ? process.argv.slice(2)
-    : ['fix-average', 'feature-format-bytes', 'refactor-pricing-round', 'read-fibonacci-zero'];
+    : [
+        'fix-average',
+        'feature-format-bytes',
+        'refactor-pricing-round',
+        'read-fibonacci-zero',
+      ];
 
 const tasks = ids.map((id) => {
   const t = findTask(id);

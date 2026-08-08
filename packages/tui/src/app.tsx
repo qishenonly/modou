@@ -122,7 +122,22 @@ export function App(props: AppProps): ReactElement {
     text: assistantText,
     append: appendDelta,
     flush: flushDelta,
+    reset: resetDelta,
   } = useFrameThrottledText(DEFAULT_FRAME_MS);
+  // 会话历史（Claude Code 式布局）：用户消息 + 已封存的 assistant 回复按序展示。
+  // 用户提交的问题即时入 history（带 `> ` 前缀），assistant 回复在 turn_end /
+  // error / 下次提交时从流式缓冲封存进来——输入不再被吞。
+  const [history, setHistory] = useState<
+    Array<{ role: 'user' | 'assistant'; text: string }>
+  >([]);
+  // 封存当前流式缓冲到历史（turn_end / error / 下次提交前调用；幂等）。
+  const sealAssistant = (): void => {
+    const sealed = flushDelta();
+    if (sealed.length > 0) {
+      setHistory((prev) => [...prev, { role: 'assistant', text: sealed }]);
+    }
+    resetDelta();
+  };
   // 运行状态：由 turn_start / turn_end 推导（T-045 状态栏消费）
   const [running, setRunning] = useState(false);
   const [lastTurn, setLastTurn] = useState(0);
@@ -175,7 +190,7 @@ export function App(props: AppProps): ReactElement {
     const apply = (envelope: Envelope): void => {
       switch (envelope.type) {
         case 'turn_start':
-          // 防御：前一轮若有残留缓冲立即落盘（正常情况 turn_end 已 flush）
+          // 防御：前一轮若有残留缓冲立即提交（正常情况 turn_end 已封存）
           flushDelta();
           setRunning(true);
           setLastTurn(envelope.data.turn);
@@ -185,8 +200,8 @@ export function App(props: AppProps): ReactElement {
           appendDelta(envelope.data.delta);
           break;
         case 'turn_end':
-          // 帧尾立即提交，保证最终文本完整可见
-          flushDelta();
+          // 帧尾封存本轮回复进历史（完整文本 + 重置缓冲），保证每轮独立展示
+          sealAssistant();
           setRunning(false);
           break;
         case 'usage':
@@ -206,7 +221,8 @@ export function App(props: AppProps): ReactElement {
           setNotices((prev) => [...prev, envelope.data.text]);
           break;
         case 'error':
-          flushDelta();
+          // 错误终止：封存已产出的部分回复（002 4.4），再展示错误
+          sealAssistant();
           setRunning(false);
           setError(envelope.data.message);
           break;
@@ -285,6 +301,10 @@ export function App(props: AppProps): ReactElement {
 
   // 输入框 → Command 通道（002 3.3 表：submit 普通文本 / slash 斜杠命令）
   const handleSubmit = (text: string): void => {
+    // 用户消息立即进历史（带 `> ` 前缀，Claude Code 式）；上一轮残留的部分回复
+    // （如被打断）先封存，避免丢文本。随后 reset 让本轮流式回复从空开始。
+    sealAssistant();
+    setHistory((prev) => [...prev, { role: 'user', text }]);
     send({ type: 'submit', text });
   };
   const handleSlash = (name: string, args?: string): void => {
@@ -297,10 +317,20 @@ export function App(props: AppProps): ReactElement {
 
   return (
     <Box flexDirection="column" minHeight={5}>
-      {/* 消息/输出区（markdown.tsx 渲染 + 帧节流，T-042） */}
+      {/* 消息/输出区（markdown.tsx 渲染 + 帧节流，T-042）。
+          布局：历史对话在上（用户消息 `> ` 前缀 + assistant 回复逐轮封存），
+          当前轮的流式回复实时追加；工具调用展示（T-043）在消息之上 */}
       <Box flexGrow={1} flexDirection="column">
-        {/* 工具调用展示（T-043）：工具区在上、输出区在下；折叠/展开 + diff 高亮 */}
         {tools.length > 0 && <ToolCallList entries={tools} />}
+        {history.map((entry, index) =>
+          entry.role === 'user' ? (
+            <Text key={index} color="cyan">
+              &gt; {entry.text}
+            </Text>
+          ) : (
+            <Markdown key={index} text={entry.text} />
+          ),
+        )}
         {assistantText.length > 0 && <Markdown text={assistantText} />}
         {notices.map((notice, index) => (
           <Text key={index} color="yellow">
