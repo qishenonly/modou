@@ -94,8 +94,8 @@ export interface RewindPreview {
   /** 将被删除的文件（目标快照之后新增、影子已跟踪的）。 */
   readonly deleteFiles: readonly string[];
   /**
-   * 将被覆盖且当前工作树与最近快照不同的文件（用户手动改过 / 未入快照的改动，
-   * 还原会丢失这些改动）——回滚前必须提示差异。
+   * 将被 reset --hard 覆盖的脏已跟踪文件全集（工作树 / 索引与 HEAD 不同的文件，
+   * 含用户手动改过、未入快照的改动）——还原会丢失这些改动，回滚前必须提示差异。
    */
   readonly overwriteFiles: readonly string[];
 }
@@ -690,7 +690,10 @@ export class SnapshotStore {
       if (item.status === 'A') deleteFiles.push(item.path);
       else restoreFiles.push(item.path);
     }
-    // 工作树 / 索引与 HEAD 不同的已跟踪文件（会被 reset --hard 覆盖）
+    // 工作树 / 索引与 HEAD 不同的已跟踪文件（会被 reset --hard 覆盖）——
+    // 「脏的已跟踪文件全集」（git diff HEAD 与 git diff --cached 的并集）。
+    // 不与被还原文件求交：用户手动改过的文件（无论是否在 restore/delete 集）
+    // 都会被 reset --hard 覆盖，必须全部在回滚前提示差异。
     const dirty = new Set<string>();
     const collectDirty = async (args: string[]): Promise<void> => {
       const res = await runGit(args, env, {
@@ -703,7 +706,10 @@ export class SnapshotStore {
     };
     await collectDirty(['diff', '--name-only', '-z', 'HEAD']);
     await collectDirty(['diff', '--cached', '--name-only', '-z']);
-    const overwriteFiles = restoreFiles.filter((path) => dirty.has(path));
+    // overwriteFiles = 脏文件全集（不是 restoreFiles ∩ dirty）：还原会覆盖所有
+    // 脏文件——即使某文件不在「目标快照→HEAD 的变更集」里（用户手动改过），
+    // reset --hard 同样把它打回目标点，不提示差异就会悄悄丢改动。
+    const overwriteFiles = [...dirty];
     return { snapshotId, restoreFiles, deleteFiles, overwriteFiles };
   }
 

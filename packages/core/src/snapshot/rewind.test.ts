@@ -191,6 +191,38 @@ describe('回滚预览：手动改动提示差异（T-102）', () => {
     expect(preview.restoreFiles.length).toBeGreaterThan(0);
   });
 
+  test('手动改过但不在还原/删除集的已跟踪文件也出现在 overwriteFiles（脏文件全集）', async () => {
+    const { project, store } = makeIsolation();
+    // P0：a.txt + d.txt；P1：只改 a.txt（d.txt 在 P0→HEAD 未变）
+    writeFileSync(join(project, 'a.txt'), '1\n', 'utf8');
+    writeFileSync(join(project, 'd.txt'), '1\n', 'utf8');
+    const p0 = (await store.snapshot())?.id as string;
+    writeFileSync(join(project, 'a.txt'), '2\n', 'utf8');
+    await store.snapshot();
+    // 用户手动改 d.txt：d 不在 restoreFiles（目标快照→HEAD 之间没动过它），
+    // 但 reset --hard 回滚同样会把它打回 P0——不提示差异就悄悄丢改动。
+    writeFileSync(join(project, 'd.txt'), 'user-manual\n', 'utf8');
+
+    const preview = await store.previewRewind(p0);
+    expect(preview.restoreFiles).toContain('a.txt');
+    expect(preview.overwriteFiles).toContain('d.txt'); // 修复①：脏文件全集
+    // a.txt 在 P1 已入快照，与 HEAD 一致，不是脏文件
+    expect(preview.overwriteFiles).not.toContain('a.txt');
+  });
+
+  test('已暂存（git add）的改动同样进入 overwriteFiles（git diff --cached 并集）', async () => {
+    const { project, store } = makeIsolation();
+    writeFileSync(join(project, 'a.txt'), '1\n', 'utf8');
+    const p0 = (await store.snapshot())?.id as string;
+    // 影子索引里暂存一个改动：工作树与 HEAD 相同，但索引与 HEAD 不同
+    writeFileSync(join(project, 'a.txt'), 'staged\n', 'utf8');
+    shadowGit(store, ['add', 'a.txt'], project);
+    writeFileSync(join(project, 'a.txt'), '1\n', 'utf8'); // 工作树改回 HEAD 内容
+
+    const preview = await store.previewRewind(p0);
+    expect(preview.overwriteFiles).toContain('a.txt'); // 暂存改动 → 提示差异
+  });
+
   test('还原到 degraded / 不存在的快照报错', async () => {
     const { store } = await buildThreePoints();
     await expect(store.rewindTo('deadbeef'.repeat(5))).rejects.toThrow(
