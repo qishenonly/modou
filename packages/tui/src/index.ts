@@ -92,6 +92,28 @@ function defaultCompactionThreshold(provider: ModelProvider): number {
  *   两者都先打断在跑的轮次、以 deny 清空未裁决的审批请求、移除信号监听、
  *   结束事件流、卸载 Ink，保证状态干净无悬挂。
  */
+
+// ---------------------------------------------------------------------------
+// 备用屏幕（Claude Code 式全屏）
+// ---------------------------------------------------------------------------
+
+/** 进入备用屏幕缓冲：接管整个终端、隐藏滚动历史（vim / less / Claude Code 惯例）。 */
+const ALT_SCREEN_ENTER = '\x1b[?1049h';
+/** 离开备用屏幕：恢复进入前的终端画面（回到 shell 提示符与历史）。 */
+const ALT_SCREEN_LEAVE = '\x1b[?1049l';
+
+/** 若 stdout 是 TTY（真实终端），进入备用屏幕。测试/管道不启用（isTTY 为假）。 */
+function enterAltScreen(stdout: NodeJS.WriteStream | undefined): void {
+  const out = stdout ?? process.stdout;
+  if (out.isTTY === true) out.write(ALT_SCREEN_ENTER);
+}
+
+/** 若 stdout 是 TTY，离开备用屏幕（与 enterAltScreen 成对，退出时调用）。 */
+function leaveAltScreen(stdout: NodeJS.WriteStream | undefined): void {
+  const out = stdout ?? process.stdout;
+  if (out.isTTY === true) out.write(ALT_SCREEN_LEAVE);
+}
+
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // T-080 配置装配：内置默认 → ~/.modou/settings.json → <project>/.modou/settings.json
   // → MODOU_* 环境变量 → 显式选项（最高优先）；provider / permission / maxTurns /
@@ -722,6 +744,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     channel.end(); // 结束事件流，App 的 for-await 得到 done
     void app?.waitUntilExit(); // 先占住 Ink 的退出 promise（unmount 会同步 resolve 它）
     app?.unmount(); // 同步收尾：移除进程退出钩子 / resize / 恢复 console
+    leaveAltScreen(options.stdout); // 还原终端画面（与进入成对，真实 TTY 才生效）
     resolveResult?.({ exitCode });
   };
 
@@ -730,6 +753,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   };
 
   // index.ts 是 .ts 文件，用 createElement 而非 JSX（等价，省去把入口改名 .tsx）
+  // Claude Code 式全屏：真实终端下先进入备用屏幕（接管整屏），退出时还原
+  enterAltScreen(options.stdout);
   app = render(renderApp(), {
     // Ctrl+C 由 App 的 useInput 接管（发 Command 中断 + 干净退出），
     // 不用 Ink 内建的 exitOnCtrlC（那会直接 unmount，跳过我们的收尾）。
