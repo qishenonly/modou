@@ -558,10 +558,8 @@ export class GuiBridge {
       cacheReadTokens: resumed.usage.cacheReadTokens ?? 0,
       cacheWriteTokens: resumed.usage.cacheWriteTokens ?? 0,
     });
-    this.pushNotice(
-      'info',
-      `已恢复会话 ${resumed.sessionId}（${resumed.entryCount} 条记录）。继续输入即可续写同一会话。`,
-    );
+    // 恢复成功不推 notice：会话切换由 READY（sessionId）驱动侧栏高亮与线程播种，
+    // 对话流不刷系统消息（Claude Desktop 惯例）。
   }
 
   /** /clear：清空上下文并开启新会话（原日志保留）。 */
@@ -578,7 +576,6 @@ export class GuiBridge {
 
   private async clearSession(): Promise<void> {
     await this.historyRefresh;
-    const oldId = this.sessionLog?.sessionId;
     this.openSession();
     this.historyMessages = [];
     this.loggedUserCount = 0;
@@ -591,13 +588,7 @@ export class GuiBridge {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
-    this.pushNotice(
-      'info',
-      `已清空上下文并开启新会话 ${this.sessionLog?.sessionId ?? ''}` +
-        (oldId !== undefined
-          ? `；原会话 ${oldId} 日志保留，可用 /resume 恢复`
-          : ''),
-    );
+    // 清空成功不推 notice：新会话由 READY（sessionId/totals）驱动，侧栏高亮随之刷新
   }
 
   /** /model：切换模型（带 ID 直接切换；无参时渲染进程打开候选列表）。 */
@@ -644,10 +635,7 @@ export class GuiBridge {
     if (this.sessionLog === null) this.openSession();
     await this.sessionLog?.appendModelSwitch(from, modelId);
     this.broadcastReady();
-    this.pushNotice(
-      'info',
-      `已切换到模型 ${modelId}（原 ${from}；历史上下文延续）`,
-    );
+    // 切换成功不推 notice：状态栏模型名随 READY 刷新（对话流不刷系统消息）
   }
 
   private rebuildProvider(modelId: string): ModelProvider {
