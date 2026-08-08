@@ -209,6 +209,14 @@ export interface TurnResult {
   readonly turns: number;
   /** 终止时的状态机状态 */
   readonly state: LoopState;
+  /**
+   * 本轮结束时的会话级已读文件集合（0.12.1 修复）：loop 持续维护的 readFiles
+   * 快照（跨轮次的已读累计，Write/Edit 防盲写的生产者种子）。子代理派发器据此
+   * 把子代理本地已读集合的增量并入父集合（共享 Set 语义兑现——子代理 Read 过
+   * 的文件主代理可直接 Edit/Write）。调用方若跨轮次自行持有 readFiles，需与
+   * 本返回值合并（TUI 从会话日志重建，见 refreshHistory）。
+   */
+  readonly readFiles: ReadonlySet<string>;
   /** termination === 'error' 时的归一错误 */
   readonly error?: ProviderError;
   /** termination === 'interrupted' 时的中断原因（来自 abort signal） */
@@ -730,6 +738,9 @@ export async function runAgentTurn(
       termination,
       turns: turn,
       state,
+      // 已读集合快照（0.12.1 修复）：随 TurnResult 带出——子代理派发器据此把
+      // 子代理本地已读集合的增量并入父集合（共享 Set 语义兑现）。
+      readFiles,
       ...(error !== undefined ? { error } : {}),
       ...(termination === 'interrupted' && interruptedReason !== undefined
         ? { interruptedReason }

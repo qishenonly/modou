@@ -263,6 +263,14 @@ export function createSubagentRunner(
       if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
     }
 
+    // 0.12.1 修复：共享 Set 语义兑现——把子代理本地 readFiles 集合的增量并入
+    // 父集合。子代理内部的 runAgentTurn 从父集合复制出独立集合，Read 过的文件
+    // 只进了子代理副本；不回传的话，主代理后续 Edit/Write 该文件会被防盲写
+    // 拒绝（文件已存在且主代理从未读过，002 5.2 防盲写覆盖）。
+    for (const path of result.readFiles) {
+      options.readFiles.add(path);
+    }
+
     if (timedOut) {
       return {
         ok: false,

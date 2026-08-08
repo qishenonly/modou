@@ -1,4 +1,12 @@
 import { describe, expect, test } from 'bun:test';
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ModelMessage, ToolSet } from 'ai';
 import { z } from 'zod';
 import type { ProviderCapabilities } from '../provider/capabilities';
@@ -394,5 +402,45 @@ describe('子代理隔离（T-121）', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain('一层深');
     expect(stub.seenMessages).toHaveLength(0); // 未发起任何 provider 请求
+  });
+});
+
+describe('子代理已读集合回传（0.12.1 修复）', () => {
+  test('子代理 Read 的文件并入父已读集合：主代理可直接覆盖写（防盲写不拒）', async () => {
+    // 真实文件：子代理用真实 read 工具读到它，主代理随后用真实 write 工具
+    // 覆盖写它——若子代理的已读没回传，write 的防盲写检查会以
+    // not_read_before_overwrite 拒绝（文件已存在且主代理从未读过）。
+    const dir = mkdtempSync(join(tmpdir(), 'modou-sub-read-'));
+    const target = join(dir, 'shared.txt');
+    writeFileSync(target, '原始内容');
+
+    const stub = new StubProvider([
+      taskUseEvents('读取 shared.txt 并回报内容'),
+      toolUseEvents('read', { path: target }, 'call-sub-read'),
+      textEvents('文件内容是：原始内容'),
+      toolUseEvents(
+        'write',
+        { path: target, content: '新内容', overwrite: true },
+        'call-main-write',
+      ),
+      textEvents('已覆盖写 shared.txt。'),
+    ]);
+
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: parentRegistry(),
+        options: { maxTurns: 6 },
+      },
+      () => {},
+    );
+
+    expect(result.termination).toBe('end_turn');
+    // 已读集合带出子代理 Read 过的文件（TurnResult.readFiles；realpath 口径）
+    const realTarget = realpathSync(target);
+    expect(result.readFiles.has(realTarget)).toBe(true);
+    // 主代理随后覆盖写成功：文件内容已变（若防盲写拒绝，文件保持原文案）
+    expect(readFileSync(target, 'utf8')).toBe('新内容');
   });
 });
