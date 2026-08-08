@@ -1,6 +1,10 @@
 {
   "files": [],
-  "references": [{ "path": "./packages/core" }, { "path": "./packages/tui" }],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/tui" },
+    { "path": "./packages/gui" }
+  ],
   "compilerOptions": {
     "strict": true,
     "composite": true,

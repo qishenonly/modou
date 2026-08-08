@@ -1,6 +1,7 @@
 import { cp, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * fixture 仓库管理（T-035）。
@@ -9,8 +10,15 @@ import { join, resolve } from 'node:path';
  * 模型在副本上干活，判定也在副本上进行；仓库内的 fixture 是只读模板。
  */
 
-/** fixture 根目录（packages/core/src/eval/fixtures）。 */
-export const FIXTURES_ROOT = resolve(import.meta.dir, 'fixtures');
+/**
+ * fixture 根目录（packages/core/src/eval/fixtures）。
+ * 用 `import.meta.url` 而非 Bun 专属的 `import.meta.dir`：core 需在 Node/Electron
+ * （GUI 主进程 bundle 进 core）与 Bun 双运行时下可加载，`fileURLToPath(new URL(...))`
+ * 是两者都支持的跨运行时写法。
+ */
+export const FIXTURES_ROOT = fileURLToPath(
+  new URL('./fixtures', import.meta.url),
+);
 
 /** 列出所有可用 fixture 目录名（排序稳定，评测报告用）。 */
 export async function listFixtures(): Promise<string[]> {

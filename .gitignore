@@ -5,6 +5,7 @@ build/
 *.tsbuildinfo
 *.tgz
 *.bun-build
+*.timestamp-*
 
 # 运行时与本地状态
 .env

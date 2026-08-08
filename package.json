@@ -29,6 +29,8 @@
     "pack": "npm pack",
     "pack:dry": "npm pack --dry-run",
     "pack:verify": "bun scripts/pack-verify.ts",
+    "gui": "cd packages/gui && bun run build && bun run start",
+    "gui:dev": "cd packages/gui && bun run dev",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "bun test",
