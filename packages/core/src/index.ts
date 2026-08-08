@@ -1,4 +1,4 @@
-export const version = '0.11.0';
+export const version = '0.12.0';
 
 export * from './provider';
 export * from './runtime';
