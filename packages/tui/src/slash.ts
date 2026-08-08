@@ -91,6 +91,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
       '计划模式：只读研究 → 结构化计划 → 批准/修改/拒绝（批准后切执行模式）；' +
       'load <路径> 从 markdown 文件读回计划（手动编辑后再执行）',
   },
+  {
+    name: 'init',
+    usage: '/init',
+    description:
+      '分析仓库结构，生成 AGENTS.md 初稿（预览后写入；已存在则不覆盖）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -143,6 +149,8 @@ export interface SlashHandlers {
   readonly rewind: () => void;
   readonly snapshots: (args?: string) => void;
   readonly plan: (args?: string) => void;
+  /** /init（T-132）：探测仓库 → 生成 AGENTS.md 初稿（预览后写入）。 */
+  readonly init: () => void;
   /**
    * 自定义命令处理器（T-114）：dispatchSlash 未命中内置命令时，在 customCommands
    * 表中查找并回调（runTui 负责展开占位 / 工具白名单 / 默认模型）。缺省不提供。
@@ -195,6 +203,9 @@ export function dispatchSlash(
       return true;
     case 'plan':
       handlers.plan(args);
+      return true;
+    case 'init':
+      handlers.init();
       return true;
     default: {
       // T-114 自定义斜杠命令：未命中内置 → 在命令表中查找，命中回调 handlers.custom

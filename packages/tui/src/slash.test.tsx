@@ -239,7 +239,7 @@ function readAllSessionLines(homeDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('dispatchSlash（T-082 分发器）', () => {
-  test('八个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
+  test('九个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
     const called: string[] = [];
     const handlers: SlashHandlers = {
       help: () => called.push('help'),
@@ -251,6 +251,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
       rewind: () => called.push('rewind'),
       snapshots: (args) => called.push(`snapshots:${args ?? ''}`),
       plan: (args) => called.push(`plan:${args ?? ''}`),
+      init: () => called.push('init'),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -285,6 +286,9 @@ describe('dispatchSlash（T-082 分发器）', () => {
       dispatchSlash('snapshots', '--cleanup', handlers, onUnimplemented),
     ).toBe(true);
     expect(dispatchSlash('plan', '重构', handlers, onUnimplemented)).toBe(true);
+    expect(dispatchSlash('init', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -299,13 +303,14 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'rewind',
       'snapshots:--cleanup',
       'plan:重构',
+      'init',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含内置命令与 0.11.0 /plan', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -316,6 +321,7 @@ describe('/help（T-082）', () => {
       'rewind',
       'snapshots',
       'plan',
+      'init',
     ]);
   });
 
@@ -624,6 +630,7 @@ describe('自定义斜杠命令分发（T-114）', () => {
       rewind: () => called.push('rewind'),
       snapshots: () => called.push('snapshots'),
       plan: () => called.push('plan'),
+      init: () => called.push('init'),
       custom: (command, args) =>
         called.push(`custom:${command.name}:${args ?? ''}`),
     };

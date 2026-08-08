@@ -28,6 +28,7 @@ import {
   rebuildTodoState,
   resumeSession,
   runAgentTurnStreaming,
+  runInit,
   savePlanToFile,
   serializeStructuredPlan,
   SessionLog,
@@ -581,6 +582,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         void handleSlashSnapshots(args);
       },
       plan: handleSlashPlan,
+      init: handleSlashInit,
       // T-114 自定义斜杠命令：.modou/commands/*.md 注册的命令
       custom: handleCustomCommand,
     };
@@ -601,6 +603,30 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   /** /help（T-082）：列出全部命令与用法（BUILTIN_SLASH_COMMANDS + 自定义命令）。 */
   const handleSlashHelp = (): void => {
     pushNotice('info', renderHelpText(customCommandInfos));
+  };
+
+  /**
+   * /init（T-132）：分析仓库结构 → 生成 AGENTS.md 初稿。
+   * 预览（整篇 draft 以 notice 展示）+ 写入；AGENTS.md 已存在时不覆盖，
+   * 提示用户手动合并（绝不静默覆盖已有指令文件）。同步操作，一次完成。
+   */
+  const handleSlashInit = (): void => {
+    const result = runInit(cwd);
+    // 预览：整篇初稿进输出区（用户可滚动查看，不满意可改）
+    pushNotice('info', result.draft);
+    if (result.wrote) {
+      pushNotice(
+        'info',
+        `已写入 ${result.targetPath}（基于仓库结构探测生成的初稿）。` +
+          '请核对并补充后使用——探测结果是尽力而为，不是权威事实。',
+      );
+    } else {
+      pushNotice(
+        'warn',
+        `AGENTS.md 已存在（${result.targetPath}），未覆盖。` +
+          '请手动合并初稿内容；需要重新生成可先移走原文件再 /init。',
+      );
+    }
   };
 
   // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
