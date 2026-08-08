@@ -125,6 +125,30 @@ describe('deriveAgentRegistry', () => {
     expect(derived.names()).toEqual(['read']);
   });
 
+  test('agent 工具永不进入角色注册表（0.17.0 design-checker 偏离 4：派发型工具一并剔除）', () => {
+    const registry = new ToolRegistry();
+    registry.register(readTool);
+    registry.register(createAgentTool({ resolve: () => undefined }));
+    registry.register(taskTool);
+    // 未声明白名单 = 继承父代理完整工具集——继承同样剔除 agent / task
+    const derived = deriveAgentRegistry(registry, []);
+    expect(derived.has(AGENT_TOOL_NAME)).toBe(false);
+    expect(derived.has(TASK_TOOL_NAME)).toBe(false);
+    expect(derived.names()).toEqual(['read']);
+  });
+
+  test('白名单显式列出 agent / task 也被剔除（剔除不依赖白名单内容）', () => {
+    const registry = new ToolRegistry();
+    registry.register(readTool);
+    registry.register(createAgentTool({ resolve: () => undefined }));
+    const derived = deriveAgentRegistry(registry, [
+      'read',
+      AGENT_TOOL_NAME,
+      TASK_TOOL_NAME,
+    ]);
+    expect(derived.names()).toEqual(['read']);
+  });
+
   test('父注册表 undefined = 空注册表（无工具）', () => {
     const derived = deriveAgentRegistry(undefined, []);
     expect(derived.size).toBe(0);

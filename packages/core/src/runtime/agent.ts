@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ApprovalGate } from '../permission/approval';
 import { buildSystemPrompt } from '../prompt/system';
 import type { ModelProvider } from '../provider/types';
+import { AGENT_TOOL_NAME } from '../tools/impl/agent';
 import { TASK_TOOL_NAME } from '../tools/impl/task';
 import { ToolRegistry } from '../tools/registry';
 import {
@@ -82,7 +83,9 @@ export interface AgentRunnerOptions {
  * - 白名单非空 = 只含白名单内且父代理存在的工具——白名单外的工具根本不在
  *   注册表里，模型调用在 ① Resolve 即被拒（越界拒绝，G-0.17.0 验收门）；
  * - 父代理没有的工具名静默跳过（权限继承不超父，ADR 0011）；
- * - task 工具永不进入（一层深限制，ADR 0011 双保险）。
+ * - task 工具与 agent 工具永不进入（一层深限制，ADR 0011 双保险；
+ *   0.17.0 design-checker 偏离 4：agent 与 task 同为「派发型」工具，角色派发
+ *   内部再派发角色 = 二层嵌套，同样禁止）。
  */
 export function deriveAgentRegistry(
   parent: ToolRegistry | undefined,
@@ -98,6 +101,7 @@ export function deriveAgentRegistry(
     const tool = parent.find(name);
     if (tool === undefined) continue;
     if (tool.name === TASK_TOOL_NAME) continue;
+    if (tool.name === AGENT_TOOL_NAME) continue;
     derived.register(tool);
   }
   return derived;
