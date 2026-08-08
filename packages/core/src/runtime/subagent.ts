@@ -140,6 +140,28 @@ function toResult(agentId: string, result: TurnResult): SubagentResult {
   }
 }
 
+/** 组合多个中止信号：任一触发即中止；无信号时返回 undefined。 */
+function combineSignals(
+  signals: ReadonlyArray<AbortSignal | undefined>,
+): AbortSignal | undefined {
+  const present = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  const controller = new AbortController();
+  for (const signal of present) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      return controller.signal;
+    }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), {
+      once: true,
+    });
+  }
+  return controller.signal;
+}
+
 /** 构造子代理派发函数（Task 工具经 ToolContext.runSubagent 调用）。 */
 export function createSubagentRunner(
   options: SubagentRunnerOptions,
@@ -162,37 +184,73 @@ export function createSubagentRunner(
     const system = buildSubagentSystemPrompt(registry);
     const agentId = `sub-${randomUUID().slice(0, 8)}`;
 
+    // —— 墙钟超时（T-121 独立预算的一部分）：request.timeoutMs 到点即中止 ——
+    // 定时器到点 → 中止超时信号 → 组合信号中止 → 子代理 provider 调用立即以
+    // aborted 失败 → 子代理终止为 interrupted；下方据 timedOut 标志把结果归一
+    // 为「超时」失败（而非普通中断），回喂主代理自纠（错误即数据，002 5.3）。
+    let timedOut = false;
+    let timeoutSignal: AbortSignal | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    if (request.timeoutMs !== undefined) {
+      const controller = new AbortController();
+      timeoutSignal = controller.signal;
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        controller.abort(new DOMException('子代理执行超时', 'TimeoutError'));
+      }, request.timeoutMs);
+    }
+
     // —— 独立预算 / 独立消息历史 / 独立上下文窗口 ——
     // 只传 request.prompt 首条 user 消息（不携带父代理历史）；maxTurns /
     // maxTokens 只取 request 自身的（父代理预算不向下传导）；同一 provider /
     // 审批闸门 / cwd / 已读集合。
-    const result = await options.runTurn(
-      {
-        provider: options.provider,
-        system,
-        messages: [{ role: 'user', content: request.prompt }],
-        // 派生的空注册表不传给模型（模型没有工具可用），与主 loop 的
-        // tools 缺省语义一致
-        ...(registry.size > 0 ? { tools: registry } : {}),
-        readFiles: options.readFiles,
-        cwd: options.cwd,
-        approval: options.approval,
-        options: {
-          maxTurns: request.maxTurns ?? SUBAGENT_DEFAULT_MAX_TURNS,
-          ...(request.maxTokens !== undefined
-            ? { maxTokens: request.maxTokens }
-            : {}),
-          // 主代理的中断信号透传给子代理：主代理被打断时子代理同步停
-          ...(options.abortSignal !== undefined
-            ? { abortSignal: options.abortSignal }
-            : {}),
+    const subagentAbortSignal = combineSignals([
+      options.abortSignal,
+      timeoutSignal,
+    ]);
+
+    let result: TurnResult;
+    try {
+      result = await options.runTurn(
+        {
+          provider: options.provider,
+          system,
+          messages: [{ role: 'user', content: request.prompt }],
+          // 派生的空注册表不传给模型（模型没有工具可用），与主 loop 的
+          // tools 缺省语义一致
+          ...(registry.size > 0 ? { tools: registry } : {}),
+          readFiles: options.readFiles,
+          cwd: options.cwd,
+          approval: options.approval,
+          options: {
+            maxTurns: request.maxTurns ?? SUBAGENT_DEFAULT_MAX_TURNS,
+            ...(request.maxTokens !== undefined
+              ? { maxTokens: request.maxTokens }
+              : {}),
+            // 父中断信号 + 超时信号组合后透传给子代理
+            ...(subagentAbortSignal !== undefined
+              ? { abortSignal: subagentAbortSignal }
+              : {}),
+          },
+          subagentDepth: SUBAGENT_DEPTH_LIMIT,
         },
-        subagentDepth: SUBAGENT_DEPTH_LIMIT,
-      },
-      // T-122：子代理运行时事件在此包上 agentId 转发（本版暂不转发，
-      // commit 3 接入——子代理过程对主循环不可见，只回最终结论）。
-      () => {},
-    );
+        // T-122：子代理运行时事件在此包上 agentId 转发（本版暂不转发，
+        // commit 3 接入——子代理过程对主循环不可见，只回最终结论）。
+        () => {},
+      );
+    } finally {
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+    }
+
+    if (timedOut) {
+      return {
+        ok: false,
+        text: result.text,
+        agentId,
+        turns: result.turns,
+        error: `子代理执行超时（超过 ${String(request.timeoutMs)}ms，已中止）：任务未在时限内完成，请拆小或调整后重试`,
+      };
+    }
 
     return toResult(agentId, result);
   };
