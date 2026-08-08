@@ -101,17 +101,26 @@ function defaultCompactionThreshold(provider: ModelProvider): number {
 const ALT_SCREEN_ENTER = '\x1b[?1049h';
 /** 离开备用屏幕：恢复进入前的终端画面（回到 shell 提示符与历史）。 */
 const ALT_SCREEN_LEAVE = '\x1b[?1049l';
+/** 终端标题（OSC 0）：运行期间显示 modou，退出清除让 shell 下次提示符重设。 */
+const TITLE_SET = '\x1b]0;modou\x07';
+const TITLE_CLEAR = '\x1b]0;\x07';
 
-/** 若 stdout 是 TTY（真实终端），进入备用屏幕。测试/管道不启用（isTTY 为假）。 */
+/** 若 stdout 是 TTY（真实终端），进入备用屏幕并设置标题。测试/管道不启用（isTTY 为假）。 */
 function enterAltScreen(stdout: NodeJS.WriteStream | undefined): void {
   const out = stdout ?? process.stdout;
-  if (out.isTTY === true) out.write(ALT_SCREEN_ENTER);
+  if (out.isTTY === true) {
+    out.write(ALT_SCREEN_ENTER);
+    out.write(TITLE_SET);
+  }
 }
 
-/** 若 stdout 是 TTY，离开备用屏幕（与 enterAltScreen 成对，退出时调用）。 */
+/** 若 stdout 是 TTY，离开备用屏幕并清除标题（与 enterAltScreen 成对，退出时调用）。 */
 function leaveAltScreen(stdout: NodeJS.WriteStream | undefined): void {
   const out = stdout ?? process.stdout;
-  if (out.isTTY === true) out.write(ALT_SCREEN_LEAVE);
+  if (out.isTTY === true) {
+    out.write(TITLE_CLEAR);
+    out.write(ALT_SCREEN_LEAVE);
+  }
 }
 
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {

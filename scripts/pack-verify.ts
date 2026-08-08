@@ -84,6 +84,22 @@ function main(): void {
   };
   check(rootPackage.name === 'modou', '根包名必须是 modou');
 
+  // 临时注入 file: 依赖：开发期根 package.json 不声明 @modou/core（保持 workspace
+  // 软链、改动即时生效）；打包时才需要它内嵌 core 进 tarball（bundleDependencies）。
+  // 打包验证结束后还原 package.json，避免污染开发环境。
+  const originalRootPkg = readFileSync(join(ROOT, 'package.json'), 'utf8');
+  {
+    const pkg = JSON.parse(originalRootPkg) as {
+      dependencies?: Record<string, string>;
+    };
+    pkg.dependencies = pkg.dependencies ?? {};
+    pkg.dependencies['@modou/core'] = 'file:packages/core';
+    writeFileSync(
+      join(ROOT, 'package.json'),
+      `${JSON.stringify(pkg, null, 2)}\n`,
+    );
+  }
+
   // ① 刷新 file: 内嵌依赖 + 清编译产物（dist 是 tsc 的产物，进包即残留）
   run('bun', ['install']);
   rmSync(join(ROOT, 'packages/core/dist'), { recursive: true, force: true });
@@ -216,6 +232,9 @@ function main(): void {
   } finally {
     rmSync(smokeDir, { recursive: true, force: true });
   }
+
+  // 还原 package.json（去掉临时注入的 file: 依赖），恢复开发期 workspace 软链
+  writeFileSync(join(ROOT, 'package.json'), originalRootPkg);
 
   console.log(
     `✓ 打包验证通过（${tarballName}，${entries.length} 个文件条目；bin / 源码 / 无 dist / 安装冒烟全部达标）`,

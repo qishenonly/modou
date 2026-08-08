@@ -114,8 +114,9 @@ describe('App（T-040 Ink 应用骨架）', () => {
       }),
     );
     await flush();
-    // 折叠行：进行中标记 + 工具名 + 关键参数摘要
-    expect(lastFrame() ?? '').toContain('… edit /a.ts');
+    // 单行紧凑：进行中工具名 + 关键参数摘要（spinner 帧不确定，不断言标记符）
+    expect(lastFrame() ?? '').toContain('edit');
+    expect(lastFrame() ?? '').toContain('/a.ts');
 
     push(
       env({

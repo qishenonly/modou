@@ -138,6 +138,10 @@ export function App(props: AppProps): ReactElement {
     }
     resetDelta();
   };
+  // 滚动（条目级 MVP）：PgUp/PgDn 上翻历史（隐藏最近 N 条），新轮自动回最新。
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const historyLenRef = useRef(0);
+  historyLenRef.current = history.length;
   // 运行状态：由 turn_start / turn_end 推导（T-045 状态栏消费）
   const [running, setRunning] = useState(false);
   const [lastTurn, setLastTurn] = useState(0);
@@ -194,6 +198,7 @@ export function App(props: AppProps): ReactElement {
           flushDelta();
           setRunning(true);
           setLastTurn(envelope.data.turn);
+          setScrollOffset(0); // 新轮回最新
           break;
         case 'text_delta':
           // 帧节流：只累积不渲染，frameMs 后合并提交一次 setState
@@ -289,6 +294,15 @@ export function App(props: AppProps): ReactElement {
       }
       return;
     }
+    // 滚动（条目级 MVP）：PgUp/PgDn 上翻/回最新历史
+    if (key.pageUp) {
+      setScrollOffset((prev) => Math.min(prev + 5, historyLenRef.current));
+      return;
+    }
+    if (key.pageDown) {
+      setScrollOffset((prev) => Math.max(prev - 5, 0));
+      return;
+    }
     if (key.escape) {
       send({ type: 'interrupt' });
       return;
@@ -305,9 +319,18 @@ export function App(props: AppProps): ReactElement {
     // （如被打断）先封存，避免丢文本。随后 reset 让本轮流式回复从空开始。
     sealAssistant();
     setHistory((prev) => [...prev, { role: 'user', text }]);
+    setScrollOffset(0); // 新输入回到最新
     send({ type: 'submit', text });
   };
   const handleSlash = (name: string, args?: string): void => {
+    // 斜杠命令同样进历史（Claude Code 式：/model 等命令可见，带 `> ` 前缀）
+    setHistory((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        text: args === undefined ? `/${name}` : `/${name} ${args}`,
+      },
+    ]);
     send(
       args === undefined
         ? { type: 'slash', name }
@@ -319,19 +342,27 @@ export function App(props: AppProps): ReactElement {
     <Box flexDirection="column" minHeight={5}>
       {/* 消息/输出区（markdown.tsx 渲染 + 帧节流，T-042）。
           布局：历史对话在上（用户消息 `> ` 前缀 + assistant 回复逐轮封存），
-          当前轮的流式回复实时追加；工具调用展示（T-043）在消息之上 */}
+          当前轮的流式回复实时追加；工具调用单行状态（T-043）在消息之上。
+          PgUp/PgDn 条目级上翻历史（隐藏最近 N 条），新轮自动回最新 */}
       <Box flexGrow={1} flexDirection="column">
         {tools.length > 0 && <ToolCallList entries={tools} />}
-        {history.map((entry, index) =>
-          entry.role === 'user' ? (
-            <Text key={index} color="cyan">
-              &gt; {entry.text}
-            </Text>
-          ) : (
-            <Markdown key={index} text={entry.text} />
-          ),
+        {history
+          .slice(0, Math.max(0, history.length - scrollOffset))
+          .map((entry, index) =>
+            entry.role === 'user' ? (
+              <Text key={index} color="cyan">
+                &gt; {entry.text}
+              </Text>
+            ) : (
+              <Markdown key={index} text={entry.text} />
+            ),
+          )}
+        {scrollOffset === 0 && assistantText.length > 0 && (
+          <Markdown text={assistantText} />
         )}
-        {assistantText.length > 0 && <Markdown text={assistantText} />}
+        {scrollOffset > 0 && (
+          <Text dimColor>↑ 上滚 {scrollOffset} 条 · PgDn 回最新</Text>
+        )}
         {notices.map((notice, index) => (
           <Text key={index} color="yellow">
             {notice}

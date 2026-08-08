@@ -23,15 +23,6 @@ import {
 // - 键盘（Ctrl+O 等）需等 useInput 订阅就绪再写入 stdin（同 app.test 的 flush）。
 // ---------------------------------------------------------------------------
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/** 等 useInput 订阅就绪 / 渲染落地。 */
-async function flush(): Promise<void> {
-  await sleep(30);
-  await sleep(30);
-}
-
 // ---------------------------------------------------------------------------
 // 事件构造助手（与 app.test 同款信封无关：直接喂 reduceToolEvent 用的 ToolEvent）
 // ---------------------------------------------------------------------------
@@ -294,122 +285,53 @@ function editEntry(overrides: Partial<ToolCallEntry> = {}): ToolCallEntry {
   };
 }
 
-describe('ToolCallList（渲染与交互）', () => {
+describe('ToolCallList（单行紧凑展示）', () => {
   afterAll(() => {
     cleanup();
   });
 
-  test('默认折叠为一行：✓/✗ 工具名 摘要', () => {
-    const list = renderList([
-      editEntry(),
-      editEntry({
-        id: 'c2',
-        name: 'bash',
-        ok: false,
-        summary: '命令退出码 2',
-        payload: { command: 'ls /nope', exitCode: 2 },
-      }),
-    ]);
-    const frame = list.frame();
-    expect(frame).toContain('✓ edit Edit /a.ts：替换 1 处');
-    expect(frame).toContain('✗ bash 命令退出码 2');
-    // 折叠态不显示参数与输出
-    expect(frame).not.toContain('参数：');
-    expect(frame).not.toContain('diff：');
-    list.unmount();
-  });
-
-  test('成功失败标记：ok → ✓，!ok → ✗，进行中 → …', () => {
-    const pending: ToolCallEntry = {
-      id: 'p1',
-      name: 'bash',
-      input: { command: 'make build' },
-      status: 'pending',
-    };
-    const list = renderList([
-      editEntry(),
-      pending,
-      editEntry({ id: 'f1', ok: false, summary: '失败' }),
-    ]);
+  test('单条：✓/✗/… 工具名 摘要 一行', () => {
+    const list = renderList([editEntry()]);
     const frame = list.frame();
     expect(frame).toContain('✓ edit');
-    expect(frame).toContain('… bash make build');
-    expect(frame).toContain('✗ edit 失败');
+    expect(frame).toContain('Edit /a.ts');
+    // 单行紧凑：不渲染参数区 / diff 区 / 列表页脚
+    expect(frame).not.toContain('参数：');
+    expect(frame).not.toContain('diff：');
+    expect(frame).not.toContain('Ctrl+');
     list.unmount();
   });
 
-  test('键盘展开（Ctrl+O）：显示参数与 diff，删除行/添加行带 +/- 前缀', async () => {
-    const list = renderList([editEntry()]);
-    await flush();
-    // 初始折叠：无 diff 内容
-    expect(list.frame()).not.toContain('参数：');
-
-    // Ctrl+O（0x0f）展开选中条目
-    list.stdin.write('\x0f');
-    await flush();
-    const expanded = list.frame();
-    expect(expanded).toContain('参数：');
-    expect(expanded).toContain('diff：');
-    expect(expanded).toContain('- const a = 1;');
-    expect(expanded).toContain('+ const a = 2;');
-
-    // 再按 Ctrl+O 折叠
-    list.stdin.write('\x0f');
-    await flush();
-    expect(list.frame()).not.toContain('参数：');
-    list.unmount();
-  });
-
-  test('键盘导航：Ctrl+N 移动选中，Ctrl+O 展开的是被选中的条目', async () => {
+  test('多条只显示最新一条（进行中旋转闪烁行）', () => {
     const list = renderList([
       editEntry(),
-      // 第二条是 bash：显式给出自己的 input，不带 diff payload
       {
         id: 'c2',
         name: 'bash',
         input: { command: 'make build' },
-        status: 'done',
-        ok: true,
-        summary: 'Build 完成',
-        forModel: 'build ok',
+        status: 'pending',
       },
     ]);
-    await flush();
-    // 初始选第一条；Ctrl+N 移动到第二条
-    list.stdin.write('\x0e'); // Ctrl+N
-    await flush();
-    list.stdin.write('\x0f'); // Ctrl+O
-    await flush();
     const frame = list.frame();
-    // 展开的是第二条（bash），显示其 forModel 输出而非第一条的 diff
-    expect(frame).toContain('输出：');
-    expect(frame).toContain('build ok');
-    expect(frame).not.toContain('diff：');
+    // 只显示最后一条 bash（进行中 spinner），不列全部条目
+    expect(frame).toContain('bash');
+    expect(frame).toContain('make build');
+    expect(frame).not.toContain('✓ edit');
     list.unmount();
   });
 
-  test('非 diff 工具按文本展示（forModel 优先于 payload）', async () => {
+  test('标记：ok → ✓，!ok → ✗，进行中 → …', () => {
     const list = renderList([
       {
-        id: 'c1',
-        name: 'bash',
-        input: { command: 'ls' },
+        id: 'f1',
+        name: 'edit',
+        input: { path: '/a.ts' },
         status: 'done',
-        ok: true,
-        summary: '列表',
-        forModel: 'a.ts\nb.ts',
-        payload: { command: 'ls', exitCode: 0, stdout: 'a.ts\nb.ts' },
+        ok: false,
+        summary: '失败',
       },
     ]);
-    await flush();
-    list.stdin.write('\x0f'); // 展开
-    await flush();
-    const frame = list.frame();
-    expect(frame).toContain('参数：');
-    expect(frame).toContain('输出：');
-    expect(frame).toContain('a.ts');
-    // 无 diff 结构 → 不出现 diff 区
-    expect(frame).not.toContain('diff：');
+    expect(list.frame()).toContain('✗ edit 失败');
     list.unmount();
   });
 });

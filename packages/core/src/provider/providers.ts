@@ -119,10 +119,12 @@ export function createProviderFromConfig(
 ): ModelProvider {
   if (config.type === 'openai-compat') {
     const opencode = readOpencodeEnv(env);
-    if (opencode !== null && config.model === undefined) {
+    if (opencode !== null) {
+      // opencode 测试端点已配置：无论是否显式指定 model，都走该端点 + key
+      // （/model 切换时 model 显式，仅覆盖模型 ID，端点与密钥不变）
       return createProvider({
         type: 'openai-compat',
-        modelId: opencode.deepseekModel,
+        modelId: config.model ?? opencode.deepseekModel,
         baseURL: opencode.baseURL,
         apiKey: opencode.apiKey,
       });

@@ -35,7 +35,6 @@
     "format": "prettier --write ."
   },
   "dependencies": {
-    "@modou/core": "file:packages/core",
     "ink": "^5",
     "react": "^18"
   },

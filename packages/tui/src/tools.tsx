@@ -30,8 +30,8 @@
  * 纯文本；否则有 payload → JSON 美化；再否则按状态给占位。参数区始终显示
  * 工具的调用入参（入参已由管线脱敏）。
  */
-import { useRef, useState, type ReactElement } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { useEffect, useState, type ReactElement } from 'react';
+import { Box, Text } from 'ink';
 import type {
   ToolCallData,
   ToolProgressData,
@@ -354,49 +354,6 @@ export function DiffView({
   );
 }
 
-/** 展开后的详情：参数 → 进度（running）→ 输出（diff > forModel > payload）。 */
-function OutputView({
-  entry,
-}: {
-  readonly entry: ToolCallEntry;
-}): ReactElement {
-  const diffLines = diffFromPayload(entry.payload);
-  return (
-    <Box flexDirection="column" paddingLeft={2}>
-      <Box>
-        <Text dimColor>参数：</Text>
-        <Text>{formatValue(entry.input)}</Text>
-      </Box>
-      {entry.status === 'running' && entry.progress !== undefined && (
-        <Box>
-          <Text dimColor>进度：</Text>
-          <Text>{entry.progress}</Text>
-        </Box>
-      )}
-      {diffLines !== null ? (
-        <Box flexDirection="column">
-          <Text dimColor>diff：</Text>
-          <DiffView lines={diffLines} />
-        </Box>
-      ) : entry.forModel !== undefined ? (
-        <Box flexDirection="column">
-          <Text dimColor>输出：</Text>
-          {entry.forModel.split('\n').map((line, index) => (
-            <Text key={index}>{line}</Text>
-          ))}
-        </Box>
-      ) : entry.payload !== undefined ? (
-        <Box>
-          <Text dimColor>载荷：</Text>
-          <Text>{formatValue(entry.payload)}</Text>
-        </Box>
-      ) : entry.status === 'pending' ? (
-        <Text dimColor>等待执行…</Text>
-      ) : null}
-    </Box>
-  );
-}
-
 /** 状态标记：完成 → ✓/✗（绿/红）；进行中 → …（黄）。 */
 function markerOf(entry: ToolCallEntry): {
   readonly marker: string;
@@ -410,98 +367,40 @@ function markerOf(entry: ToolCallEntry): {
   return { marker: '…', color: 'yellow' };
 }
 
-/** 单条工具调用：折叠一行 / 展开详情。 */
-function ToolCallItem({
-  entry,
-  expanded,
-  selected,
-}: {
-  readonly entry: ToolCallEntry;
-  readonly expanded: boolean;
-  readonly selected: boolean;
-}): ReactElement {
-  const { marker, color } = markerOf(entry);
-  const summary =
-    entry.status === 'done'
-      ? summarizeEntry(entry)
-      : summarizeInput(entry.name, entry.input);
-  const fold = expanded ? '▾' : '▸';
-  return (
-    <Box flexDirection="column">
-      <Box>
-        <Text inverse={selected}>{fold} </Text>
-        <Text color={color}>
-          {marker} {entry.name}
-        </Text>
-        <Text dimColor> {summary}</Text>
-      </Box>
-      {expanded && <OutputView entry={entry} />}
-    </Box>
-  );
-}
+/** 旋转动画帧（进行中工具调用的「闪烁」指示；Ink Text 无 blink 属性，用动画替代）。 */
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/** 工具调用列表组件：折叠/展开 + 键盘导航（Ctrl+N/P 选择、Ctrl+O 展开/折叠）。 */
+/** 工具调用单行状态（Claude Code 式紧凑展示）：只看最新一条，进行中旋转闪烁。 */
 export function ToolCallList({
   entries,
 }: {
   readonly entries: readonly ToolCallEntry[];
 }): ReactElement {
-  // 折叠/展开状态：callId → 是否展开（UI 局部状态，与事件条目数据分离）
-  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  // 选中下标（键盘导航）
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const last = entries.length > 0 ? entries[entries.length - 1] : undefined;
+  const active = last?.status === 'pending' || last?.status === 'running';
+  const [spinner, setSpinner] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(
+      () => setSpinner((prev) => (prev + 1) % SPINNER.length),
+      100,
+    );
+    return () => clearInterval(timer);
+  }, [active]);
 
-  // 键盘回调每次渲染重绑，用 ref 读最新值（Ink v5 所有 handler 都会收到按键，
-  // 这里只响应输入框必然忽略的 Ctrl 组合，见文件头注释）
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
-  const selectedRef = useRef(selectedIndex);
-  selectedRef.current = selectedIndex;
-
-  const toggle = (index: number): void => {
-    const entry = entriesRef.current[index];
-    if (entry === undefined) return;
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(entry.id)) next.delete(entry.id);
-      else next.add(entry.id);
-      return next;
-    });
-  };
-
-  useInput((input, key) => {
-    const count = entriesRef.current.length;
-    if (key.ctrl && input === 'n') {
-      if (count > 0) setSelectedIndex((prev) => (prev + 1) % count);
-      return;
-    }
-    if (key.ctrl && input === 'p') {
-      if (count > 0) setSelectedIndex((prev) => (prev - 1 + count) % count);
-      return;
-    }
-    if (key.ctrl && input === 'o') {
-      toggle(selectedRef.current);
-      return;
-    }
-  });
-
-  if (entries.length === 0) return <Box />;
-
+  if (last === undefined) return <Box />;
+  const { marker, color } = markerOf(last);
+  const summary =
+    last.status === 'done'
+      ? summarizeEntry(last)
+      : summarizeInput(last.name, last.input);
+  const indicator = active ? SPINNER[spinner % SPINNER.length] : marker;
   return (
-    <Box flexDirection="column">
-      {entries.map((entry, index) => (
-        <ToolCallItem
-          key={entry.id}
-          entry={entry}
-          expanded={expandedIds.has(entry.id)}
-          selected={index === selectedIndex}
-        />
-      ))}
-      <Text dimColor>
-        工具 {entries.length} 项 · Ctrl+N/P 选择 · Ctrl+O 展开/折叠
+    <Box>
+      <Text color={color}>
+        {indicator} {last.name}
       </Text>
+      <Text dimColor> {summary}</Text>
     </Box>
   );
 }
