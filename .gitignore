@@ -21,3 +21,6 @@ AGENTS.md
 CLAUDE.md
 *.plan
 .history/
+
+# 本地 Claude 配置
+.claude/
