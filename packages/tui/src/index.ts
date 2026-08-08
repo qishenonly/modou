@@ -48,7 +48,7 @@ import { derivePermissionMode, type TokenTotals } from './status';
 import { createEventChannel } from './stream';
 import { assembleTuiStartup, type TuiOptions } from './startup';
 
-export const version = '0.1.0';
+export const version = '0.9.0';
 
 /** runTui 的产出。 */
 export interface TuiResult {
