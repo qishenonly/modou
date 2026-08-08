@@ -55,9 +55,10 @@ export interface HookContext {
 // 各钩子点的结果（判别联合）
 // ---------------------------------------------------------------------------
 
-/** SessionStart：会话开始钩子的结果（本版恒 proceed；接线留待后续版本）。 */
+/** SessionStart：会话开始钩子的结果（本版只提供挂载点；接线留待后续版本）。 */
 export interface SessionStartHookResult {
-  readonly decision: 'proceed';
+  /** proceed = 照常开始；block = 阻止开始（执行器 fail-closed 降级时产生）。 */
+  readonly decision: 'proceed' | 'block';
   readonly reason?: string;
 }
 
