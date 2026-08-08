@@ -28,6 +28,7 @@ import {
 import { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolContext } from '../tools/types';
 import { ApprovalGate } from '../permission/approval';
+import { HookBus } from '../hooks/bus';
 import { planReadonlyRegistry } from '../plan/policy';
 import { runAgentTurn } from './loop';
 import type { RuntimeEvent } from './loop';
@@ -1543,5 +1544,132 @@ describe('Plan Mode 只读白名单强制（T-112）', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 钩子透传接线（0.14.0 design-checker minor）：runAgentTurn 把 input.hooks
+// 注入管线 ④⑦，PreToolUse deny 真正阻止执行并回喂理由；改写生效时 loop
+// 转发说明性 notice（loop → 管线端到端，离线内联钩子）。
+// ---------------------------------------------------------------------------
+
+describe('钩子透传接线（0.14.0 loop → 管线 ④）', () => {
+  function toolResultFor(
+    events: RuntimeEvent[],
+    id: string,
+  ): { ok: boolean; forModel: string } | undefined {
+    const event = events.find((e) => e.type === 'tool_result' && e.id === id);
+    if (event === undefined || event.type !== 'tool_result') return undefined;
+    return { ok: event.ok, forModel: event.forModel ?? '' };
+  }
+
+  test('PreToolUse deny → 工具未执行，tool_result ok:false 且理由回喂模型', async () => {
+    const bus = new HookBus();
+    let executed = 0;
+    bus.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'deny',
+        reason: '测试钩子：echo 被策略性拒绝，勿重试',
+      }),
+      { id: 'deny-echo', matcher: { tools: ['echo'] } },
+    );
+    const registry = new ToolRegistry().register({
+      ...echoTool,
+      execute: async () => {
+        executed += 1;
+        return { ok: true, forModel: 'SHOULD NOT RUN' };
+      },
+    });
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'hi' }),
+      textEvents('好的，不调用 echo。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: registry,
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(executed).toBe(0); // ④ deny → ⑤ Execute 未发生
+    const toolResult = toolResultFor(events, 'call-1');
+    expect(toolResult?.ok).toBe(false);
+    expect(toolResult?.forModel).toContain('被钩子拒绝');
+    expect(toolResult?.forModel).toContain(
+      '测试钩子：echo 被策略性拒绝，勿重试',
+    );
+  });
+
+  test('改写生效时 loop 转发说明性 notice；改写后的参数实际执行', async () => {
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'allow',
+        modifiedInput: { text: 'REWRITTEN' },
+      }),
+      { id: 'rewrite', matcher: { tools: ['echo'] } },
+    );
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'original' }),
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: new ToolRegistry().register(echoTool),
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    // 说明性 notice 从管线经 loop 转发到事件流（前端提示区展示，不静默）
+    const notice = events.find((e) => e.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.level).toBe('info');
+      expect(notice.text).toContain('改写了工具 "echo" 的入参');
+    }
+    // 改写后的参数实际执行（审计的 tool_call 仍记录原始请求，见 run.test.ts）
+    expect(toolResultFor(events, 'call-1')?.forModel).toBe('echo:REWRITTEN');
+  });
+
+  test('匹配器不命中的工具直通（钩子不干扰其他工具执行）', async () => {
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      async () => ({ decision: 'deny', reason: '只拦 bash' }),
+      { id: 'bash-only', matcher: { tools: ['bash'] } },
+    );
+    const stub = new StubProvider([
+      toolUseEvents('echo', 'call-1', { text: 'hi' }),
+      textEvents('完成。'),
+    ]);
+    const events: RuntimeEvent[] = [];
+    const result = await runAgentTurn(
+      {
+        provider: stub,
+        messages: [userMsg],
+        tools: new ToolRegistry().register(echoTool),
+        hooks: bus,
+        options: { maxTurns: 5 },
+      },
+      (event) => events.push(event),
+    );
+
+    expect(result.termination).toBe('end_turn');
+    expect(toolResultFor(events, 'call-1')?.ok).toBe(true);
+    expect(toolResultFor(events, 'call-1')?.forModel).toBe('echo:hi');
   });
 });
