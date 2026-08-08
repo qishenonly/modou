@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { planReadonlyRegistry } from '../plan/policy';
 import { defaultReadonlyTools, defaultWriteTools } from '../tools/impl';
+import { createSkillTool } from '../tools/impl/skill';
 import { globTool } from '../tools/impl/glob';
 import { grepTool } from '../tools/impl/grep';
 import { readTool } from '../tools/impl/read';
@@ -64,6 +65,20 @@ describe('buildSystemPrompt（T-023 系统提示词首版）', () => {
     expect(prompt).toContain('写入用 write');
     expect(prompt).not.toContain('执行命令用');
     expect(prompt).not.toContain('### bash');
+  });
+
+  test('toolPathClause 剔除 skill：技能工具不进文件系统分组（与 todo_write 同类）', () => {
+    const withSkill = new ToolRegistry()
+      .register(readTool)
+      .register(grepTool)
+      .register(globTool)
+      .register(createSkillTool({ resolve: () => undefined, names: () => [] }));
+    const prompt = buildSystemPrompt({ tools: withSkill });
+    // 文件系统分组只列 read/grep/glob——skill 不触碰文件系统，不列进「读用」
+    expect(prompt).toContain('读用 glob / grep / read');
+    expect(prompt).not.toContain('读用 glob / grep / read / skill');
+    // 工具说明仍正常声明给模型（模型能看到 skill 工具的定义）
+    expect(prompt).toContain('### skill');
   });
 
   test('搜索优先段：先 Glob/Grep 定位，再 Read 具体文件', () => {

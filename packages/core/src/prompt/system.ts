@@ -1,4 +1,5 @@
 import { TODO_WRITE_TOOL_NAME } from '../tools/impl/todo';
+import { SKILL_TOOL_NAME } from '../tools/impl/skill';
 import type { ToolRegistry } from '../tools/registry';
 import type { Tool, ToolRisk } from '../tools/types';
 import type { SkillSummary } from '../skills/parse';
@@ -97,8 +98,10 @@ function boundaryClause(registry: ToolRegistry): string {
 /**
  * 按 risk 分组枚举文件系统工具名（read → 读用、write → 写入用、exec → 执行命令用）。
  *
- * `todo_write`（risk: read 的会话内清单工具，ADR 0010）不进文件系统分类——它
- * 不触碰文件系统，列进「读用」反而误导模型。
+ * `todo_write`（risk: read 的会话内清单工具，ADR 0010）与 `skill`（0.15.0，
+ * risk: read 的技能正文加载工具，ADR 0014）不进文件系统分类——它们不触碰文件
+ * 系统，列进「读用」反而误导模型（本句的语义是「对文件系统的一切访问一律通过
+ * 列出的工具」）。
  */
 function toolPathClause(registry: ToolRegistry): string {
   const tools = registry.list();
@@ -106,7 +109,9 @@ function toolPathClause(registry: ToolRegistry): string {
     tools
       .filter(
         (tool) =>
-          risks.includes(tool.risk) && tool.name !== TODO_WRITE_TOOL_NAME,
+          risks.includes(tool.risk) &&
+          tool.name !== TODO_WRITE_TOOL_NAME &&
+          tool.name !== SKILL_TOOL_NAME,
       )
       .map((tool) => tool.name)
       .sort();
