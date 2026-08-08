@@ -6,7 +6,7 @@
  * - node_modules 缺省排除（即使 .gitignore 未声明）；
  * - 触碰路径模式：只快照指定路径（其余变更不进本次快照）；
  * - collectTouchedPaths：从会话日志收集 write/edit 成功调用的路径，read / 失败
- *   调用 / bash 不收集；
+ *   调用 / 失败 bash 不收集；任一成功 bash 调用 → 返回空集（回落全量快照）；
  * - 上限降级：变更路径数 / 单文件字节 / 总字节超限 → degraded 点（id null、不可还原）。
  *
  * 全部离线：临时项目 + 临时 HOME 隔离，不触碰真实用户目录。
@@ -172,7 +172,7 @@ describe('触碰路径模式（T-101）', () => {
 // ---------------------------------------------------------------------------
 
 describe('collectTouchedPaths（T-101 从会话日志收集）', () => {
-  test('收集 write/edit 成功调用的路径；read / 失败调用 / bash 不收集', () => {
+  test('收集 write/edit 成功调用的路径；read / 失败调用 / 失败 bash 不收集', () => {
     const cwd = '/tmp/fake-project';
     const records: SessionRecord[] = [
       {
@@ -240,7 +240,7 @@ describe('collectTouchedPaths（T-101 从会话日志收集）', () => {
         seq: 6,
         ts: 6,
         kind: 'tool_result',
-        data: { callId: 's1', ok: true, forModel: 'ok' },
+        data: { callId: 's1', ok: false, forModel: 'failed' }, // bash 失败不算触碰
       },
     ];
     const touched = collectTouchedPaths(records, { cwd });
@@ -248,6 +248,51 @@ describe('collectTouchedPaths（T-101 从会话日志收集）', () => {
       '/tmp/fake-project/src/a.ts',
       '/tmp/fake-project/src/b.ts',
     ]);
+  });
+
+  test('任一成功 bash 调用 → 返回空集（调用方回落全量快照），与 write/edit 混用亦然', () => {
+    const cwd = '/tmp/fake-project';
+    const records: SessionRecord[] = [
+      {
+        seq: 1,
+        ts: 1,
+        kind: 'assistant',
+        data: {
+          text: '',
+          calls: [
+            {
+              id: 'w1',
+              name: 'write',
+              input: { path: 'src/a.ts', content: 'x' },
+            },
+            {
+              id: 's1',
+              name: 'bash',
+              input: { command: 'mv src/a.ts src/b.ts' },
+            },
+          ],
+        },
+      },
+      {
+        seq: 2,
+        ts: 2,
+        kind: 'tool_result',
+        data: {
+          callId: 'w1',
+          ok: true,
+          forModel: 'ok',
+          payload: { path: '/tmp/fake-project/src/a.ts' },
+        },
+      },
+      {
+        seq: 3,
+        ts: 3,
+        kind: 'tool_result',
+        data: { callId: 's1', ok: true, forModel: 'ok' },
+      },
+    ];
+    // 即使有成功的 write，任一成功 bash 也令收集结果为空集 → 全量快照兜底
+    expect(collectTouchedPaths(records, { cwd })).toEqual([]);
   });
 
   test('payload 缺省时从调用入参相对 cwd 解析；无写调用返回空集', () => {
