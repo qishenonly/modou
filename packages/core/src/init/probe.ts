@@ -12,13 +12,7 @@
  * （除类型），保持零依赖。
  */
 
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -536,7 +530,7 @@ export interface InitResult {
   readonly draft: string;
   /** 目标路径（`<cwd>/AGENTS.md`）。 */
   readonly targetPath: string;
-  /** 是否已写入（AGENTS.md 已存在时不覆盖，为 false）。 */
+  /** 是否已写入（AGENTS.md / CLAUDE.md 已存在时不覆盖，为 false）。 */
   readonly wrote: boolean;
 }
 
@@ -551,7 +545,10 @@ export function runInit(cwd: string): InitResult {
   const profile = probeRepository(cwd);
   const draft = generateAgentsMd(profile);
   const targetPath = join(cwd, 'AGENTS.md');
-  const wrote = !existsSync(targetPath);
+  // 覆盖判断与 docstring 一致：探测结果 hasAgentsMd 同时判 AGENTS.md 与
+  // CLAUDE.md（CLAUDE.md 是兼容指令文件，已存在同样不应覆盖）——不再只查
+  // AGENTS.md 单文件（0.13.0 必修：docstring 说两个文件、实现只查一个）。
+  const wrote = !profile.hasAgentsMd;
   if (wrote) {
     // runInit 是同步纯逻辑；文件写入用 node:fs 同步（TUI 斜杠命令调用，
     // 一次性的小文件写入，无需异步管线）。

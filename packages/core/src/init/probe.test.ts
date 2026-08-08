@@ -7,7 +7,8 @@
  *   （prettier / eslint / biome）、CI（github-actions / gitlab-ci）、测试模式；
  * - generateAgentsMd：固定模板结构（# AGENTS.md / 项目概览 / 常用命令 / 测试 /
  *   代码规范 / CI / 给 AI 助手的工作约定）+ 探测结果填充；
- * - runInit：写入 `<cwd>/AGENTS.md`；已存在时不覆盖（wrote: false）。
+ * - runInit：写入 `<cwd>/AGENTS.md`；已存在 AGENTS.md / CLAUDE.md 时不覆盖
+ *   （wrote: false，0.13.0 必修：覆盖判断与 docstring 一致）。
  *
  * 全部离线：临时目录构造 fixture，不访问外网。
  */
@@ -174,5 +175,22 @@ describe('runInit（T-132 预览后写入）', () => {
     const second = runInit(cwd);
     expect(second.wrote).toBe(false);
     expect(readFileSync(first.targetPath, 'utf8')).toBe(first.draft);
+  });
+
+  test('已存在 CLAUDE.md 时不覆盖（docstring 一致，0.13.0 必修）', () => {
+    const cwd = tempDir();
+    buildTypeScriptFixture(cwd);
+    const claudePath = join(cwd, 'CLAUDE.md');
+    writeFileSync(claudePath, 'CLAUDE.md 内容（用户已有指令文件）\n');
+    const out = runInit(cwd);
+    // 覆盖判断用 hasAgentsMd（AGENTS.md / CLAUDE.md 任一存在即不写）：
+    // CLAUDE.md 在 → wrote: false，且不生成 AGENTS.md
+    expect(out.wrote).toBe(false);
+    expect(out.profile.hasAgentsMd).toBe(true);
+    expect(existsSync(join(cwd, 'AGENTS.md'))).toBe(false);
+    // 用户的 CLAUDE.md 原样保留
+    expect(readFileSync(claudePath, 'utf8')).toBe(
+      'CLAUDE.md 内容（用户已有指令文件）\n',
+    );
   });
 });
