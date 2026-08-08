@@ -11,6 +11,7 @@ export * from './session';
 export * from './snapshot';
 export * from './config';
 export * from './eval';
+export * from './hooks';
 export * from './plan';
 export * from './logging';
 export * from './init';
