@@ -612,7 +612,7 @@ describe('经管线集成', () => {
     expect(registry.has('edit')).toBe(true);
     expect(registry.find('edit')).toBe(editTool);
     const again = defaultWriteTools(registry);
-    expect(again.size).toBe(7); // read / grep / glob / write / edit / bash / todo_write
+    expect(again.size).toBe(8); // read / grep / glob / write / edit / bash / todo_write / task
     // 可继续在同一注册表上叠加其他工具
     const custom = new ToolRegistry();
     defaultWriteTools(custom);

@@ -18,13 +18,13 @@ describe('Plan Mode 策略（T-112 只读白名单）', () => {
     const full = defaultWriteTools();
     const readonly = planReadonlyRegistry(full);
     expect(readonly.names()).toEqual(['read', 'grep', 'glob']);
-    // 写/执行工具与清单工具都不在白名单内
-    for (const name of ['write', 'edit', 'bash', 'todo_write']) {
+    // 写/执行工具与清单工具都不在白名单内（task 子代理工具同样不进只读白名单）
+    for (const name of ['write', 'edit', 'bash', 'todo_write', 'task']) {
       expect(readonly.has(name)).toBe(false);
     }
     // 不修改入参注册表
     expect(full.has('write')).toBe(true);
-    expect(full.size).toBe(7);
+    expect(full.size).toBe(8);
   });
 
   test('planReadonlyRegistry：白名单外的注册表仅保留命中的工具', () => {

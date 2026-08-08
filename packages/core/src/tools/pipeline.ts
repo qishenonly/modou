@@ -7,6 +7,7 @@ import type { ToolRegistry } from './registry';
 import { truncateOutput } from './truncate';
 import type { TruncationOptions } from './truncate';
 import type {
+  SubagentRunner,
   Tool,
   ToolContext,
   TodoUpdate,
@@ -48,6 +49,12 @@ export interface ToolPipelineContext {
   readonly onFileRead?: (path: string) => void;
   /** 待办更新上报回调：透传给工具 ctx.onTodoUpdate（todo_write 更新清单后调用，运行时维护清单状态与日志）。 */
   readonly onTodoUpdate?: (update: TodoUpdate) => void;
+  /**
+   * 子代理派发通道（T-120 Task 工具）：透传给工具 ctx.runSubagent——
+   * Task 工具 execute 经它派生子代理（独立 runAgentTurn），只拿回最终结论。
+   * 缺省不注入（Task 工具返回「子代理不可用」失败结果）。
+   */
+  readonly runSubagent?: SubagentRunner;
 }
 
 export interface ToolPipelineOptions {
@@ -248,6 +255,9 @@ function executeWithTimeout(
         : {}),
       ...(context.onTodoUpdate !== undefined
         ? { onTodoUpdate: context.onTodoUpdate }
+        : {}),
+      ...(context.runSubagent !== undefined
+        ? { runSubagent: context.runSubagent }
         : {}),
     };
 

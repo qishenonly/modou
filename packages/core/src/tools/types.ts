@@ -28,6 +28,69 @@ export interface TodoUpdate {
   readonly items: readonly TodoWriteItem[];
 }
 
+// ---------------------------------------------------------------------------
+// 子代理（T-120 Task 工具，ADR 0011）
+// ---------------------------------------------------------------------------
+
+/** 子代理缺省轮次上限：request 未传 maxTurns 时的兜底（runtime/subagent.ts 消费）。 */
+export const SUBAGENT_DEFAULT_MAX_TURNS = 10;
+
+/** 子代理缺省工具白名单：只读三件套（ADR 0011「子代理默认只读」）。 */
+export const SUBAGENT_DEFAULT_TOOL_NAMES: readonly string[] = [
+  'read',
+  'grep',
+  'glob',
+];
+
+/**
+ * 子代理请求（Task 工具入参经过校验后的形态）：派生子代理执行的任务描述与预算。
+ */
+export interface SubagentRequest {
+  /** 交给子代理的完整指令（作为子代理对话的首条 user 消息）。 */
+  readonly prompt: string;
+  /**
+   * 工具白名单（父代理工具名的子集，缺省 = 只读三件套）。白名单外的工具名
+   * 静默跳过——子代理永远拿不到父代理没有的工具（权限继承不超父，ADR 0011）。
+   */
+  readonly tools?: readonly string[];
+  /** 子代理轮次上限（独立于父代理；缺省 SUBAGENT_DEFAULT_MAX_TURNS）。 */
+  readonly maxTurns?: number;
+  /** 子代理 token 预算（独立核算，父代理不合并；缺省不限）。 */
+  readonly maxTokens?: number;
+  /** 子代理墙钟超时（毫秒；缺省不限——靠 maxTurns/maxTokens 预算兜底）。 */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * 子代理执行结果：只向主循环返回最终结论文本（独立消息历史 / 独立上下文窗口
+ * 的产物，父代理不接触子代理的内部过程）。
+ */
+export interface SubagentResult {
+  /** 子代理正常收尾（end_turn）为 true；超预算 / 超时 / 错误 / 一层深拒绝为 false。 */
+  readonly ok: boolean;
+  /** 最终结论文本（失败时为已产出的部分文本或诊断信息）。 */
+  readonly text: string;
+  /** ok:false 时的失败原因（depth 限制 / 超时 / 预算超限 / 终止原因等）。 */
+  readonly error?: string;
+  /** 子代理 ID（事件流 agent 字段；T-122 前端按此分组折叠）。 */
+  readonly agentId?: string;
+  /** 子代理实际完成的轮次（模型请求数）。 */
+  readonly turns?: number;
+  /** 子代理独立核算的 token 用量（不并入父代理 usage）。 */
+  readonly usage?: Readonly<{
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+  }>;
+}
+
+/**
+ * 子代理派发函数：由运行时注入 ToolContext（Task 工具经此派发），
+ * 实现 = 一次独立的 `runAgentTurn`（runtime/subagent.ts，ADR 0011）。
+ */
+export type SubagentRunner = (
+  request: SubagentRequest,
+) => Promise<SubagentResult>;
+
 /** 工具执行上下文。0.2.0 最小集：组合取消信号 + 工作目录。 */
 export interface ToolContext {
   /**
@@ -63,6 +126,14 @@ export interface ToolContext {
    * payload 结构耦合。
    */
   readonly onTodoUpdate?: (update: TodoUpdate) => void;
+  /**
+   * 子代理派发通道（T-120 Task 工具）：运行时注入，Task 工具 execute 经它派出
+   * 子代理（独立 runAgentTurn、独立消息历史、独立上下文窗口），只拿回最终结论
+   * 文本。缺省不提供——未注入时 Task 工具返回「子代理不可用」失败结果（错误即
+   * 数据）。一层深限制由运行时强制：子代理 loop 内的 runSubagent 直接拒绝
+   * （ADR 0011）。
+   */
+  readonly runSubagent?: SubagentRunner;
 }
 
 /**

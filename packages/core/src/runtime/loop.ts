@@ -28,7 +28,9 @@ import type {
 import { runToolPipeline } from '../tools/pipeline';
 import { redactValue } from '../tools/redact';
 import type { ToolRegistry } from '../tools/registry';
+import type { SubagentRunner } from '../tools/types';
 import { toToolSet } from '../tools/toolset';
+import { createSubagentRunner } from './subagent';
 import { extractInterruptReason, isInterruptError } from './interrupt';
 import { withRetry } from './retry';
 import type { RetryOptions } from './retry';
@@ -148,6 +150,13 @@ export interface RunAgentTurnInput {
    * 跨 runAgentTurn 接续，避免跨阈值后每轮重复压缩。缺省 = 不压缩不折叠。
    */
   readonly compact?: CompactOptions;
+  /**
+   * 子代理深度（T-120 一层深限制，ADR 0011）：主代理深度 0，子代理深度 1。
+   * 深度 ≥ 1 的 loop 里 ToolContext.runSubagent 直接拒绝——子代理不能再派出
+   * 子代理（supervisor 一层深，不做嵌套）。由 runtime/subagent.ts 派发时设置；
+   * 调用方一般不用管（缺省 0）。
+   */
+  readonly subagentDepth?: number;
   readonly options: TurnOptions;
 }
 
@@ -362,6 +371,24 @@ export async function runAgentTurn(
   const cwd = inputCwd ?? process.cwd();
 
   /**
+   * 子代理派发通道（T-120 Task 工具）：注入 ToolContext 的 runSubagent——
+   * Task 工具 execute 经此派生子代理（独立 runAgentTurn / 独立消息历史 /
+   * 独立上下文窗口），只拿回最终结论文本。一层深限制在此强制：深度 ≥ 1
+   * （即子代理自身）的 loop 里派发直接拒绝（ADR 0011）；`task` 工具也永不
+   * 进入子代理注册表（deriveSubagentRegistry 过滤），双保险。
+   */
+  const runSubagent: SubagentRunner = createSubagentRunner({
+    runTurn: runAgentTurn,
+    provider,
+    parentRegistry: tools,
+    readFiles,
+    cwd,
+    approval,
+    abortSignal,
+    depth: input.subagentDepth ?? 0,
+  });
+
+  /**
    * 持久摘要状态（T-070）：从入参复制，压缩发生时在此演进，随
    * `TurnResult.summaryState` 返回给调用方（跨轮次增量压缩的种子）。
    * 提供 `compact` 配置而未提供状态时自动新建空状态（首轮压缩即产出内容）。
@@ -562,6 +589,7 @@ export async function runAgentTurn(
         context: {
           cwd,
           readFiles,
+          runSubagent,
           onFileRead: (path) => {
             readFiles.add(path);
           },
