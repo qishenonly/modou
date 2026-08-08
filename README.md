@@ -73,14 +73,20 @@ See [Configuration](#configuration) for `settings.json`, `MODOU_*` environment v
 
 ## Slash Commands
 
-| Command               | Description                                                         |
-| --------------------- | ------------------------------------------------------------------- |
-| `/help`               | List all available slash commands and usage                         |
-| `/model [modelID]`    | Switch models mid-session (no argument opens a picker)              |
-| `/compact`            | Compact the session history (fold early turns into a summary)       |
-| `/resume [sessionID]` | Resume a previous session (no argument lists candidates)            |
-| `/context [--json]`   | Inspect token usage by section (`--json` for machine-readable)      |
-| `/clear`              | Start a fresh session (the old session log is kept, `/resume`-able) |
+| Command                  | Description                                                                                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `/help`                  | List all available slash commands and usage                                                                      |
+| `/model [modelID]`       | Switch models mid-session (no argument opens a picker)                                                           |
+| `/compact`               | Compact the session history (fold early turns into a summary)                                                    |
+| `/resume [sessionID]`    | Resume a previous session (no argument lists candidates)                                                         |
+| `/context [--json]`      | Inspect token usage by section (`--json` for machine-readable)                                                   |
+| `/clear`                 | Start a fresh session (the old session log is kept, `/resume`-able)                                              |
+| `/rewind`                | List snapshot points; preview the diff and restore files (roll back)                                             |
+| `/snapshots [--cleanup]` | Inspect snapshot storage & retention (`--cleanup` runs expiry)                                                   |
+| `/plan [request]`        | Plan mode: read-only research → structured plan → approve / execute; `load <path>` re-reads a plan from markdown |
+| `/init`                  | Probe the repository and draft an `AGENTS.md` (preview, then write; never overwrites an existing one)            |
+| `/image <path \| URL>`   | Start a turn with an image attachment (multi-modal; unsupported models degrade with a notice)                    |
+| `/cost`                  | Cost report: session + per-day tokens / fees, priced by current model                                            |
 
 ## Configuration
 

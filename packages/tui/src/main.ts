@@ -24,7 +24,8 @@ const USAGE = `modou ${version} — 终端编码 Agent
   docs/design/002-architecture.md 九节），MODOU_* 环境变量（MODOU_PROVIDER /
   MODOU_MODEL / MODOU_BASE_URL / MODOU_SANDBOX / MODOU_POLICY / MODOU_MAX_TURNS …）。
 
-斜杠命令: /help /model /compact /resume /context /clear`;
+斜杠命令: /help /model /compact /resume /context /clear /rewind /snapshots
+  /plan /init /image /cost`;
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
