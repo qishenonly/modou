@@ -27,3 +27,18 @@ export {
 
 export type { RetryOptions } from './retry';
 export { computeBackoffDelay, withRetry } from './retry';
+
+// T-130 非交互模式增强（0.13.0）：程序化入口——事件流 JSON 收集 + 退出码语义化
+// + stdin 管道输入。脚本 / CI 消费 `runAgentTurnJson` 的产出（events / exitCode /
+// result），不需要 TTY。
+export {
+  runAgentTurnJson,
+  exitCodeFor,
+  RunExitCode,
+  readStdinPrompt,
+} from './json';
+export type {
+  JsonSafeTurnResult,
+  RunAgentTurnJsonOptions,
+  RunAgentTurnJsonResult,
+} from './json';
