@@ -11,3 +11,4 @@
  * 通过 SkillInfo 结构接口与 skills 解耦），不依赖 runtime / provider。
  */
 export * from './parse';
+export * from './discover';
