@@ -719,6 +719,11 @@ export async function runAgentTurn(
             // 审批裁决收尾：bridge 据此映射为协议 approval_resolved（关闭弹窗）
             const { id, decision, source } = pipelineEvent.data;
             emit({ type: 'approval_resolved', id, decision, source });
+          } else if (pipelineEvent.type === 'notice') {
+            // 管线侧提示（0.14.0：PreToolUse 钩子改写参数时补发的说明性
+            // notice）——bridge 映射为协议 notice，前端提示区展示（不静默）。
+            const { level, text } = pipelineEvent.data;
+            emit({ type: 'notice', level, text });
           }
         },
       },

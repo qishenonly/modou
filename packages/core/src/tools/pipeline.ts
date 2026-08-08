@@ -437,8 +437,11 @@ export async function runToolPipeline(
   // ④ PreToolUse（0.14.0 挂载点，design 002 5.1）：注入钩子总线时——
   // 任一钩子 deny → 阻止执行，deny 理由原样回喂模型（策略性拒绝：别重试
   // 同样的操作）；钩子改写参数 → 用改写后的参数执行（改写不合法时按参数
-  // 校验失败回喂模型，点名问题在钩子侧）；⑧ Record 与会话日志记录的都是
-  // 改写后的形态。缺省 = 直通（0.13.0 及之前行为）。
+  // 校验失败回喂模型，点名问题在钩子侧），并补发一条说明性 notice（前端可
+  // 见：实际执行与模型请求不一致）。审计口径：tool_call 事件与会话日志记录
+  // 的是**原始请求**（模型实际调用的形态），改写只作用于执行侧——文档不
+  // 再声称「记录改写后的形态」（见 hooks/types.ts 的 modifiedInput 注释）。
+  // 缺省 = 直通（0.13.0 及之前行为）。
   let args = parsed.data;
   if (options.hooks !== undefined) {
     const pre = await runPreToolUse(options.hooks, {
@@ -473,6 +476,16 @@ export async function runToolPipeline(
         return outcome;
       }
       args = reparsed.data;
+      // 偏离 D：改写发生时补发说明性 notice——前端可见「实际执行与模型请求
+      // 不一致」。tool_call 事件已按原始请求发出（审计 = 模型请求的形态），
+      // 此 notice 补足改写侧的可观测性（不静默）。
+      emit({
+        type: 'notice',
+        data: {
+          level: 'info',
+          text: `PreToolUse 钩子改写了工具 "${tool.name}" 的入参——实际执行与模型请求不完全一致，请留意`,
+        },
+      });
     }
   }
 

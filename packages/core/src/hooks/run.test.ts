@@ -246,6 +246,33 @@ describe('runPreToolUse：参数改写', () => {
     const { outcome } = await runEcho({ text: 'original' }, bus);
     expect(outcome.forModel).toBe('second');
   });
+
+  test('改写生效时补发说明性 notice（前端可见「实际执行与模型请求不一致」）', async () => {
+    const bus = new HookBus();
+    bus.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'allow',
+        modifiedInput: { text: 'REWRITTEN', times: 2 },
+      }),
+      { id: 'rewrite', matcher: { tools: ['echo'] } },
+    );
+    const { events, outcome } = await runEcho({ text: 'original' }, bus);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.forModel).toBe('REWRITTENREWRITTEN');
+    const notice = events.find((event) => event.type === 'notice');
+    expect(notice?.type).toBe('notice');
+    if (notice?.type === 'notice') {
+      expect(notice.data.level).toBe('info');
+      expect(notice.data.text).toContain('改写了工具 "echo" 的入参');
+    }
+    // tool_call 审计记录原始请求（不因改写而变成改写后的形态）
+    const call = events.find((event) => event.type === 'tool_call');
+    expect(call?.type).toBe('tool_call');
+    if (call?.type === 'tool_call') {
+      expect(call.data.input).toEqual({ text: 'original' });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
