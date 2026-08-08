@@ -149,6 +149,12 @@ export interface TuiStartupConfig {
    */
   readonly hooks?: HookBus;
   /**
+   * 启动期提示（0.14.0 补充）：配置了本版未接线的钩子点（SessionStart——
+   * 只提供挂载点）时，装配产出一条提示文案；runTui 以 notice 展示——配置
+   * 合法但钩子不会执行，不能静默失效。
+   */
+  readonly notices?: readonly string[];
+  /**
    * provider 装配面（T-082 /model 重建 provider 实例用）：供应商类型 +
    * 生效端点。baseURL 取「配置显式值 → opencode 测试端点 → OPENAI_BASE_URL」，
    * 与装配时的 createProviderFromConfig 分支同口径；options.provider 注入时
@@ -191,6 +197,10 @@ export function assembleTuiStartup(
     env,
     overrides,
   });
+  // 偏离 C：SessionStart 本版未接线（只提供挂载点）——settings.json 配置了
+  // SessionStart 钩子时装配产出一条 notice（runTui 展示：配置合法但钩子不会
+  // 执行，不静默失效；移除配置或等后续版本接线）。
+  const sessionStartCount = resolved.hooks?.SessionStart?.length ?? 0;
   // provider 装配面（T-082 /model 重建用）：baseURL 与装配时的
   // createProviderFromConfig 分支同口径——openai-compat 且未配置 model 时
   // 优先 opencode 测试端点，否则配置显式值 / OPENAI_BASE_URL 回落环境变量。
@@ -239,6 +249,13 @@ export function assembleTuiStartup(
             }),
             cwd: projectRoot,
           }),
+        }
+      : {}),
+    ...(sessionStartCount > 0
+      ? {
+          notices: [
+            `settings.json 配置了 ${sessionStartCount} 个 SessionStart 钩子，但本版本未接线（仅提供挂载点）——这些钩子不会执行。请移除该配置，或等待后续版本接线。`,
+          ],
         }
       : {}),
     providerSpec: {

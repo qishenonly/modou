@@ -349,6 +349,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       `自定义斜杠命令工具白名单：${unknownToolDeclarations.join('；')}（这些工具名将被忽略）`,
     );
   }
+  // 偏离 C：SessionStart 本版未接线——装配时配置了 SessionStart 钩子的 notice
+  // （配置合法但钩子不会执行，不静默失效；startup.ts 产出）。
+  for (const notice of startup.notices ?? []) {
+    pushNotice('warn', notice);
+  }
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
   // 若复用同一个 controller，Esc 一次会让后续所有 turn 一进来就立刻中断。
