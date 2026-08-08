@@ -100,6 +100,12 @@ export interface SubagentRunnerOptions {
   readonly abortSignal?: AbortSignal;
   /** 当前 loop 的深度：0 = 主代理，≥ SUBAGENT_DEPTH_LIMIT = 子代理。 */
   readonly depth: number;
+  /**
+   * 子代理事件转发出口（T-122）：子代理 loop 的每个 RuntimeEvent 包上 agentId
+   * 作为 `subagent_event` 转出，bridge 据此按 agent 分发信封（前端按 ID 分组
+   * 折叠）。缺省静默（不转发）。
+   */
+  readonly emit?: (event: RuntimeEvent) => void;
 }
 
 /** 把子代理的终止归一为 SubagentResult（错误即数据）。 */
@@ -234,9 +240,11 @@ export function createSubagentRunner(
           },
           subagentDepth: SUBAGENT_DEPTH_LIMIT,
         },
-        // T-122：子代理运行时事件在此包上 agentId 转发（本版暂不转发，
-        // commit 3 接入——子代理过程对主循环不可见，只回最终结论）。
-        () => {},
+        // T-122：子代理运行时事件包上 agentId 转出（bridge 据此按 agent 分发
+        // 信封；前端按 ID 分组折叠展示子代理完整过程，主上下文不受污染）。
+        (event) => {
+          options.emit?.({ type: 'subagent_event', agent: agentId, event });
+        },
       );
     } finally {
       if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);

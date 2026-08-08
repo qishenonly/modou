@@ -251,7 +251,46 @@ export function App(props: AppProps): ReactElement {
   useEffect(() => {
     let disposed = false;
 
+    // T-122（0.12.0 子代理事件流）：子代理事件的折叠消费——把「开始/结束/出错」
+    // 落成提示区 notice，其余过程细节（text_delta / tool_call / usage …）静默
+    // 折叠（G-0.12.0：子代理内部过程不污染主对话，前端按 agent 分组可折叠展示）。
+    const applySubagent = (envelope: Envelope): void => {
+      switch (envelope.type) {
+        case 'turn_start':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 开始处理（第 ${envelope.data.turn} 轮）`,
+          ]);
+          break;
+        case 'turn_end':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 结束：${envelope.data.termination}`,
+          ]);
+          break;
+        case 'error':
+          setNotices((prev) => [
+            ...prev,
+            `子代理 ${envelope.agent} 出错：${envelope.data.message}`,
+          ]);
+          break;
+        default:
+          // text_delta / tool_call / tool_result / usage / context_state 等
+          // 子代理过程细节：折叠（不展示）。子代理的最终结论文本会经主代理的
+          // task 工具 tool_result 展示，用户不丢失结论。
+          break;
+      }
+    };
+
     const apply = (envelope: Envelope): void => {
+      // T-122（0.12.0 子代理事件流）：子代理事件带自身 agent（≠ 'main'）。
+      // 前端按 agent 分组折叠——子代理的完整过程（text_delta / tool_call /
+      // usage / context_state …）折叠成提示区的一条 notice，不打进主对话 /
+      // 主用量 / 主工具列表（G-0.12.0：主上下文不被子代理过程污染）。
+      if (envelope.agent !== 'main') {
+        applySubagent(envelope);
+        return;
+      }
       switch (envelope.type) {
         case 'turn_start':
           // 防御：前一轮若有残留缓冲立即提交（正常情况 turn_end 已封存）

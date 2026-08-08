@@ -508,3 +508,57 @@ describe('App /plan（T-112 Plan Mode）', () => {
     unmount();
   });
 });
+
+describe('App 子代理事件流（T-122 折叠展示）', () => {
+  afterAll(() => {
+    cleanup();
+  });
+
+  /** 构造一条子代理信封（agent = 子代理 ID）。 */
+  function subEnv(event: ProtocolEvent, agent: string): Envelope {
+    counter += 1;
+    const turn =
+      event.type === 'turn_start' || event.type === 'turn_end'
+        ? event.data.turn
+        : 0;
+    return { v: 1, seq: counter, ts: 0, agent, turn, ...event };
+  }
+
+  test('子代理开始/结束折叠为 notice；子代理文本不打进主对话', async () => {
+    const { stream, push } = createEventChannel();
+    const { lastFrame, unmount } = render(
+      <App stream={stream} send={() => {}} />,
+    );
+
+    // 子代理完整过程：turn_start → text_delta → turn_end
+    const subAgent = 'sub-abc123';
+    push(subEnv({ type: 'turn_start', data: { turn: 1 } }, subAgent));
+    push(
+      subEnv(
+        { type: 'text_delta', data: { delta: '结论：src/a.ts:10。' } },
+        subAgent,
+      ),
+    );
+    push(
+      subEnv(
+        { type: 'turn_end', data: { turn: 1, termination: 'end_turn' } },
+        subAgent,
+      ),
+    );
+    await flush();
+    let frame = lastFrame() ?? '';
+    expect(frame).toContain(`子代理 ${subAgent} 开始处理`);
+    expect(frame).toContain(`子代理 ${subAgent} 结束：end_turn`);
+    // 子代理的 text_delta 被折叠：主对话里看不到子代理的结论文本
+    expect(frame).not.toContain('结论：src/a.ts:10。');
+
+    // 主代理事件照常渲染
+    push(env({ type: 'turn_start', data: { turn: 2 } }));
+    push(env({ type: 'text_delta', data: { delta: '已汇总子代理结论' } }));
+    push(env({ type: 'turn_end', data: { turn: 2, termination: 'end_turn' } }));
+    await flush();
+    frame = lastFrame() ?? '';
+    expect(frame).toContain('已汇总子代理结论');
+    unmount();
+  });
+});

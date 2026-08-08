@@ -268,6 +268,20 @@ export type RuntimeEvent =
       readonly type: 'turn_end';
       readonly turn: number;
       readonly termination: TurnTermination;
+    }
+  | {
+      /**
+       * 子代理内部运行时事件（T-122，0.12.0 子代理事件流）：子代理派发器把
+       * 子代理 loop 的每个 RuntimeEvent 包上 agentId 转发。bridge 据此为每个
+       * 子代理分配独立 EnvelopeEmitter（agent = 子代理 ID、独立 seq/turn 空间），
+       * 前端按 agent 分组折叠——协议一个字节都不用改（002 3.1 的便宜先手）。
+       * 一层深硬限制保证内层事件不再嵌套 subagent_event（子代理不能再派生子代理）。
+       */
+      readonly type: 'subagent_event';
+      /** 子代理 ID（协议信封的 agent 字段）。 */
+      readonly agent: string;
+      /** 子代理内部事件。 */
+      readonly event: RuntimeEvent;
     };
 
 /** 未提供工具注册表时的回喂文案：模型看不到任何工具定义却发了工具调用。 */
@@ -386,6 +400,8 @@ export async function runAgentTurn(
     approval,
     abortSignal,
     depth: input.subagentDepth ?? 0,
+    // T-122：子代理运行时事件包上 agentId 转出为 subagent_event
+    emit,
   });
 
   /**
