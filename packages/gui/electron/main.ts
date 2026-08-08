@@ -9,7 +9,13 @@
  * 窗口：Claude Desktop 式布局（宽窗口、左侧会话侧栏），production 加载
  * dist/renderer（vite build 产物，base './'，file:// 可加载），开发模式
  * 经 MODOU_GUI_DEV=1 加载 MODOU_GUI_DEV_URL（scripts/dev.mjs 注入）。
+ *
+ * .env 加载：TUI 靠 bun 自动加载 .env，Electron 主进程不会——这里在装配
+ * provider 前从 cwd 向上搜索 .env 并注入 process.env（已存在的变量不覆盖）。
+ * 装配失败（如缺 API Key）时窗口照常打开、推一条 error notice 给渲染进程，
+ * IPC handler 仍注册（空桥兜底），避免「No handler registered」刷屏。
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
@@ -24,6 +30,47 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let bridge: GuiBridge | null = null;
+
+// ---------------------------------------------------------------------------
+// .env 加载（向上搜索，已存在的变量不覆盖）
+// ---------------------------------------------------------------------------
+
+/** 解析一行 KEY=VALUE（支持 # 注释与可选引号）。 */
+function applyEnvLine(line: string): void {
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.startsWith('#')) return;
+  const eq = trimmed.indexOf('=');
+  if (eq < 0) return;
+  const key = trimmed.slice(0, eq).trim();
+  const raw = trimmed.slice(eq + 1).trim();
+  const value = raw.replace(/^["']|["']$/g, '');
+  if (key.length > 0 && process.env[key] === undefined) {
+    process.env[key] = value;
+  }
+}
+
+/** 从 startDir 向上搜索 .env（最多 6 层），把未设置的环境变量注入 process.env。 */
+function loadEnvUpward(startDir: string): void {
+  let dir = startDir;
+  for (let depth = 0; depth < 6; depth += 1) {
+    const candidate = join(dir, '.env');
+    if (existsSync(candidate)) {
+      for (const line of readFileSync(candidate, 'utf8').split('\n')) {
+        applyEnvLine(line);
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+
+// 在装配 provider 前注入 .env（MODOU_OPENCODE_* 等；显式环境变量优先）
+loadEnvUpward(process.cwd());
+
+// ---------------------------------------------------------------------------
+// 窗口
+// ---------------------------------------------------------------------------
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -61,35 +108,56 @@ function createWindow(): void {
   });
 }
 
-function wireBridge(): void {
-  bridge = new GuiBridge(
-    {},
-    {
-      emitEvent: (envelope: Envelope) => {
-        if (mainWindow !== null && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.EVENT, envelope);
-        }
-      },
-      emitReady: (payload: ReadyPayload) => {
-        if (mainWindow !== null && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IPC.READY, payload);
-        }
-      },
-    },
-  );
-
-  // 启动：把指令告警等启动期 notice 入队，然后推 ReadyPayload
-  const ready = bridge.start();
+/** 向渲染进程推一条协议信封（窗口存活时）。 */
+function sendEvent(envelope: Envelope): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(IPC.READY, ready);
+    mainWindow.webContents.send(IPC.EVENT, envelope);
+  }
+}
+
+/** 向渲染进程推配置摘要（READY）。 */
+function sendReady(payload: ReadyPayload): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IPC.READY, payload);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 桥接线
+// ---------------------------------------------------------------------------
+
+function wireBridge(): void {
+  // 装配失败（如缺 API Key）不崩溃：窗口保持打开并展示错误，桥置空。
+  try {
+    bridge = new GuiBridge(
+      {},
+      {
+        emitEvent: sendEvent,
+        emitReady: sendReady,
+      },
+    );
+    sendReady(bridge.start());
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    console.error('[modou-gui] 启动装配失败：', message);
+    sendEvent({
+      v: 1,
+      seq: 1,
+      ts: Date.now(),
+      agent: 'main',
+      turn: 0,
+      type: 'notice',
+      data: {
+        level: 'error',
+        text: `启动失败：${message}。请检查 API Key 配置（~/.modou/settings.json 或 .env）。`,
+      },
+    });
   }
 
-  // Command 通道（002 3.3 反向通道）
+  // IPC handler 无论如何都注册（bridge 可能为 null，各查询已有 ?? 兜底）
   ipcMain.on(IPC.COMMAND, (_event, command: Command) => {
     bridge?.sendCommand(command);
   });
-
-  // 「拉取型」控制面
   ipcMain.handle(IPC.LIST_SESSIONS, () => bridge?.listSessions() ?? []);
   ipcMain.handle(IPC.GET_THREAD, () => bridge?.getThread() ?? []);
   ipcMain.handle(IPC.LIST_MODELS, () => bridge?.listModels() ?? []);
