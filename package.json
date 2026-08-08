@@ -1,6 +1,6 @@
 {
   "name": "modou",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "终端编码 Agent：读懂你的项目、替你在终端里改文件跑命令。",
   "type": "module",
