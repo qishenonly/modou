@@ -13,7 +13,13 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectTouchedPaths, SessionRecord, SnapshotStore } from '@modou/core';
@@ -390,7 +396,9 @@ describe('上限降级（T-101：超限仅记录 diff 摘要并告警）', () =>
     });
     expect(degraded?.degraded).toBe(true);
     // 直接读 manifest 文件：degraded 点必须在 snapshot() 返回时已持久化
-    const manifest = JSON.parse(readFileSync(store.manifestPath, 'utf8')) as Array<{
+    const manifest = JSON.parse(
+      readFileSync(store.manifestPath, 'utf8'),
+    ) as Array<{
       id: string | null;
       degraded: boolean;
     }>;

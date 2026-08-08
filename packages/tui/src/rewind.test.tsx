@@ -19,13 +19,20 @@ import { join } from 'node:path';
 import { cleanup, render } from 'ink-testing-library';
 import type {
   ModelProvider,
+  PermissionConfig,
   ProviderCapabilities,
   RewindPreview,
+  SessionReadResult,
   SnapshotPoint,
   StreamChatInput,
   StreamEvent,
 } from '@modou/core';
-import { projectHash, SessionStore, SnapshotStore } from '@modou/core';
+import {
+  defaultWriteTools,
+  projectHash,
+  SessionStore,
+  SnapshotStore,
+} from '@modou/core';
 import type { TuiOptions } from './startup';
 import { SnapshotPicker } from './rewind';
 import { runTui } from './index';
@@ -96,6 +103,49 @@ class StubProvider implements ModelProvider {
     yield { type: 'text_delta', delta: '回复' };
     yield { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } };
     yield { type: 'finish', reason: 'stop' };
+  }
+}
+
+/** 多轮 stub：按调用顺序消费 rounds；用尽后重放最后一轮（工具循环测试用）。 */
+class RoundsStubProvider implements ModelProvider {
+  readonly id = 'openai-compat';
+  readonly capabilities: ProviderCapabilities = {
+    maxContext: 128_000,
+    parallelToolCalls: false,
+    cacheBreakpoints: false,
+    images: false,
+    thinking: 'none',
+    strictJsonArgs: true,
+  };
+  private callCount = 0;
+
+  constructor(
+    readonly modelId: string,
+    private readonly rounds: readonly StreamEvent[][],
+  ) {}
+
+  async *streamChat(input: StreamChatInput): AsyncIterable<StreamEvent> {
+    void input;
+    const round = this.rounds[Math.min(this.callCount, this.rounds.length - 1)];
+    this.callCount += 1;
+    if (round === undefined) return;
+    for (const event of round) yield event;
+  }
+}
+
+/** 轮询直到 probe 返回非 null（异步），超时抛错。 */
+async function waitFor<T>(
+  probe: () => Promise<T | null>,
+  timeoutMs: number,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await probe();
+    if (value !== null) return value;
+    if (Date.now() > deadline) {
+      throw new Error(`waitFor 超时（${timeoutMs}ms）`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
   }
 }
 
@@ -407,6 +457,96 @@ describe('runTui /rewind 集成（T-102）', () => {
     await typeAndEnter(stdin, '/snapshots --cleanup');
     expect(stdout.lastFrame()).toContain('快照清理完成');
     expect(stdout.lastFrame()).toContain('移除 0 条');
+
+    stdin.write('\x03');
+    await flush();
+    await exit;
+  });
+
+  test('自动快照端到端：工具执行 → 轮末快照 → 日志 appendSnapshot → /rewind 可见', async () => {
+    const homeDir = makeHome();
+    const cwd = join(homeDir, 'proj');
+    mkdirSync(cwd, { recursive: true });
+    const sessionStore = new SessionStore({ homeDir });
+
+    // stub：第一轮发出 write 工具调用（写 hello.txt），第二轮纯文本结束
+    const provider = new RoundsStubProvider('stub', [
+      [
+        {
+          type: 'tool_use',
+          id: 'call-w1',
+          name: 'write',
+          input: { path: 'hello.txt', content: 'hi\n' },
+        },
+        { type: 'usage', usage: { inputTokens: 8, outputTokens: 3 } },
+        { type: 'finish', reason: 'tool_use' },
+      ],
+      [
+        { type: 'text_delta', delta: '完成' },
+        { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } },
+        { type: 'finish', reason: 'stop' },
+      ],
+    ]);
+    const permission: PermissionConfig = {
+      sandbox: 'workspace-write',
+      policy: 'never', // 工作区内放手干：write 工具不弹审批，自动执行
+      projectRoot: cwd,
+    };
+
+    const { stdout, stdin, exit } = await startTui({
+      homeDir,
+      cwd,
+      provider,
+      tools: defaultWriteTools(),
+      permission,
+    });
+
+    await typeAndEnter(stdin, '帮我写一个文件');
+
+    // 轮末自动快照：等会话日志出现 snapshot 条目（appendSnapshot 已入日志）
+    let sessionId = '';
+    const read = await waitFor<SessionReadResult>(async () => {
+      const sessions = await sessionStore.list(projectHash(cwd));
+      if (sessions.length === 0) return null;
+      sessionId = sessions[0]?.sessionId ?? '';
+      const current = await sessionStore.read(projectHash(cwd), sessionId);
+      if (
+        current === null ||
+        !current.records.some((record) => record.kind === 'snapshot')
+      ) {
+        return null;
+      }
+      return current;
+    }, 10_000);
+
+    // 工具确实执行了：文件已写入工作树
+    expect(readFileSync(join(cwd, 'hello.txt'), 'utf8')).toBe('hi\n');
+
+    // appendSnapshot 条目：ref = 快照点 id、summary 提到 hello.txt
+    const snapshotEntries = read.records.filter(
+      (record) => record.kind === 'snapshot',
+    );
+    expect(snapshotEntries.length).toBeGreaterThan(0);
+    const snapshotEntry = snapshotEntries[snapshotEntries.length - 1];
+    expect(snapshotEntry.kind).toBe('snapshot');
+    expect(snapshotEntry.data.ref.length).toBe(40);
+    expect(snapshotEntry.data.summary).toContain('hello.txt');
+
+    // 快照清单：最新点与日志条目同 id、非降级、内容捕获 hello.txt
+    const store = new SnapshotStore({ homeDir, cwd });
+    const points = await store.listSnapshots();
+    expect(points.length).toBeGreaterThan(0);
+    const latest = points[0];
+    expect(latest?.id).toBe(snapshotEntry.data.ref);
+    expect(latest?.degraded).toBe(false);
+    expect(latest?.summary).toContain('hello.txt');
+    expect(latest?.sessionId).toBe(sessionId);
+
+    // /rewind 列出该快照点（8 位短哈希可见）
+    await typeAndEnter(stdin, '/rewind');
+    const frame = stdout.lastFrame();
+    expect(frame).toContain('快照点（/rewind）');
+    expect(frame).toContain((latest?.id ?? '').slice(0, 8));
 
     stdin.write('\x03');
     await flush();
