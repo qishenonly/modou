@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { createWebFetchTool, WEBFETCH_TOOL_NAME } from './webfetch';
+import {
+  createWebFetchTool,
+  WEBFETCH_TOOL_NAME,
+  WEBFETCH_MAX_REDIRECTS,
+} from './webfetch';
 import { ApprovalGate } from '../../permission/approval';
 import { runToolPipeline } from '../pipeline';
 import { ToolRegistry } from '../registry';
@@ -208,6 +212,158 @@ describe('createWebFetchTool', () => {
     expect(tool.schema.safeParse({ url: 'https://example.com' }).success).toBe(
       true,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 重定向守卫（0.17.0 design-checker 偏离 3）：白名单不能通过 3xx 重定向绕过
+// ---------------------------------------------------------------------------
+
+/** 按 URL 精确路由的 stub fetch（含 Location 头；记录每次请求）。 */
+function routeFetchStub(
+  routes: Record<
+    string,
+    { status: number; headers?: Record<string, string>; body?: string }
+  >,
+) {
+  const calls: string[] = [];
+  const impl = async (url: string | URL | Request): Promise<Response> => {
+    const u = String(url);
+    calls.push(u);
+    const route = routes[u];
+    if (route === undefined) {
+      return new Response(`unexpected url: ${u}`, { status: 404 });
+    }
+    return new Response(route.body ?? '', {
+      status: route.status,
+      headers: route.headers ?? {},
+    });
+  };
+  return { calls, impl };
+}
+
+describe('WebFetch 重定向守卫（0.17.0 design-checker 偏离 3）', () => {
+  test('白名单内域名 302 重定向到白名单外 → 拒绝，且不请求重定向目标', async () => {
+    const { calls, impl } = routeFetchStub({
+      'https://example.com/start': {
+        status: 302,
+        headers: { Location: 'https://evil.example.net/exfil' },
+      },
+    });
+    const tool = createWebFetchTool({
+      fetchImpl: impl,
+      config: { allowedDomains: ['example.com'] },
+    });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/start' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('重定向');
+    expect(outcome.forModel).toContain('白名单');
+    // 只发起了第一跳；重定向目标从未被请求（零数据外泄副作用）
+    expect(calls).toEqual(['https://example.com/start']);
+  });
+
+  test('白名单内重定向 → 逐跳仍合规，放行并返回最终正文', async () => {
+    const { calls, impl } = routeFetchStub({
+      'https://example.com/start': {
+        status: 301,
+        headers: { Location: 'https://www.example.com/docs' },
+      },
+      'https://www.example.com/docs': {
+        status: 200,
+        body: '<html><body><p>redirected ok</p></body></html>',
+      },
+    });
+    const tool = createWebFetchTool({
+      fetchImpl: impl,
+      config: { allowedDomains: ['example.com'] },
+    });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/start' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(outcome.forModel).toContain('redirected ok');
+    expect(calls).toEqual([
+      'https://example.com/start',
+      'https://www.example.com/docs',
+    ]);
+  });
+
+  test('重定向目标是黑名单域名 → 拒绝（黑名单优先）', async () => {
+    const { calls, impl } = routeFetchStub({
+      'https://example.com/start': {
+        status: 302,
+        headers: { Location: 'https://blocked.example.com/x' },
+      },
+    });
+    const tool = createWebFetchTool({
+      fetchImpl: impl,
+      config: {
+        allowedDomains: ['example.com'],
+        deniedDomains: ['blocked.example.com'],
+      },
+    });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/start' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('黑名单');
+    expect(calls).toEqual(['https://example.com/start']);
+  });
+
+  test('重定向到非 http/https 协议（file://）→ 拒绝', async () => {
+    const { calls, impl } = routeFetchStub({
+      'https://example.com/start': {
+        status: 302,
+        headers: { Location: 'file:///etc/passwd' },
+      },
+    });
+    const tool = createWebFetchTool({ fetchImpl: impl });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/start' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('http/https');
+    expect(calls).toEqual(['https://example.com/start']);
+  });
+
+  test('3xx 缺 Location 头 → 拒绝（可诊断）', async () => {
+    const { impl } = routeFetchStub({
+      'https://example.com/start': { status: 302 },
+    });
+    const tool = createWebFetchTool({ fetchImpl: impl });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/start' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('Location');
+  });
+
+  test('超过重定向步数上限 → 拒绝（防重定向循环拖死抓取）', async () => {
+    const { calls, impl } = routeFetchStub({
+      'https://example.com/loop': {
+        status: 302,
+        headers: { Location: 'https://example.com/loop' },
+      },
+    });
+    const tool = createWebFetchTool({
+      fetchImpl: impl,
+      config: { allowedDomains: ['example.com'] },
+    });
+    const outcome = await tool.execute(
+      { url: 'https://example.com/loop' },
+      makeContext(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('重定向超过');
+    // 首跳 + 上限内的每一跳都真实发起了请求（loop 域名本身合规，守卫拦的是步数）
+    expect(calls).toHaveLength(WEBFETCH_MAX_REDIRECTS + 1);
   });
 });
 
