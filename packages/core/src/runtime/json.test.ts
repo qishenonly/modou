@@ -339,6 +339,47 @@ describe('退出码语义化（T-130）', () => {
     expect(out.exitCode).toBe(RunExitCode.APPROVAL_REQUIRED);
   });
 
+  test('only 过滤不含审批事件时仍返回 3：审批独立于 only 恒收集（0.13.0 必修）', async () => {
+    const stub = new StubProvider([
+      toolUseEvents('bash', 'call-1', { cmd: 'ls' }),
+      textEvents('已回退作答'),
+    ]);
+    // 与上一条用例同款默认拒绝装配（bash risk=exec → 自动 deny gate）
+    const bashTool = {
+      name: 'bash',
+      description: '执行命令（测试）',
+      risk: 'exec' as const,
+      schema: z.object({ cmd: z.string() }),
+      execute: async () => ({ ok: true, forModel: 'ran' }),
+    };
+    const tools = new ToolRegistry();
+    tools.register(bashTool);
+    const out = await runAgentTurnJson(
+      {
+        provider: stub,
+        tools,
+        messages: [userMsg],
+        options: { maxTurns: 5 },
+      },
+      // only 只取 tool_result + turn_end——显式不含审批事件
+      { only: new Set(['tool_result', 'turn_end']) },
+    );
+    // 返回的 events 严格按 only 过滤：无任何审批事件
+    for (const event of out.events) {
+      expect(['tool_result', 'turn_end']).toContain(event.type);
+    }
+    expect(
+      out.events.some(
+        (event) =>
+          event.type === 'approval_request' ||
+          event.type === 'approval_resolved',
+      ),
+    ).toBe(false);
+    // 但退出码仍为 3：审批被拒（approval_resolved deny）独立于 only 收集，
+    // 「需审批」信号不会被 only 子集吞掉——CI 依然转人审阅而非静默放行。
+    expect(out.exitCode).toBe(RunExitCode.APPROVAL_REQUIRED);
+  });
+
   test('中断 → 130（interrupted）', async () => {
     const controller = new AbortController();
     controller.abort();

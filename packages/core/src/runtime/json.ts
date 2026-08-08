@@ -203,6 +203,11 @@ export async function runAgentTurnJson(
   options: RunAgentTurnJsonOptions = {},
 ): Promise<RunAgentTurnJsonResult> {
   const envelopes: Envelope[] = [];
+  // 审批事件独立于 only 恒收集（0.13.0 必修）：退出码 3 的判定依据是事件流里
+  // 的 approval_request / approval_resolved 对，绝不能因 `only` 过滤被吞掉——
+  // 「需审批」是与普通失败不同的信号，脚本即使只订阅 text/usage 等子集也必须
+  // 看到 3。此数组只用于 exitCodeFor；返回的 `events` 仍严格按 only 过滤。
+  const approvalEnvelopes: Envelope[] = [];
   const { approval: injectedApproval, tools } = input;
   // ADR 0012：无人值守默认拒绝——未注入审批闸门且注册表非空时，装配默认拒绝的
   // gate（ApprovalGate 缺省 decider 即 deny），并把输入补成自动装配后的形态。
@@ -239,6 +244,14 @@ export async function runAgentTurnJson(
     { ...effectiveInput, messages },
     (envelope) => {
       adapter?.consume(envelope);
+      // 审批事件恒进 approvalEnvelopes（独立于 only）：退出码判定的唯一依据，
+      // 见上方声明注释。
+      if (
+        envelope.type === 'approval_request' ||
+        envelope.type === 'approval_resolved'
+      ) {
+        approvalEnvelopes.push(envelope);
+      }
       if (options.only === undefined || options.only.has(envelope.type)) {
         envelopes.push(envelope);
       }
@@ -249,7 +262,10 @@ export async function runAgentTurnJson(
     },
   );
   return {
-    exitCode: exitCodeFor(envelopes, result),
+    // 退出码判定用「审批事件（恒收集）+ only 过滤后的事件」合并流：审批事件
+    // 在前、内部相对顺序不变，hasDeniedOrPendingApproval 的 pending/deny 记账
+    // 不受影响——only 过滤只收窄返回的 events，不改变退出码语义。
+    exitCode: exitCodeFor([...approvalEnvelopes, ...envelopes], result),
     events: envelopes,
     result: jsonSafeTurnResult(result),
     notices,
