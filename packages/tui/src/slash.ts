@@ -69,6 +69,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     description:
       '清空当前会话上下文并开启新会话（原会话日志保留，/resume 可恢复）',
   },
+  {
+    name: 'rewind',
+    usage: '/rewind',
+    description:
+      '列出快照点，选择后预览差异并还原文件（回滚到该点，撤销之后的改动）',
+  },
 ];
 
 /** 未实现命令 notice 里列出的已支持命令。 */
@@ -101,6 +107,7 @@ export interface SlashHandlers {
   readonly resume: (args?: string) => void;
   readonly context: (args?: string) => void;
   readonly clear: () => void;
+  readonly rewind: () => void;
 }
 
 /**
@@ -136,6 +143,9 @@ export function dispatchSlash(
       return true;
     case 'clear':
       handlers.clear();
+      return true;
+    case 'rewind':
+      handlers.rewind();
       return true;
     default:
       onUnimplemented(name, args);

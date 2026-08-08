@@ -38,13 +38,16 @@ function shadowGit(store: SnapshotStore, args: string[], cwd: string): string {
   });
 }
 
+/** 共享测试根目录（模块级创建，afterAll 清理）。 */
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'modou-snap-'));
+
 /** 创建临时项目 + 临时 HOME，返回隔离句柄。 */
 function makeIsolation(): {
   project: string;
   homeDir: string;
   store: SnapshotStore;
 } {
-  const root = mkdtempSync(join(tmpdir(), 'modou-snap-'));
+  const root = mkdtempSync(join(TEST_ROOT, 'case-'));
   const project = join(root, 'proj');
   const homeDir = join(root, 'home');
   mkdirSync(project, { recursive: true });
@@ -54,7 +57,7 @@ function makeIsolation(): {
 }
 
 afterAll(() => {
-  rmSync(join(tmpdir(), 'modou-snap-'), { recursive: true, force: true });
+  rmSync(TEST_ROOT, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------

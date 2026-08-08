@@ -132,6 +132,18 @@ export interface ModelSwitchEntryData {
   readonly to: string;
 }
 
+/**
+ * snapshot 条目负载（design 002 §4.2：快照标记入日志；0.10.0 落地）。
+ * 记录「快照点在哪、改了什么」——/rewind 列表的依据之一是清单（manifest），
+ * 日志侧这条是审计 / 追溯用的旁路标记，投影时忽略（不产生模型消息）。
+ */
+export interface SnapshotEntryData {
+  /** 快照点 id（影子仓库 commit 哈希；degraded 点也记录供追溯）。 */
+  readonly ref: string;
+  /** 改动摘要（快照点的 summary，如「3 个文件变更：…」）。 */
+  readonly summary?: string;
+}
+
 /** kind → data 的类型映射（判别联合的单一来源）。 */
 export interface SessionEntryDataMap {
   user: UserEntryData;
@@ -144,6 +156,7 @@ export interface SessionEntryDataMap {
   error: ErrorEntryData;
   compaction: CompactionEntryData;
   model_switch: ModelSwitchEntryData;
+  snapshot: SnapshotEntryData;
 }
 
 export type SessionEntryKind = keyof SessionEntryDataMap;
@@ -160,6 +173,7 @@ const SESSION_ENTRY_KINDS: readonly SessionEntryKind[] = [
   'error',
   'compaction',
   'model_switch',
+  'snapshot',
 ];
 
 const SESSION_ENTRY_KIND_SET: ReadonlySet<string> = new Set(
@@ -184,6 +198,7 @@ export type SessionRecord = {
   | { readonly kind: 'error'; readonly data: ErrorEntryData }
   | { readonly kind: 'compaction'; readonly data: CompactionEntryData }
   | { readonly kind: 'model_switch'; readonly data: ModelSwitchEntryData }
+  | { readonly kind: 'snapshot'; readonly data: SnapshotEntryData }
 );
 
 /**
@@ -446,6 +461,15 @@ export class SessionLog {
    */
   appendModelSwitch(from: string, to: string): Promise<void> {
     return this.append('model_switch', { from, to });
+  }
+
+  /**
+   * 追加 snapshot 条目（0.10.0「安全网」：快照标记入日志，002 4.2）。
+   * 快照引擎每次产生真实快照点（非 degraded）后调用方把它记进会话日志，
+   * 作为审计 / 追溯的旁路标记；投影时忽略（不产生模型消息，历史上下文不变）。
+   */
+  appendSnapshot(data: SnapshotEntryData): Promise<void> {
+    return this.append('snapshot', data);
   }
 
   /**

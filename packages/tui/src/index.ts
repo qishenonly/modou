@@ -4,6 +4,7 @@ import {
   buildContextState,
   buildSystemPrompt,
   BudgetLedger,
+  collectTouchedPaths,
   countUserMessages,
   createModelDeltaGenerator,
   createProviderFromConfig,
@@ -19,6 +20,7 @@ import {
   runAgentTurnStreaming,
   SessionLog,
   SessionStore,
+  SnapshotStore,
 } from '@modou/core';
 import type {
   Command,
@@ -30,6 +32,8 @@ import type {
   ModelProvider,
   NoticeLevel,
   ResumeCandidate,
+  RewindPreview,
+  SnapshotPoint,
   SummaryState,
 } from '@modou/core';
 import { App } from './app';
@@ -156,6 +160,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
 
   // —— 会话（T-060 旁路记录 / T-061 /resume）——
   const sessionStore = new SessionStore({ homeDir });
+  // 快照引擎（T-102 /rewind / T-103 /snapshots）：影子 git 仓库——自动快照 +
+  // 手动回滚 + 生命周期清理。cwd 即项目根（工作树），与日志同项目哈希。
+  const snapshotStore = new SnapshotStore({ homeDir, cwd });
   // 当前会话日志：新建会话（缺省 sessionId）或 resume 续开（指定 sessionId）。
   let sessionLog: SessionLog | null = null;
   // 完整历史消息：每次轮次结束后从会话日志重新投影（002 4.1 日志是唯一真相），
@@ -170,6 +177,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   let resumeCandidates: readonly ResumeCandidate[] = [];
   // /model 选择器候选（T-082：非空 = App 显示模型选择器；slash.ts 收集）。
   let modelCandidates: readonly string[] = [];
+  // /rewind（T-102）：非空 = App 显示快照选择器；rewindTarget 非空 = 确认态
+  // （用户已选中快照点，展示回滚预览等待确认）。
+  let snapshotCandidates: readonly SnapshotPoint[] = [];
+  let rewindTarget: { point: SnapshotPoint; preview: RewindPreview } | null =
+    null;
   // /resume 恢复后的初始 token 累计（App 状态栏种子）。
   let initialTotals: TokenTotals | undefined;
   // 预算账本（T-062）：会话级累计——每轮传入同一实例，跨轮次累计请求前粗估
@@ -266,6 +278,39 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     ).catch(() => {});
   };
 
+  /**
+   * 自动快照（T-102）：每轮修改前 / 结束后把工作树状态记入影子仓库。
+   *
+   * - 触碰路径模式：从会话日志收集 agent 已 write/edit 的文件，只快照这些路径
+   *   （大仓库单次快照 < 1 秒的关键，002 风险表）；空集（如首轮）回落全量
+   *   （尊重 .gitignore + node_modules 排除，T-101）；
+   * - 无变更返回 null（不产生空 commit）；超限降级点仅记录摘要并告警；
+   * - 失败不阻断任务：告警 notice 后继续（快照是旁路安全网，不是任务前提）。
+   */
+  const takeSnapshot = async (): Promise<void> => {
+    if (sessionLog === null) return;
+    try {
+      const read = await sessionStore.read(
+        projectHash(cwd),
+        sessionLog.sessionId,
+      );
+      const paths = collectTouchedPaths(read?.records ?? [], { cwd });
+      const point = await snapshotStore.snapshot({
+        paths,
+        sessionId: sessionLog.sessionId,
+      });
+      if (point !== null && !point.degraded && point.id !== null) {
+        // 快照标记入日志（002 4.2）：审计 / 追溯用，投影时忽略。
+        await sessionLog.appendSnapshot({
+          ref: point.id,
+          summary: point.summary,
+        });
+      }
+    } catch (caught) {
+      pushNotice('warn', `自动快照失败：${describeError(caught)}`);
+    }
+  };
+
   const startTurn = (text: string): void => {
     if (currentController !== null) return; // 已在运行，忽略（T-041 完善排队/并入）
     // 新一轮输入开始：关闭 /context 面板（避免模态遮挡新任务；Esc 也可随时关闭）
@@ -275,9 +320,12 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     }
     // 等上一轮的历史投影完成（幂等：首轮 historyRefresh 已是 resolved），
     // 保证提交时的 messages 与 loggedUserCount 一致（续写不重复落盘历史）。
-    void historyRefresh.then(() => {
+    void historyRefresh.then(async () => {
       if (currentController !== null) return; // 等待投影期间已有轮次开始
       if (sessionLog === null) openSession();
+      // T-102：修改前自动快照（首轮 = 初始基线；后续轮工作树未变则返回 null）
+      await takeSnapshot();
+      if (currentController !== null) return; // 快照期间已有轮次开始
       const controller = new AbortController();
       currentController = controller;
       const messages: ModelMessage[] = [
@@ -328,7 +376,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         })
         .finally(() => {
           currentController = null;
-          refreshHistory(); // 本轮结束后重新投影历史，供下一次续写
+          // T-102：轮次结束后快照（记录本轮改动后的状态，供 /rewind 还原到
+          // 「改动之后」的点；无变更返回 null）。随后重新投影历史供下一次续写。
+          void takeSnapshot().finally(refreshHistory);
         });
     });
   };
@@ -372,6 +422,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       resume: handleSlashResume,
       context: handleSlashContext,
       clear: handleSlashClear,
+      rewind: () => {
+        void handleSlashRewind();
+      },
     };
     dispatchSlash(name, args, handlers, (unimplemented) => {
       pushNotice(
@@ -671,6 +724,85 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     );
   };
 
+  // —— /rewind（T-102）：列快照点 → 选择 → 预览差异 → 确认还原 ——
+
+  /** /rewind：列出本项目快照点（新 → 旧），打开选择器（轮次运行中拒绝）。 */
+  const handleSlashRewind = async (): Promise<void> => {
+    if (currentController !== null) {
+      pushNotice('warn', '任务运行中，暂不能 /rewind（等当前轮次结束后再试）');
+      return;
+    }
+    const points = await snapshotStore.listSnapshots();
+    const restorable = points.filter((point) => !point.degraded);
+    if (restorable.length === 0) {
+      pushNotice('info', '没有可回滚的快照点（本会话尚未产生快照）');
+      return;
+    }
+    snapshotCandidates = restorable;
+    rerender();
+  };
+
+  /** /rewind 选择：计算回滚预览，有差异进入确认态（无差异直接提示）。 */
+  const handleRewindSelect = async (id: string): Promise<void> => {
+    const point = snapshotStore.findSnapshot(id);
+    if (point === undefined || point.degraded) {
+      snapshotCandidates = [];
+      rerender();
+      pushNotice('warn', '该快照点不存在或未保存完整内容，无法还原');
+      return;
+    }
+    try {
+      const preview = await snapshotStore.previewRewind(id);
+      if (preview.restoreFiles.length + preview.deleteFiles.length === 0) {
+        snapshotCandidates = [];
+        rerender();
+        pushNotice('info', '该快照点与当前状态一致，无需还原');
+        return;
+      }
+      rewindTarget = { point, preview };
+      rerender();
+    } catch (caught) {
+      pushNotice('warn', `无法预览回滚：${describeError(caught)}`);
+    }
+  };
+
+  /** /rewind 确认：执行还原，并向会话插入「已回滚到 X 点」说明（002 4.1）。 */
+  const handleRewindConfirm = async (): Promise<void> => {
+    const target = rewindTarget;
+    rewindTarget = null;
+    snapshotCandidates = [];
+    rerender(); // 先关选择器，防重入
+    if (target === null) return;
+    try {
+      const result = await snapshotStore.rewindTo(target.preview.snapshotId);
+      // 还原后向会话插入显式说明：模型下次看到「已回滚」就不会重复已撤销的工作
+      if (sessionLog === null) openSession();
+      const short = (target.point.id ?? '').slice(0, 8);
+      await sessionLog?.appendUser(
+        `用户已回滚到快照点 ${short}（${target.point.summary}）。` +
+          `文件已还原到该点状态，之前的改动已被撤销——请勿重复已撤销的工作。`,
+      );
+      refreshHistory(); // 重新投影（含回滚说明），下一次提交模型能看到
+      const parts = [`已还原 ${result.restored.length} 个文件`];
+      if (result.deleted.length > 0) {
+        parts.push(`删除 ${result.deleted.length} 个文件`);
+      }
+      pushNotice('info', `${parts.join('，')}（回滚到 ${short}）`);
+    } catch (caught) {
+      pushNotice('error', `还原失败：${describeError(caught)}`);
+    }
+  };
+
+  /** /rewind 取消 / 返回：确认态退回列表，列表态关闭。 */
+  const handleSnapshotCancel = (): void => {
+    if (rewindTarget !== null) {
+      rewindTarget = null; // 退回列表态（选择器仍在）
+    } else {
+      snapshotCandidates = [];
+    }
+    rerender();
+  };
+
   // 发 Command 通道（002 3.3 反向通道）
   const send = (command: Command): void => {
     switch (command.type) {
@@ -737,6 +869,17 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
         modelCandidates = [];
         rerender();
       },
+      // /rewind（T-102）：非空 = 快照选择器打开（模态）；选中 → 预览差异进入
+      // 确认态，确认 → 还原并插入会话说明，Esc 取消/返回
+      snapshotCandidates,
+      rewindPreview: rewindTarget?.preview,
+      onSnapshotSelect: (id) => {
+        void handleRewindSelect(id);
+      },
+      onRewindConfirm: () => {
+        void handleRewindConfirm();
+      },
+      onSnapshotCancel: handleSnapshotCancel,
     });
 
   /** 重渲染 App（app 就绪后）；未就绪时静默跳过（构造期尚未挂载）。 */
@@ -799,6 +942,8 @@ export { ResumePicker } from './resume';
 export type { ResumePickerProps } from './resume';
 export { ModelPicker } from './model';
 export type { ModelPickerProps } from './model';
+export { SnapshotPicker } from './rewind';
+export type { SnapshotPickerProps } from './rewind';
 export * from './slash';
 export type { CreateProvider } from './startup';
 export {

@@ -18,12 +18,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectTouchedPaths, SessionRecord, SnapshotStore } from '@modou/core';
 
+/** 共享测试根目录（模块级创建，afterAll 清理）。 */
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'modou-snap-policy-'));
+
 /** 创建临时项目 + 临时 HOME。 */
 function makeIsolation(): {
   project: string;
   store: SnapshotStore;
 } {
-  const root = mkdtempSync(join(tmpdir(), 'modou-snap-policy-'));
+  const root = mkdtempSync(join(TEST_ROOT, 'case-'));
   const project = join(root, 'proj');
   mkdirSync(project, { recursive: true });
   const store = new SnapshotStore({
@@ -68,10 +71,7 @@ function changedPaths(
 }
 
 afterAll(() => {
-  rmSync(join(tmpdir(), 'modou-snap-policy-'), {
-    recursive: true,
-    force: true,
-  });
+  rmSync(TEST_ROOT, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------

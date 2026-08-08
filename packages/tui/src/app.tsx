@@ -6,6 +6,8 @@ import type {
   ContextStateData,
   Envelope,
   ResumeCandidate,
+  RewindPreview,
+  SnapshotPoint,
 } from '@modou/core';
 import { ApprovalModal } from './approval';
 import { ContextPanel } from './context';
@@ -13,6 +15,7 @@ import { Input } from './input';
 import { DEFAULT_FRAME_MS, Markdown, useFrameThrottledText } from './markdown';
 import { ModelPicker } from './model';
 import { ResumePicker } from './resume';
+import { SnapshotPicker } from './rewind';
 import {
   StatusBar,
   ZERO_TOKEN_TOTALS,
@@ -77,6 +80,22 @@ export interface AppProps {
   readonly onModelSelect?: (modelId: string) => void;
   /** /model：用户取消选择（Esc；runTui 关闭选择器）。 */
   readonly onModelCancel?: () => void;
+  /**
+   * /rewind（T-102）：待选快照点列表（runTui 注入；非空时显示快照选择器并隐藏
+   * 输入行，阻塞输入提交）。缺省/空数组 = 正常输入。
+   */
+  readonly snapshotCandidates?: readonly SnapshotPoint[];
+  /**
+   * /rewind：用户选中快照点后的回滚预览（runTui 经 previewRewind 计算并注入；
+   * 非空 = 选择器进入确认态，展示差异等待回车确认）。
+   */
+  readonly rewindPreview?: RewindPreview;
+  /** /rewind：用户选中一个快照点（id；runTui 计算预览）。 */
+  readonly onSnapshotSelect?: (id: string) => void;
+  /** /rewind：用户确认还原（runTui 执行 rewindTo 并插入会话说明）。 */
+  readonly onRewindConfirm?: () => void;
+  /** /rewind：用户取消 / 返回（runTui 关选择器或退回列表态）。 */
+  readonly onSnapshotCancel?: () => void;
 }
 
 /**
@@ -115,6 +134,11 @@ export function App(props: AppProps): ReactElement {
     modelCandidates,
     onModelSelect,
     onModelCancel,
+    snapshotCandidates,
+    rewindPreview,
+    onSnapshotSelect,
+    onRewindConfirm,
+    onSnapshotCancel,
   } = props;
 
   // 输出区：流式文本累计 + 帧节流（T-042 换 markdown 渲染，50ms 合并一次提交）
@@ -183,6 +207,11 @@ export function App(props: AppProps): ReactElement {
   const modelOpen = (modelCandidates?.length ?? 0) > 0;
   const modelOpenRef = useRef(modelOpen);
   modelOpenRef.current = modelOpen;
+  // 快照选择器（T-102 /rewind）：runTui 注入候选列表；非空即打开。与 /resume
+  // 选择器同一惯例——打开时输入行隐藏，全局 Esc 让给选择器（取消/返回）。
+  const snapshotOpen = (snapshotCandidates?.length ?? 0) > 0;
+  const snapshotOpenRef = useRef(snapshotOpen);
+  snapshotOpenRef.current = snapshotOpen;
 
   // 输入行：T-041 起由 input.tsx 组件承载（多行编辑/粘贴/历史/斜杠补全），
   // App 不持有输入文本，只把提交的 Command 经 send 回传 core。
@@ -275,7 +304,8 @@ export function App(props: AppProps): ReactElement {
     if (
       approvalOpenRef.current ||
       resumeOpenRef.current ||
-      modelOpenRef.current
+      modelOpenRef.current ||
+      snapshotOpenRef.current
     ) {
       if (key.ctrl && _text === 'c') {
         onExit?.();
@@ -414,16 +444,30 @@ export function App(props: AppProps): ReactElement {
         />
       )}
 
+      {/* 快照选择器（T-102 /rewind）：runTui 注入候选列表；非空即显示。
+          打开期间隐藏输入行（阻塞输入提交），Esc 取消/返回后恢复；选中快照点
+          后 rewindPreview 非空 → 选择器进入确认态（展示差异等待回车确认） */}
+      {snapshotOpen && (
+        <SnapshotPicker
+          candidates={snapshotCandidates ?? []}
+          preview={rewindPreview}
+          onSelect={(id) => onSnapshotSelect?.(id)}
+          onConfirm={() => onRewindConfirm?.()}
+          onCancel={() => onSnapshotCancel?.()}
+        />
+      )}
+
       {/* /context 用量面板（T-063）：runTui 注入 contextState 即显示（模态），
           Esc 经 onContextDismiss 关闭；与弹窗/选择器同款「打开时隐藏输入行」 */}
       {contextState !== undefined && <ContextPanel state={contextState} />}
 
       {/* 底部输入行（input.tsx：多行 / 粘贴 / 历史上翻 / 斜杠补全）。
-          审批弹窗、会话选择器、模型选择器或 /context 面板打开时隐藏——模态期间
-          不接受新的输入提交 */}
+          审批弹窗、会话选择器、模型选择器、快照选择器或 /context 面板打开时
+          隐藏——模态期间不接受新的输入提交 */}
       {pendingApproval === null &&
         !resumeOpen &&
         !modelOpen &&
+        !snapshotOpen &&
         contextState === undefined && (
           <Box>
             <Text color="cyan">&gt; </Text>
