@@ -55,6 +55,8 @@ export interface ToolPipelineContext {
    * 缺省不注入（Task 工具返回「子代理不可用」失败结果）。
    */
   readonly runSubagent?: SubagentRunner;
+  /** 写入上报回调：透传给工具 ctx.onFileWrite（write/edit 成功落盘后调用，运行时维护写冲突检测）。 */
+  readonly onFileWrite?: (path: string) => void;
 }
 
 export interface ToolPipelineOptions {
@@ -258,6 +260,9 @@ function executeWithTimeout(
         : {}),
       ...(context.runSubagent !== undefined
         ? { runSubagent: context.runSubagent }
+        : {}),
+      ...(context.onFileWrite !== undefined
+        ? { onFileWrite: context.onFileWrite }
         : {}),
     };
 

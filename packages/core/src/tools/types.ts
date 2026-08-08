@@ -91,6 +91,35 @@ export type SubagentRunner = (
   request: SubagentRequest,
 ) => Promise<SubagentResult>;
 
+// ---------------------------------------------------------------------------
+// 写冲突检测（T-123，ADR 0011）
+// ---------------------------------------------------------------------------
+
+/**
+ * 写冲突报告（T-123）：同一文件被另一 agent 先写入后，当前 agent 再次写入时
+ * 返回的冲突信息。前端 / 用户据此核对「改动可能互相覆盖」。
+ */
+export interface WriteConflictReport {
+  /** 冲突的文件路径（工具上报的解析后绝对路径）。 */
+  readonly path: string;
+  /** 本次写入的 agent（'main' 或子代理 ID）。 */
+  readonly agent: string;
+  /** 此前已写入同一文件的另一 agent。 */
+  readonly existingAgent: string;
+  /** 既有写入的时间戳（epoch ms）。 */
+  readonly existingAt: number;
+}
+
+/**
+ * 写冲突检测钩子（运行时/调用方注入）：每次工具成功写入一个文件后调用，
+ * 返回冲突报告（同一文件此前已被另一 agent 写入）或 undefined（无冲突 /
+ * 同一 agent 连续写入）。agent 参数：'main' = 主代理，子代理用自身 ID。
+ */
+export type OnFileWrite = (
+  path: string,
+  agent: string,
+) => WriteConflictReport | undefined;
+
 /** 工具执行上下文。0.2.0 最小集：组合取消信号 + 工作目录。 */
 export interface ToolContext {
   /**
@@ -134,6 +163,13 @@ export interface ToolContext {
    * （ADR 0011）。
    */
   readonly runSubagent?: SubagentRunner;
+  /**
+   * 写入上报回调（T-123 写冲突检测）：write / edit 工具成功落盘后调用，入参是
+   * 实际写入的文件路径（解析后绝对路径）。运行时据此维护会话级写冲突检测
+   * （onFileWrite 注入，ADT 0011）。回调同步、缺省不调用——写方自报，不把
+   * loop 与工具的 payload 结构耦合。
+   */
+  readonly onFileWrite?: (path: string) => void;
 }
 
 /**
@@ -179,6 +215,14 @@ export interface Tool<
   readonly description: string;
   readonly schema: TSchema;
   readonly risk: ToolRisk;
+  /**
+   * 并发执行标记（T-123 子代理）：标为 true 的工具在同一轮被多次调用时由 loop
+   * 并行执行（Promise.all 派发、结果按调用顺序聚合）——适用于互不共享状态、
+   * 无文件写副作用的工具（如 task 子代理派发，ADR 0011 默认只读因此并行安全）。
+   * 缺省 = 串行执行（002 十一「工具默认串行落地」，换取可预测性；并发写同一
+   * 文件必然丢改动）。
+   */
+  readonly concurrent?: boolean;
   readonly execute: (
     args: z.infer<TSchema>,
     ctx: ToolContext,

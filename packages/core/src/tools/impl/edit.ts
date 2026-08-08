@@ -775,6 +775,9 @@ async function executeEdit(
     realPath === absPath
       ? absPath
       : `${absPath}（符号链接，实际编辑 ${realPath}）`;
+  // 写入上报（T-123 写冲突检测）：成功落盘后自报实际写入路径（符号链接时
+  // 报真实文件），运行时据此维护写冲突检测。
+  ctx.onFileWrite?.(realPath);
   const forModel =
     `已替换 "${pathLabel}"：old_string 出现 ${occurrenceCount} 次` +
     (replaceAll ? '（已全部替换）' : '') +

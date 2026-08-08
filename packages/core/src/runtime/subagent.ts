@@ -10,6 +10,7 @@ import {
   type SubagentRequest,
   type SubagentResult,
   type SubagentRunner,
+  type WriteConflictReport,
 } from '../tools/types';
 import type { RunAgentTurnInput, RuntimeEvent, TurnResult } from './loop';
 
@@ -106,6 +107,15 @@ export interface SubagentRunnerOptions {
    * 折叠）。缺省静默（不转发）。
    */
   readonly emit?: (event: RuntimeEvent) => void;
+  /**
+   * 写冲突检测钩子（T-123，ADR 0011）：透传主代理的 onFileWrite，子代理的
+   * 每次成功写入按自身 agentId 上报——与主代理的 'main' 区分，跨 agent 同
+   * 文件写入被检出冲突。缺省 = 不检测。
+   */
+  readonly onFileWrite?: (
+    path: string,
+    agent: string,
+  ) => WriteConflictReport | undefined;
 }
 
 /** 把子代理的终止归一为 SubagentResult（错误即数据）。 */
@@ -239,6 +249,9 @@ export function createSubagentRunner(
               : {}),
           },
           subagentDepth: SUBAGENT_DEPTH_LIMIT,
+          // T-123：子代理的写入按自身 agentId 上报写冲突检测
+          agentId,
+          onFileWrite: (path) => options.onFileWrite?.(path, agentId),
         },
         // T-122：子代理运行时事件包上 agentId 转出（bridge 据此按 agent 分发
         // 信封；前端按 ID 分组折叠展示子代理完整过程，主上下文不受污染）。

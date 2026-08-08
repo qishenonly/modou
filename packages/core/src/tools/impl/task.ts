@@ -117,6 +117,9 @@ export function createTaskTool(): Tool<typeof taskSchema> {
     // 见文件头注释：本工具自身不触碰文件系统，子代理内部有副作用的工具各自
     // 经审批闸门裁决，task 不额外触发审批（与 todo_write 同类的「无文件副作用」）。
     risk: 'read',
+    // T-123：同一轮多次派发时并行执行（Promise.all）——子代理默认只读、互不
+    // 共享文件写状态（ADR 0011），并行安全；结果按调用顺序聚合。
+    concurrent: true,
     execute: async (args: TaskArgs, ctx: ToolContext): Promise<ToolOutcome> => {
       if (ctx.runSubagent === undefined) {
         return {

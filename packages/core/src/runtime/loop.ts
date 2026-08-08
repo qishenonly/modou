@@ -28,7 +28,7 @@ import type {
 import { runToolPipeline } from '../tools/pipeline';
 import { redactValue } from '../tools/redact';
 import type { ToolRegistry } from '../tools/registry';
-import type { SubagentRunner } from '../tools/types';
+import type { SubagentRunner, WriteConflictReport } from '../tools/types';
 import { toToolSet } from '../tools/toolset';
 import { createSubagentRunner } from './subagent';
 import { extractInterruptReason, isInterruptError } from './interrupt';
@@ -157,6 +157,22 @@ export interface RunAgentTurnInput {
    * 调用方一般不用管（缺省 0）。
    */
   readonly subagentDepth?: number;
+  /**
+   * 本循环的 agent 标识（T-122 写冲突上报用）：主代理缺省 'main'；子代理由
+   * 派发器传自身 ID（sub-xxx）。写冲突检测（onFileWrite）用它区分写入者。
+   */
+  readonly agentId?: string;
+  /**
+   * 写冲突检测钩子（T-123，ADR 0011）：每次工具成功写入一个文件后调用（path =
+   * 工具上报的解析后绝对路径，agent = 写入者标识，见 agentId）。返回冲突报告
+   * （同一文件此前已被另一 agent 写入）或 undefined；返回冲突时本 loop 发
+   * notice（warn）告知前端。缺省 = 不检测（0.11.0 及之前行为）。调用方可注入
+   * WriteConflictDetector（tools/write-conflict.ts 的 toOnFileWrite）。
+   */
+  readonly onFileWrite?: (
+    path: string,
+    agent: string,
+  ) => WriteConflictReport | undefined;
   readonly options: TurnOptions;
 }
 
@@ -383,6 +399,8 @@ export async function runAgentTurn(
   const readFiles = new Set<string>(initialReadFiles ?? []);
   /** 工作目录：入参提供或缺省 process.cwd()，传给工具 ctx.cwd。 */
   const cwd = inputCwd ?? process.cwd();
+  /** 本循环的 agent 标识（写冲突上报用）：主代理 'main'，子代理自身 ID。 */
+  const agent = input.agentId ?? 'main';
 
   /**
    * 子代理派发通道（T-120 Task 工具）：注入 ToolContext 的 runSubagent——
@@ -402,6 +420,9 @@ export async function runAgentTurn(
     depth: input.subagentDepth ?? 0,
     // T-122：子代理运行时事件包上 agentId 转出为 subagent_event
     emit,
+    // T-123：写冲突检测——子代理写入按自身 agentId 上报（与主代理的 'main'
+    // 区分，跨 agent 同文件写入被检出冲突）
+    onFileWrite: input.onFileWrite,
   });
 
   /**
@@ -543,7 +564,14 @@ export async function runAgentTurn(
     }
 
     const results: ToolResultPart[] = [];
-    for (const call of toolUses) {
+    // 并行执行组（T-123 子代理）：concurrent 工具（如 task——子代理默认只读、
+    // 互不共享文件写状态，ADR 0011）同一轮被多次调用时并行派发（Promise.all），
+    // 结果按调用顺序聚合；其余工具保持串行（002 十一「工具默认串行落地」，
+    // 并发写同一文件必然丢改动，换取可预测性）。
+    const parallel: Array<{ index: number; promise: Promise<ToolResultPart> }> =
+      [];
+    for (let i = 0; i < toolUses.length; i += 1) {
+      const call = toolUses[i];
       if (tools === undefined) {
         // 未提供注册表：模型看不到任何工具定义却发了 tool_use，
         // 保留「未知工具」错误回喂（含 tool_feedback 事件）
@@ -553,7 +581,7 @@ export async function runAgentTurn(
           name: call.name,
           error: UNKNOWN_TOOL_MESSAGE(call.name),
         });
-        results.push({
+        results[i] = {
           type: 'tool-result',
           toolCallId: call.id,
           toolName: call.name,
@@ -561,12 +589,20 @@ export async function runAgentTurn(
             type: 'error-text',
             value: UNKNOWN_TOOL_MESSAGE(call.name),
           },
-        });
+        };
       } else {
         // 提供注册表（无论该工具是否注册）：一律走管线。未注册工具由
         // 管线产出 ok:false + 可用工具列表，比 loop 自己的弱诊断更可诊断。
-        results.push(await executeToolCall(call, tools));
+        const tool = tools.find(call.name);
+        if (tool?.concurrent === true) {
+          parallel.push({ index: i, promise: executeToolCall(call, tools) });
+        } else {
+          results[i] = await executeToolCall(call, tools);
+        }
       }
+    }
+    for (const { index, promise } of parallel) {
+      results[index] = await promise;
     }
     thread.push({ role: 'tool', content: results });
   };
@@ -606,6 +642,21 @@ export async function runAgentTurn(
           cwd,
           readFiles,
           runSubagent,
+          // T-123 写冲突检测：write/edit 成功落盘后自报路径，按本循环 agent
+          // 上报（主代理 'main' / 子代理 ID）；检出跨 agent 同文件写入时发
+          // notice（warn）告知前端「改动可能互相覆盖」（ADR 0011）。
+          onFileWrite: (path) => {
+            const conflict = input.onFileWrite?.(path, agent);
+            if (conflict !== undefined) {
+              emit({
+                type: 'notice',
+                level: 'warn',
+                text:
+                  `写冲突：文件 "${conflict.path}" 已被 ${conflict.existingAgent} 写入，` +
+                  `现在由 ${conflict.agent} 再次写入——改动可能互相覆盖，请核对后决定取舍`,
+              });
+            }
+          },
           onFileRead: (path) => {
             readFiles.add(path);
           },
