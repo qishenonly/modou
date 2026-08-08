@@ -55,6 +55,7 @@ import {
   lastModelSwitchTo,
   renderCostReport,
   renderHelpText,
+  renderMcpStatus,
   type SlashHandlers,
 } from './slash';
 import { runTui } from './index';
@@ -240,7 +241,7 @@ function readAllSessionLines(homeDir: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('dispatchSlash（T-082 分发器）', () => {
-  test('十一个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
+  test('十二个内置命令路由到对应处理器，未实现命令走 onUnimplemented', () => {
     const called: string[] = [];
     const handlers: SlashHandlers = {
       help: () => called.push('help'),
@@ -255,6 +256,7 @@ describe('dispatchSlash（T-082 分发器）', () => {
       init: () => called.push('init'),
       image: (args) => called.push(`image:${args ?? ''}`),
       cost: () => called.push('cost'),
+      mcp: () => called.push('mcp'),
     };
     const unimplemented: Array<[string, string | undefined]> = [];
     const onUnimplemented = (name: string, args?: string): void => {
@@ -298,6 +300,9 @@ describe('dispatchSlash（T-082 分发器）', () => {
     expect(dispatchSlash('cost', undefined, handlers, onUnimplemented)).toBe(
       true,
     );
+    expect(dispatchSlash('mcp', undefined, handlers, onUnimplemented)).toBe(
+      true,
+    );
     // 未实现命令：返回 false、处理器不触发、onUnimplemented 收到原名与参数
     expect(dispatchSlash('foobar', 'x', handlers, onUnimplemented)).toBe(false);
 
@@ -315,13 +320,14 @@ describe('dispatchSlash（T-082 分发器）', () => {
       'init',
       'image:shot.png',
       'cost',
+      'mcp',
     ]);
     expect(unimplemented).toEqual([['foobar', 'x']]);
   });
 });
 
 describe('/help（T-082）', () => {
-  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image、/cost', () => {
+  test('BUILTIN_SLASH_COMMANDS 包含内置命令、0.11.0 /plan 与 0.13.0 /init、/image、/cost、/mcp', () => {
     expect(BUILTIN_SLASH_COMMANDS.map((command) => command.name)).toEqual([
       'help',
       'model',
@@ -335,6 +341,7 @@ describe('/help（T-082）', () => {
       'init',
       'image',
       'cost',
+      'mcp',
     ]);
   });
 
@@ -414,6 +421,49 @@ describe('renderCostReport（T-134 /cost 展示）', () => {
     });
     expect(text).toContain('无定价');
     expect(text).toContain('$?');
+  });
+});
+
+describe('renderMcpStatus（T-163 /mcp 展示）', () => {
+  test('已连接 / 失败 / 断开状态逐行展示（身份 + 工具数 + 错误）', () => {
+    const text = renderMcpStatus(
+      [
+        {
+          name: 'filesystem',
+          transport: 'stdio',
+          state: 'connected',
+          serverInfo: { name: 'filesystem', version: '0.6.2' },
+          protocolVersion: '2025-06-18',
+          toolCount: 5,
+        },
+        {
+          name: 'git',
+          transport: 'stdio',
+          state: 'failed',
+          error: '连接失败：command not found',
+          toolCount: 0,
+        },
+        {
+          name: 'web',
+          transport: 'http',
+          state: 'disconnected',
+          error: '连接断开，正在自动重连',
+          toolCount: 3,
+        },
+      ],
+      8,
+    );
+    expect(text).toContain('MCP 服务器（3 个，已注册工具 8 个）');
+    expect(text).toContain('filesystem [stdio] 已连接');
+    expect(text).toContain('filesystem 0.6.2 · 5 个工具');
+    expect(text).toContain('git [stdio] 连接失败');
+    expect(text).toContain('command not found');
+    expect(text).toContain('web [http] 已断开（等待重连）');
+    expect(text).toContain('正在自动重连');
+  });
+
+  test('未配置服务器时明确说明（不静默）', () => {
+    expect(renderMcpStatus([], 0)).toContain('未配置服务器');
   });
 });
 
@@ -715,6 +765,7 @@ describe('自定义斜杠命令分发（T-114）', () => {
       init: () => called.push('init'),
       image: (args) => called.push(`image:${args ?? ''}`),
       cost: () => called.push('cost'),
+      mcp: () => called.push('mcp'),
       custom: (command, args) =>
         called.push(`custom:${command.name}:${args ?? ''}`),
     };

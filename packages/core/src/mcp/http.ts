@@ -97,10 +97,7 @@ export class HttpTransport implements McpTransport {
     Pick<HttpTransportParams, 'requestTimeoutMs' | 'openServerStream'>
   >;
 
-  constructor(
-    private readonly params: HttpTransportParams,
-    private readonly clientName = 'modou',
-  ) {
+  constructor(private readonly params: HttpTransportParams) {
     this.options = {
       requestTimeoutMs: params.requestTimeoutMs ?? 30_000,
       openServerStream: params.openServerStream ?? true,
@@ -115,11 +112,12 @@ export class HttpTransport implements McpTransport {
     this.closeListeners.push(listener);
   }
 
-  /** HTTP 无需预热（会话在第一次 initialize POST 时建立）。 */
+  /** HTTP 无需预热（会话在第一次 initialize POST 时建立；崩溃后重启复位 closed）。 */
   async start(): Promise<void> {
-    if (this.closed) {
-      throw new McpError(-32001, 'MCP HTTP 传输已关闭，不能重新启动');
-    }
+    // 崩溃后重启：closed 由 close() 置位，这里复位（主动 close() 的路径不可达——
+    // 客户端状态已 closed，connect() 拒绝进入）。旧会话头可能已失效，服务器会
+    // 在 initialize 响应里回新的（或拒绝，connect 失败 → manager 按退避重试）。
+    this.closed = false;
   }
 
   /** POST 一条请求并等待同 id 响应（JSON 或 SSE 帧流两种响应体都支持）。 */
@@ -163,8 +161,8 @@ export class HttpTransport implements McpTransport {
     this.closed = true;
     this.serverStreamController?.abort();
     this.serverStreamController = null;
+    // 关闭监听不清理：重连回调需跨次保留（崩溃后重连再崩溃）
     this.closeListeners.forEach((listener) => listener());
-    this.closeListeners = [];
   }
 
   // -------------------------------------------------------------------------

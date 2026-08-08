@@ -11,6 +11,7 @@ import { StdioTransport } from './stdio';
 import { McpClient } from './client';
 import { createMcpTool, mcpToolName, registerMcpTools } from './inject';
 import type { McpToolDescriptor } from './types';
+import { HookBus } from '../hooks/bus';
 
 // ---------------------------------------------------------------------------
 // 辅助：连接最小测试 server + 注入
@@ -186,6 +187,29 @@ describe('MCP 工具经执行管线（loop 视角无差别，T-162）', () => {
     );
     expect(outcome.ok).toBe(false);
     expect(outcome.forModel).toContain('这个工具永远失败');
+    await client.close();
+  });
+
+  test('钩子拦截：PreToolUse deny MCP 工具 → 阻止执行且理由回喂（与内置工具一致）', async () => {
+    const client = await connectClient();
+    const registry = new ToolRegistry();
+    registerMcpTools(registry, 'minimal', minimalDescriptors, client);
+    const hooks = new HookBus();
+    hooks.register(
+      'PreToolUse',
+      async () => ({
+        decision: 'deny' as const,
+        reason: '测试钩子拒绝所有 MCP 调用',
+      }),
+      { id: 'mcp-deny-all' }, // 显式 ID：不消耗自动自增计数器（bus.test 依赖它）
+    );
+    const outcome = await runToolPipeline(
+      { id: 'call-5', name: 'mcp_minimal_echo', input: { text: 'x' } },
+      { registry, hooks },
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.forModel).toContain('钩子拒绝');
+    expect(outcome.forModel).toContain('测试钩子拒绝所有 MCP 调用');
     await client.close();
   });
 

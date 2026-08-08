@@ -524,3 +524,94 @@ describe('Hooks 配置（T-143 hooks 键）', () => {
     }
   });
 });
+
+describe('MCP 配置（T-163 mcp 键）', () => {
+  test('settings.json 的 mcp.servers 经 loadSettings / resolveConfig 透传', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      const mcp: NonNullable<Settings['mcp']> = {
+        servers: {
+          filesystem: {
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-filesystem', '/repo'],
+            risk: 'read',
+            tools: ['read_file', 'list_directory'],
+            enabled: true,
+          },
+          web: { url: 'https://example.com/mcp', env: { TOKEN: 'abc' } },
+        },
+      };
+      writeSettings(project, '.modou', { mcp });
+      const loaded = loadSettings({ homeDir: home, projectRoot: project });
+      expect(loaded.settings.mcp).toEqual(mcp);
+      const resolved = resolveConfig({
+        homeDir: home,
+        env: {},
+        settings: loaded.settings,
+      });
+      expect(resolved.mcp?.servers.filesystem.risk).toBe('read');
+      expect(resolved.mcp?.servers.web.url).toBe('https://example.com/mcp');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('缺省无 mcp 配置（不连接任何 server）', () => {
+    const config = resolveConfig({ homeDir: '/tmp/fake-home', env: {} });
+    expect(config.mcp).toBeUndefined();
+  });
+
+  test('显式覆盖优先于 settings', () => {
+    const config = resolveConfig({
+      homeDir: '/tmp/fake-home',
+      env: {},
+      settings: { mcp: { servers: { a: { command: '/a' } } } },
+      overrides: { mcp: { servers: { a: { command: '/b' } } } },
+    });
+    expect(config.mcp?.servers.a.command).toBe('/b');
+  });
+
+  test('command / url 缺失报友好错误（至少其一）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(home, '.modou', {
+        mcp: { servers: { broken: { args: ['-y'] } } },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.field).toContain('mcp.servers.broken');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('mcp 服务器未知字段报错（拼写错误可见，不静默）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(home, '.modou', {
+        mcp: { servers: { a: { command: '/a', enbled: true } } },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.expected).toContain('未知字段');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+});

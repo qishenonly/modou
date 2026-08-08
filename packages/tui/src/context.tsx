@@ -23,6 +23,7 @@ import type { ContextStateData } from '@modou/core';
 export const CONTEXT_SECTION_LABELS: Readonly<Record<string, string>> = {
   system: '系统提示',
   tools: '工具定义',
+  mcp_tools: 'MCP 工具',
   instructions: '项目指令',
   history: '历史消息',
   tool_output: '工具输出',

@@ -238,10 +238,11 @@ describe('runAgentTurn（0.1.0 裸循环）', () => {
     expect(event.type).toBe('context_state');
     if (event.type === 'context_state') {
       const data = event.data;
-      // 五个分项齐全（002 7.1 分段）
+      // 六个分项齐全（002 7.1 分段；0.16.0 起 MCP 工具定义单列）
       expect(data.sections.map((s) => s.name)).toEqual([
         'system',
         'tools',
+        'mcp_tools',
         'instructions',
         'history',
         'tool_output',

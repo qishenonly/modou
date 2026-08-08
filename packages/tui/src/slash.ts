@@ -24,6 +24,7 @@ import type {
   ModelProvider,
   SessionRecord,
 } from '@modou/core';
+import type { McpServerStatus } from '@modou/core';
 import type { CostTotals, DayCostTotals } from '@modou/core';
 
 // ---------------------------------------------------------------------------
@@ -109,6 +110,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandInfo[] = [
     usage: '/cost',
     description:
       '成本统计：本会话与按天的 token / 费用（按当前模型定价，未知模型只报 token）',
+  },
+  {
+    name: 'mcp',
+    usage: '/mcp',
+    description:
+      '查看 MCP 服务器连接状态（已连接 / 断开重连 / 失败，各服务器工具数）',
   },
 ];
 
@@ -207,6 +214,50 @@ export function renderCostReport(options: {
 }
 
 // ---------------------------------------------------------------------------
+// /mcp（T-163）：MCP 服务器连接状态报告渲染
+// ---------------------------------------------------------------------------
+
+/** 状态 → 中文标签（/mcp 展示）。 */
+const MCP_STATE_LABEL: Readonly<Record<McpServerStatus['state'], string>> = {
+  disconnected: '已断开（等待重连）',
+  connecting: '连接中',
+  connected: '已连接',
+  failed: '连接失败',
+};
+
+/**
+ * /mcp 报告渲染（纯函数，可离线测试）：每 server 一行——名称 [传输] 状态 ·
+ * 服务器身份 · 工具数 · 错误（失败/断开时）。未配置 server 时给明确说明。
+ */
+export function renderMcpStatus(
+  statuses: readonly McpServerStatus[],
+  activeToolCount: number,
+): string {
+  if (statuses.length === 0) {
+    return 'MCP：未配置服务器（settings.json mcp.servers 为空）。';
+  }
+  const lines = [
+    `MCP 服务器（${statuses.length} 个，已注册工具 ${activeToolCount} 个）：`,
+  ];
+  for (const status of statuses) {
+    const parts = [
+      `${status.name} [${status.transport}] ${MCP_STATE_LABEL[status.state]}`,
+    ];
+    if (status.state === 'connected') {
+      const info =
+        status.serverInfo !== undefined
+          ? `${status.serverInfo.name} ${status.serverInfo.version}`
+          : '未知身份';
+      parts.push(`${info} · ${status.toolCount} 个工具`);
+    } else if (status.state === 'failed' || status.state === 'disconnected') {
+      parts.push(`（${status.error ?? '原因未知'}）`);
+    }
+    lines.push(`  ${parts.join('  ')}`);
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // 分发器
 // ---------------------------------------------------------------------------
 
@@ -227,6 +278,8 @@ export interface SlashHandlers {
   readonly image: (args?: string) => void;
   /** /cost（T-134）：成本统计（本会话 + 按天；按当前模型定价）。 */
   readonly cost: () => void;
+  /** /mcp（T-163）：查看 MCP 服务器连接状态（已连接 / 重连 / 失败）。 */
+  readonly mcp: () => void;
   /**
    * 自定义命令处理器（T-114）：dispatchSlash 未命中内置命令时，在 customCommands
    * 表中查找并回调（runTui 负责展开占位 / 工具白名单 / 默认模型）。缺省不提供。
@@ -288,6 +341,9 @@ export function dispatchSlash(
       return true;
     case 'cost':
       handlers.cost();
+      return true;
+    case 'mcp':
+      handlers.mcp();
       return true;
     default: {
       // T-114 自定义斜杠命令：未命中内置 → 在命令表中查找，命中回调 handlers.custom

@@ -46,6 +46,44 @@ export interface ConfigRule {
 }
 
 // ---------------------------------------------------------------------------
+// MCP（0.16.0，T-163）：settings.json 的 mcp 键——服务器配置表
+// ---------------------------------------------------------------------------
+
+/**
+ * 单个 MCP 服务器的配置（settings.json mcp.servers.<name>）。
+ * command / url 二选一（stdio / Streamable HTTP 两种传输形态）；
+ * 其余字段可选（缺省由 McpManager 装配时补齐，见 mcp/manager.ts）。
+ */
+export interface ConfigMcpServer {
+  /** stdio 形态：可执行命令（绝对路径或 PATH 内命令；不支持 shell 语法）。 */
+  readonly command?: string;
+  /** HTTP 形态：Streamable HTTP 端点（http/https URL）。与 command 互斥。 */
+  readonly url?: string;
+  readonly args?: readonly string[];
+  /** 追加的环境变量（继承进程环境，此项覆盖）。 */
+  readonly env?: Readonly<Record<string, string>>;
+  /** 按需连接开关（缺省 true——false 时不连接、不注入工具）。 */
+  readonly enabled?: boolean;
+  /**
+   * 工具风险归类（与 permission 的 ToolRisk 同形；缺省 `network`）：
+   * MCP 工具是远程/进程外副作用、效果未知，默认权限矩阵下需审批；
+   * 声明为 read/write/exec 可贴合实际（只读服务器免审批等）。
+   */
+  readonly risk?: 'read' | 'write' | 'exec' | 'network';
+  /** 工具级过滤白名单（只暴露服务器的这些工具；缺省 = 全部暴露）。 */
+  readonly tools?: readonly string[];
+  /** initialize 握手超时（毫秒，缺省 10s）。 */
+  readonly connectTimeoutMs?: number;
+  /** tools/call 请求超时（毫秒，缺省 120s——远程工具可能长跑）。 */
+  readonly callTimeoutMs?: number;
+}
+
+/** settings.json 的 mcp 键：服务器配置表（缺省空表 = 不连接任何 server）。 */
+export interface ConfigMcp {
+  readonly servers: Readonly<Record<string, ConfigMcpServer>>;
+}
+
+// ---------------------------------------------------------------------------
 // Hooks（0.14.0）：settings.json 按钩子点 + 工具匹配器注册外部进程钩子
 // ---------------------------------------------------------------------------
 
@@ -136,6 +174,40 @@ const ConfigHooksSchema = z
   .optional();
 
 /**
+ * 单个 MCP 服务器 schema（0.16.0，T-163）：command / url 二选一（strict refine）。
+ * 未知字段立即报错（拼写错误可见，不静默）。
+ */
+const ConfigMcpServerSchema = z
+  .object({
+    command: z.string().min(1).optional(),
+    url: z.string().url().optional(),
+    args: z.array(z.string().min(1)).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    enabled: z.boolean().optional(),
+    risk: z.enum(['read', 'write', 'exec', 'network']).optional(),
+    tools: z.array(z.string().min(1)).optional(),
+    connectTimeoutMs: z.number().int().positive().optional(),
+    callTimeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine(
+    (server) => server.command !== undefined || server.url !== undefined,
+    {
+      message:
+        'MCP 服务器必须声明 command（stdio）或 url（Streamable HTTP），二者至少其一',
+      path: ['command'],
+    },
+  );
+
+/** settings.json 的 mcp 键 schema（0.16.0，T-163）：服务器配置表。 */
+const ConfigMcpSchema = z
+  .object({
+    servers: z.record(z.string().min(1), ConfigMcpServerSchema),
+  })
+  .strict()
+  .optional();
+
+/**
  * settings.json 支持项的 schema（T-080；按现有能力集，全部字段缺省可选）。
  * 顶层与 permission 均 `.strict()`：未知字段立即报错（拼写错误可见，不静默）。
  */
@@ -193,6 +265,8 @@ export const SettingsSchema = z
       .optional(),
     /** Hooks（0.14.0）：按钩子点 + 工具匹配器注册外部进程钩子（缺省不挂钩子）。 */
     hooks: ConfigHooksSchema,
+    /** MCP（0.16.0，T-163）：服务器配置表（缺省空表 = 不连接任何 server）。 */
+    mcp: ConfigMcpSchema,
   })
   .strict();
 
@@ -725,6 +799,8 @@ export interface ConfigOverrides {
   readonly homeDir?: string;
   /** Hooks（0.14.0）：显式覆盖 settings.json 的 hooks 键（最高优先级）。 */
   readonly hooks?: ConfigHooks;
+  /** MCP（0.16.0，T-163）：显式覆盖 settings.json 的 mcp 键（最高优先级）。 */
+  readonly mcp?: ConfigMcp;
 }
 
 /** resolveConfig 入参。 */
@@ -758,6 +834,8 @@ export interface ResolvedConfig {
   readonly homeDir: string;
   /** Hooks（0.14.0）：settings.json / 显式覆盖合并后的钩子配置（缺省无钩子）。 */
   readonly hooks?: ConfigHooks;
+  /** MCP（0.16.0，T-163）：settings.json / 显式覆盖后的服务器配置表（缺省空表）。 */
+  readonly mcp?: ConfigMcp;
 }
 
 /**
@@ -795,6 +873,9 @@ export function resolveConfig(input: ResolveConfigInput = {}): ResolvedConfig {
       : {}),
     ...((overrides.hooks ?? settings.hooks) !== undefined
       ? { hooks: overrides.hooks ?? settings.hooks }
+      : {}),
+    ...((overrides.mcp ?? settings.mcp) !== undefined
+      ? { mcp: overrides.mcp ?? settings.mcp }
       : {}),
     homeDir:
       overrides.homeDir ?? settings.homeDir ?? input.homeDir ?? homedir(),

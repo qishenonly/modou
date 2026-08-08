@@ -22,6 +22,8 @@ import {
   loadCustomCommands,
   loadInstructions,
   loadPlanFromFile,
+  McpManager,
+  normalizeMcpServers,
   parseStructuredPlan,
   PLAN_MODE_INSTRUCTION,
   planReadonlyRegistry,
@@ -78,6 +80,7 @@ import {
   lastModelSwitchTo,
   renderCostReport,
   renderHelpText,
+  renderMcpStatus,
   SUPPORTED_SLASH_LIST,
 } from './slash';
 import type { SlashHandlers } from './slash';
@@ -175,6 +178,17 @@ function withSkillTool(
   return copy;
 }
 
+/**
+ * 复制注册表（0.16.0 MCP 注入用）：把调用方的注册表复制一份再向其中注册 MCP
+ * 工具——不修改调用方传入的注册表（options.tools 是调用方资产，与 withSkillTool
+ * 同一约定）。MCP 工具是异步注入（连接后注册），必须落在副本上。
+ */
+function copyTools(source: ToolRegistry): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of source.list()) copy.register(tool);
+  return copy;
+}
+
 export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // T-080 配置装配：内置默认 → ~/.modou/settings.json → <project>/.modou/settings.json
   // → MODOU_* 环境变量 → 显式选项（最高优先）；provider / permission / maxTurns /
@@ -195,12 +209,19 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     discoveredSkills.map((skill) => [skill.name, skill] as const),
   );
   const skillsEnabled = skillIndex.size > 0;
-  const tools = skillsEnabled
-    ? withSkillTool(options.tools ?? defaultReadonlyTools(), {
-        resolve: (name) => skillIndex.get(name),
-        names: () => [...skillIndex.keys()],
-      })
-    : (options.tools ?? defaultReadonlyTools());
+  // 0.16.0 MCP：settings.json mcp.servers 配置（显式覆盖 > 配置解析）。
+  // 启用 MCP 时工具注册表先复制一份——连接后向其中批量注入 MCP 工具，
+  // 不修改调用方资产（options.tools，与 withSkillTool 同一约定）。
+  const mcpServers =
+    startup.mcp === undefined ? [] : normalizeMcpServers(startup.mcp);
+  let tools = options.tools ?? defaultReadonlyTools();
+  if (mcpServers.length > 0) tools = copyTools(tools);
+  if (skillsEnabled) {
+    tools = withSkillTool(tools, {
+      resolve: (name) => skillIndex.get(name),
+      names: () => [...skillIndex.keys()],
+    });
+  }
   // T-114 自定义斜杠命令：加载 `.modou/commands/*.md`（frontmatter + 正文提示词）。
   // 与内置命令同名的文件被跳过并记录（不静默，启动时发 notice 告知）。
   const loadedCommands = await loadCustomCommands(cwd);
@@ -220,7 +241,8 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // 基准系统提示词（正常执行模式的稳定前缀）；T-112 Plan Mode 进入/退出时
   // 在 system 与 baseSystem 之间切换（let 供切换）。技能清单（0.15.0）作为
   // 稳定前缀的一部分常驻——只有 name + description，正文按需由 skill 工具注入。
-  const baseSystem =
+  // 0.16.0 MCP：连接完成后重建（MCP 工具定义进「可用工具」段），构造收成函数。
+  const buildBaseSystem = (): string =>
     options.system ??
     buildSystemPrompt({
       tools,
@@ -234,6 +256,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
           }
         : {}),
     });
+  let baseSystem = buildBaseSystem();
   let system = baseSystem;
   const readFiles = new Set(options.readFiles ?? []);
   const channel = createEventChannel();
@@ -399,6 +422,47 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // （配置合法但钩子不会执行，不静默失效；startup.ts 产出）。
   for (const notice of startup.notices ?? []) {
     pushNotice('warn', notice);
+  }
+
+  // —— MCP（0.16.0 T-163）：settings.json mcp.servers → McpManager ——
+  // 后台连接全部 enabled server（握手 + tools/list + 注入工具注册表），连接
+  // 完成后重建系统提示词（MCP 工具定义进「可用工具」段）。崩溃重连由 manager
+  // 内部调度（指数退避），状态变化以 notice 告知用户（不静默）；/mcp 查看报告。
+  const mcpManager =
+    mcpServers.length > 0
+      ? new McpManager({
+          servers: mcpServers,
+          registry: tools,
+          onStatusChange: (status) => {
+            if (status.state === 'connected') {
+              pushNotice(
+                'info',
+                `MCP 服务器 ${status.name} 已连接（${status.toolCount} 个工具）`,
+              );
+            } else if (status.state === 'failed') {
+              pushNotice(
+                'warn',
+                `MCP 服务器 ${status.name} 连接失败：${status.error ?? '原因未知'}`,
+              );
+            } else if (status.state === 'disconnected') {
+              pushNotice(
+                'warn',
+                `MCP 服务器 ${status.name} 已断开：${status.error ?? '原因未知'}`,
+              );
+            }
+          },
+        })
+      : null;
+  if (mcpManager !== null) {
+    void mcpManager.start().then(() => {
+      // 注入完成后重建稳定前缀（MCP 工具定义随注册表进提示词）；Plan Mode 下
+      // system 由计划提示词接管（MCP 工具不在只读白名单，计划模式不受影响）。
+      if (mcpManager.activeToolCount > 0) {
+        baseSystem = buildBaseSystem();
+        if (!planMode) system = baseSystem;
+        rerender(); // 状态栏权限模式 / /context 数据源随注册表更新
+      }
+    });
   }
 
   // 当前轮次的 AbortController：每轮新建，Esc 只打断当前轮；
@@ -712,6 +776,7 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       cost: () => {
         void handleSlashCost();
       },
+      mcp: handleSlashMcp,
       // T-114 自定义斜杠命令：.modou/commands/*.md 注册的命令
       custom: handleCustomCommand,
     };
@@ -826,6 +891,22 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     } catch (caught) {
       pushNotice('warn', `成本统计失败：${describeError(caught)}`);
     }
+  };
+
+  /**
+   * /mcp（T-163）：查看 MCP 服务器连接状态。
+   * 报告来自 McpManager.status()（每 server 一行：状态 / 身份 / 工具数 / 错误）；
+   * 未配置服务器时明确说明（不静默）。
+   */
+  const handleSlashMcp = (): void => {
+    if (mcpManager === null) {
+      pushNotice('info', renderMcpStatus([], 0));
+      return;
+    }
+    pushNotice(
+      'info',
+      renderMcpStatus(mcpManager.status(), mcpManager.activeToolCount),
+    );
   };
 
   // —— Plan Mode（T-112）：/plan 进入 → 只读研究 → 结构化计划 → 批准/修改/拒绝 ——
@@ -1555,6 +1636,9 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
     currentController?.abort(); // 退出时打断可能仍在跑的轮次
     approval.denyAll(); // 退出收尾：未裁决的审批请求一律拒绝，防悬挂
     emitter.off('SIGINT', onSigint);
+    // MCP（0.16.0 T-163）：退出时关闭全部连接（杀 MCP 子进程 / 断开 HTTP）。
+    // 尽力而为——子进程在父进程退出后也会因 stdin 关闭而自行退出（MCP 规范）。
+    void mcpManager?.stop();
     channel.end(); // 结束事件流，App 的 for-await 得到 done
     void app?.waitUntilExit(); // 先占住 Ink 的退出 promise（unmount 会同步 resolve 它）
     app?.unmount(); // 同步收尾：移除进程退出钩子 / resize / 恢复 console

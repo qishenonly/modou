@@ -75,7 +75,10 @@ export class StdioTransport implements McpTransport {
 
   /** 启动子进程并接好 stdin/stdout/stderr 三路。等待 spawn 就绪（失败抛可诊断错误）。 */
   async start(): Promise<void> {
-    if (this.child !== null) return; // 已启动，幂等
+    if (this.child !== null && !this.closed) return; // 已启动，幂等
+    // 崩溃后的重启：closed 由 handleClose 置位、child 已清空——复位后重新拉起
+    // （主动 close() 的路径不可达：客户端状态已 closed，connect() 拒绝进入）
+    this.closed = false;
     const child = spawn(this.params.command, [...(this.params.args ?? [])], {
       env: {
         ...process.env,
@@ -336,11 +339,12 @@ export class StdioTransport implements McpTransport {
   }
 
   private handleClose(): void {
-    // 子进程已死：清空引用——同实例后续 start() 可重新拉起（重建传输）
+    // 子进程已死：清空引用——同实例后续 start() 可重新拉起（崩溃重连复用
+    // 同一传输与客户端，注入的工具 execute 闭包继续有效）。
     this.child = null;
     this.closed = true;
+    // 关闭监听不清理：客户端 / manager 的重连回调需跨次保留（崩溃后重连再崩溃）
     this.closeListeners.forEach((listener) => listener());
-    this.closeListeners = [];
   }
 
   // stderr 转发监听（manager 记日志用；不承载协议消息）

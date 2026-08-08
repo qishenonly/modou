@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import type {
   CompactOptions,
+  ConfigMcp,
   ConfigOverrides,
   ConfigSnapshot,
   HookBus,
@@ -124,6 +125,12 @@ export interface TuiOptions {
    * T-143）；测试注入内存 HookBus 以离线覆盖。
    */
   readonly hooks?: HookBus;
+  /**
+   * MCP 配置（0.16.0，T-163）：settings.json mcp 键的显式覆盖（最高优先级）。
+   * 缺省经配置解析（内置默认空表 = 不连接任何 server）。测试可注入自建 server
+   * 配置离线覆盖。
+   */
+  readonly mcp?: ConfigMcp;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */
@@ -166,6 +173,11 @@ export interface TuiStartupConfig {
   };
   /** 装配时使用的环境（/model 重建 provider 时沿用同一环境）。 */
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * MCP 服务器配置表（0.16.0，T-163）：settings.json mcp 键 + 显式覆盖后的结果。
+   * 缺省 undefined = 不连接任何 server（/mcp 提示未配置）。
+   */
+  readonly mcp?: ConfigMcp;
 }
 
 /**
@@ -190,6 +202,7 @@ export function assembleTuiStartup(
     keepTurns: options.compact?.keepTurns,
     snapshot: options.snapshot,
     homeDir: options.homeDir,
+    mcp: options.mcp,
   };
   const resolved = resolveConfig({
     settings: loaded.settings,
@@ -263,6 +276,7 @@ export function assembleTuiStartup(
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),
     },
     env,
+    ...(resolved.mcp !== undefined ? { mcp: resolved.mcp } : {}),
   };
 }
 

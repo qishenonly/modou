@@ -16,3 +16,4 @@ export * from './stdio';
 export * from './http';
 export * from './client';
 export * from './inject';
+export * from './manager';
