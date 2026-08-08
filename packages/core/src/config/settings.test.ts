@@ -643,3 +643,80 @@ describe('MCP 配置（T-163 mcp 键）', () => {
     }
   });
 });
+
+describe('联网工具配置（0.17.0 T-171 web 键）', () => {
+  test('settings.json 的 web 键经 resolveConfig 透传', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(project, '.modou', {
+        web: {
+          allowedDomains: ['example.com', 'docs.modou.dev'],
+          deniedDomains: ['evil.example.com'],
+          timeoutMs: 3000,
+          maxBytes: 1024,
+        },
+      });
+      const loaded = loadSettings({ homeDir: home, projectRoot: project });
+      const resolved = resolveConfig({
+        settings: loaded.settings,
+        homeDir: home,
+      });
+      expect(resolved.web).toEqual({
+        allowedDomains: ['example.com', 'docs.modou.dev'],
+        deniedDomains: ['evil.example.com'],
+        timeoutMs: 3000,
+        maxBytes: 1024,
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('缺省无 web 配置', () => {
+    const resolved = resolveConfig({});
+    expect(resolved.web).toBeUndefined();
+  });
+
+  test('显式覆盖优先于 settings（web 键最高优先级）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(project, '.modou', {
+        web: { allowedDomains: ['from-settings.dev'] },
+      });
+      const loaded = loadSettings({ homeDir: home, projectRoot: project });
+      const resolved = resolveConfig({
+        settings: loaded.settings,
+        homeDir: home,
+        overrides: { web: { allowedDomains: ['from-options.dev'] } },
+      });
+      expect(resolved.web?.allowedDomains).toEqual(['from-options.dev']);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('web 键未知字段拒绝（strict）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(project, '.modou', {
+        web: { allowDomains: ['x'] }, // 拼写错误：allowDomains ≠ allowedDomains
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.expected).toContain('未知字段');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+});

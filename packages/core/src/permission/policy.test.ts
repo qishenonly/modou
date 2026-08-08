@@ -428,3 +428,54 @@ describe('ApprovalGate × PermissionConfig（T-050 接入）', () => {
     expect(requestById(events, 'approval_request')).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 0.17.0 T-171：联网（risk: network）默认需批准
+// ---------------------------------------------------------------------------
+
+describe('联网权限（T-171：risk=network 默认需批准）', () => {
+  const NET_REQ: PermissionRequest = {
+    toolName: 'webfetch',
+    risk: 'network',
+    args: { url: 'https://example.com' },
+  };
+
+  test('默认组合（workspace-write + on-request）= ask（联网默认需批准）', () => {
+    expect(
+      decidePermission(NET_REQ, defaultPermissionConfig(PROJECT_ROOT)),
+    ).toBe('ask');
+  });
+
+  test('read-only 沙箱 = deny（联网不是读操作）', () => {
+    expect(decidePermission(NET_REQ, cfg('read-only', 'on-request'))).toBe(
+      'deny',
+    );
+  });
+
+  test('workspace-write + untrusted = ask（每次都要问）', () => {
+    expect(decidePermission(NET_REQ, cfg('workspace-write', 'untrusted'))).toBe(
+      'ask',
+    );
+  });
+
+  test('workspace-write + never = allow（用户显式关掉审批）', () => {
+    expect(decidePermission(NET_REQ, cfg('workspace-write', 'never'))).toBe(
+      'allow',
+    );
+  });
+
+  test('full-access + on-request = allow（高信任面：非危险操作放行）', () => {
+    expect(decidePermission(NET_REQ, cfg('full-access', 'on-request'))).toBe(
+      'allow',
+    );
+  });
+
+  test('deny 规则命中（工具名）优先于一切', () => {
+    expect(
+      decidePermission(NET_REQ, {
+        ...cfg('workspace-write', 'never'),
+        rules: [{ effect: 'deny', match: 'webfetch' }],
+      }),
+    ).toBe('deny');
+  });
+});

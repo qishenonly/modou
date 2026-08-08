@@ -13,6 +13,7 @@ import type {
   ConfigMcp,
   ConfigOverrides,
   ConfigSnapshot,
+  ConfigWeb,
   HookBus,
   ModelProvider,
   PermissionConfig,
@@ -131,6 +132,12 @@ export interface TuiOptions {
    * 配置离线覆盖。
    */
   readonly mcp?: ConfigMcp;
+  /**
+   * 联网工具配置（0.17.0，T-171/T-172）：settings.json web 键的显式覆盖
+   * （最高优先级）。缺省经配置解析（内置默认 = 不限制域名）。测试可注入
+   * 域名白名单离线覆盖。
+   */
+  readonly web?: ConfigWeb;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */
@@ -178,6 +185,11 @@ export interface TuiStartupConfig {
    * 缺省 undefined = 不连接任何 server（/mcp 提示未配置）。
    */
   readonly mcp?: ConfigMcp;
+  /**
+   * 联网工具配置（0.17.0，T-171/T-172）：settings.json web 键 + 显式覆盖后的
+   * 结果（域名白名单/黑名单 + 抓取超时）。缺省 undefined = 不限制域名。
+   */
+  readonly web?: ConfigWeb;
 }
 
 /**
@@ -203,6 +215,7 @@ export function assembleTuiStartup(
     snapshot: options.snapshot,
     homeDir: options.homeDir,
     mcp: options.mcp,
+    web: options.web,
   };
   const resolved = resolveConfig({
     settings: loaded.settings,
@@ -277,6 +290,7 @@ export function assembleTuiStartup(
     },
     env,
     ...(resolved.mcp !== undefined ? { mcp: resolved.mcp } : {}),
+    ...(resolved.web !== undefined ? { web: resolved.web } : {}),
   };
 }
 

@@ -84,6 +84,26 @@ export interface ConfigMcp {
 }
 
 // ---------------------------------------------------------------------------
+// Web（0.17.0，T-171/T-172）：联网工具的域名白名单/黑名单与超时
+// ---------------------------------------------------------------------------
+
+/**
+ * 联网工具配置（settings.json web 键，T-171 WebFetch / T-172 WebSearch）。
+ * 语义：域名白名单/黑名单是配置层的过滤（与权限模型正交——联网默认需批准由
+ * risk=network 在权限层兜底，这里是域名级的二次过滤）。
+ */
+export interface ConfigWeb {
+  /** 域名白名单：非空时只允许这些域名及其子域（其余域名一律拒绝）。 */
+  readonly allowedDomains?: readonly string[];
+  /** 域名黑名单：命中即拒绝（优先于白名单）。 */
+  readonly deniedDomains?: readonly string[];
+  /** 抓取超时（毫秒；缺省 WebFetch 内置 15s）。 */
+  readonly timeoutMs?: number;
+  /** 响应体上限（字节；缺省 256KB）。 */
+  readonly maxBytes?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Hooks（0.14.0）：settings.json 按钩子点 + 工具匹配器注册外部进程钩子
 // ---------------------------------------------------------------------------
 
@@ -210,6 +230,17 @@ const ConfigMcpSchema = z
   .strict()
   .optional();
 
+/** settings.json 的 web 键 schema（0.17.0，T-171）：联网工具域名过滤与超时。 */
+const ConfigWebSchema = z
+  .object({
+    allowedDomains: z.array(z.string().min(1)).optional(),
+    deniedDomains: z.array(z.string().min(1)).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    maxBytes: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 /**
  * settings.json 支持项的 schema（T-080；按现有能力集，全部字段缺省可选）。
  * 顶层与 permission 均 `.strict()`：未知字段立即报错（拼写错误可见，不静默）。
@@ -270,6 +301,8 @@ export const SettingsSchema = z
     hooks: ConfigHooksSchema,
     /** MCP（0.16.0，T-163）：服务器配置表（缺省空表 = 不连接任何 server）。 */
     mcp: ConfigMcpSchema,
+    /** Web（0.17.0，T-171）：联网工具域名白名单/黑名单与超时（缺省不限制域名）。 */
+    web: ConfigWebSchema,
   })
   .strict();
 
@@ -804,6 +837,8 @@ export interface ConfigOverrides {
   readonly hooks?: ConfigHooks;
   /** MCP（0.16.0，T-163）：显式覆盖 settings.json 的 mcp 键（最高优先级）。 */
   readonly mcp?: ConfigMcp;
+  /** Web（0.17.0，T-171）：显式覆盖 settings.json 的 web 键（最高优先级）。 */
+  readonly web?: ConfigWeb;
 }
 
 /** resolveConfig 入参。 */
@@ -839,6 +874,8 @@ export interface ResolvedConfig {
   readonly hooks?: ConfigHooks;
   /** MCP（0.16.0，T-163）：settings.json / 显式覆盖后的服务器配置表（缺省空表）。 */
   readonly mcp?: ConfigMcp;
+  /** Web（0.17.0，T-171）：settings.json / 显式覆盖后的联网工具配置（缺省不限制域名）。 */
+  readonly web?: ConfigWeb;
 }
 
 /**
@@ -879,6 +916,9 @@ export function resolveConfig(input: ResolveConfigInput = {}): ResolvedConfig {
       : {}),
     ...((overrides.mcp ?? settings.mcp) !== undefined
       ? { mcp: overrides.mcp ?? settings.mcp }
+      : {}),
+    ...((overrides.web ?? settings.web) !== undefined
+      ? { web: overrides.web ?? settings.web }
       : {}),
     homeDir:
       overrides.homeDir ?? settings.homeDir ?? input.homeDir ?? homedir(),

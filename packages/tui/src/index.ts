@@ -17,6 +17,7 @@ import {
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
   discoverAgents,
   discoverSkills,
+  withWebTools,
   EnvelopeLogAdapter,
   expandCommandPlaceholders,
   isEmptyPlan,
@@ -256,6 +257,11 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       names: () => [...agentIndex.keys()],
     });
   }
+  // 0.17.0 联网工具（T-171 WebFetch / T-172 WebSearch）：settings.json web 键 →
+  // 域名过滤配置（白名单/黑名单 + 超时）。联网默认需批准由权限模型 risk=network
+  // 兜底；这里把联网工具注册进工具集，域名过滤在工具执行点生效（配置层二次过滤）。
+  // T-172 起 withWebTools 同时注册 websearch。
+  tools = withWebTools(tools, startup.web);
   // T-114 自定义斜杠命令：加载 `.modou/commands/*.md`（frontmatter + 正文提示词）。
   // 与内置命令同名的文件被跳过并记录（不静默，启动时发 notice 告知）。
   const loadedCommands = await loadCustomCommands(cwd);
