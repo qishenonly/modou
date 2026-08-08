@@ -104,8 +104,8 @@ export class HookBus {
       return [...(this.registrations.get(point) ?? [])];
     }
     const all: HookRegistration[] = [];
-    for (const point of Object.keys(this.registrations) as HookPoint[]) {
-      all.push(...(this.registrations.get(point) ?? []));
+    for (const bucket of this.registrations.values()) {
+      all.push(...bucket);
     }
     return all;
   }

@@ -23,10 +23,13 @@ import type {
 } from '@modou/core';
 import {
   createProviderFromConfig,
+  defaultHookLogDir,
+  hooksFromSettings,
   loadSettings,
   readOpencodeEnv,
   resolveConfig,
 } from '@modou/core';
+import { HookExecutionLog } from '@modou/core';
 import type { StructuredLogger } from '@modou/core';
 
 /** /model 重建 provider 实例的工厂（与 core createProviderFromConfig 同形）。 */
@@ -140,6 +143,12 @@ export interface TuiStartupConfig {
   /** 快照配置（配置解析后的最终值；缺省 undefined = 引擎内置默认）。 */
   readonly snapshot?: ConfigSnapshot;
   /**
+   * 钩子总线（0.14.0）：从 settings.json hooks 键装配的外部进程钩子
+   * （④⑦ 管线 + UserPromptSubmit），执行日志落 `~/.modou/logs/<project-hash>/`。
+   * 未配置 hooks 时缺省 undefined（管线直通）。
+   */
+  readonly hooks?: HookBus;
+  /**
    * provider 装配面（T-082 /model 重建 provider 实例用）：供应商类型 +
    * 生效端点。baseURL 取「配置显式值 → opencode 测试端点 → OPENAI_BASE_URL」，
    * 与装配时的 createProviderFromConfig 分支同口径；options.provider 注入时
@@ -217,6 +226,21 @@ export function assembleTuiStartup(
     maxTurns: resolved.maxTurns,
     keepTurns: resolved.keepTurns,
     ...(resolved.snapshot !== undefined ? { snapshot: resolved.snapshot } : {}),
+    // T-143 Hooks：settings.json hooks 键 → HookBus（外部进程钩子 + 执行日志
+    // 落 ~/.modou/logs/<project-hash>/hooks-<日期>.jsonl）。未配置 = 直通。
+    ...(resolved.hooks !== undefined
+      ? {
+          hooks: hooksFromSettings(resolved.hooks, {
+            log: new HookExecutionLog({
+              dir: defaultHookLogDir({
+                homeDir: resolved.homeDir,
+                cwd: projectRoot,
+              }),
+            }),
+            cwd: projectRoot,
+          }),
+        }
+      : {}),
     providerSpec: {
       type: (options.provider?.id as ProviderType) ?? resolved.provider,
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),

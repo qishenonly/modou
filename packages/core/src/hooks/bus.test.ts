@@ -51,6 +51,21 @@ describe('HookBus：注册与执行', () => {
     expect(bus.list()).toEqual([]);
   });
 
+  test('list() 无 point 参数返回全部点注册（按点分组，组内按注册顺序）', async () => {
+    const bus = new HookBus();
+    bus.register('PreToolUse', async () => ({ decision: 'allow' }), {
+      id: 'a',
+    });
+    bus.register('PreToolUse', async () => ({ decision: 'allow' }), {
+      id: 'b',
+    });
+    bus.register('PostToolUse', async () => ({ decision: 'continue' }), {
+      id: 'c',
+    });
+    expect(bus.list().map((r) => r.id)).toEqual(['a', 'b', 'c']);
+    expect(bus.list('PostToolUse').map((r) => r.id)).toEqual(['c']);
+  });
+
   test('重复 ID 抛错（防静默覆盖）', () => {
     const bus = new HookBus();
     bus.register('PreToolUse', async () => ({ decision: 'allow' }), {

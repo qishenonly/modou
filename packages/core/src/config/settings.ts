@@ -45,6 +45,46 @@ export interface ConfigRule {
   readonly tool?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Hooks（0.14.0）：settings.json 按钩子点 + 工具匹配器注册外部进程钩子
+// ---------------------------------------------------------------------------
+
+/** 钩子工具匹配器（与 hooks 模块的 ToolMatcher 结构同形；仅 PreToolUse/PostToolUse 有意义）。 */
+export interface ConfigHookMatcher {
+  /** 工具名白名单；缺省或 `'*'` = 匹配全部工具（只做精确名匹配）。 */
+  readonly tools?: readonly string[] | '*';
+}
+
+/**
+ * 单个钩子条目（settings.json hooks 数组的元素；与 hooks 模块的
+ * HookProcessSpec 结构同形——command 必填，其余可选）。
+ */
+export interface ConfigHookEntry {
+  /** 可执行命令（绝对路径或 PATH 内命令；不支持 shell 语法——命令拆分执行）。 */
+  readonly command: string;
+  /** 命令行参数。 */
+  readonly args?: readonly string[];
+  /** 工具匹配器（仅 PreToolUse / PostToolUse 有意义；非工具点忽略）。 */
+  readonly matcher?: ConfigHookMatcher;
+  /** 超时（毫秒；缺省 5000）。超时按 failBehavior 降级并终止进程组。 */
+  readonly timeoutMs?: number;
+  /**
+   * 失败降级策略（ADR 0013）：fail-open = 崩溃放行，fail-closed = 崩溃拦截。
+   * 缺省按钩子点：PreToolUse（deny 语义的安全钩子）缺省 fail-closed，其余 fail-open。
+   */
+  readonly failBehavior?: 'fail-open' | 'fail-closed';
+  /** 追加的环境变量（继承进程环境，此项覆盖）。 */
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/** settings.json 的 hooks 键：四个钩子点各一个条目数组（缺省点 = 无钩子）。 */
+export interface ConfigHooks {
+  readonly SessionStart?: readonly ConfigHookEntry[];
+  readonly UserPromptSubmit?: readonly ConfigHookEntry[];
+  readonly PreToolUse?: readonly ConfigHookEntry[];
+  readonly PostToolUse?: readonly ConfigHookEntry[];
+}
+
 /**
  * 快照配置（0.10.0「安全网」；缺省全部可选，引擎回落内置默认）。
  * - `enabled`：是否自动快照（缺省 true）；
@@ -62,6 +102,38 @@ export interface ConfigSnapshot {
   readonly maxChangedPaths?: number;
   readonly maxBytes?: number;
 }
+
+/** 单个钩子条目 schema（0.14.0）：command 必填，其余可选。 */
+const ConfigHookEntrySchema = z
+  .object({
+    command: z.string().min(1, 'command 不能为空字符串'),
+    args: z.array(z.string().min(1)).optional(),
+    matcher: z
+      .object({
+        tools: z.union([z.array(z.string().min(1)), z.literal('*')]).optional(),
+      })
+      .strict()
+      .optional(),
+    timeoutMs: z
+      .number()
+      .int('timeoutMs 必须是整数')
+      .positive('timeoutMs 必须是正整数')
+      .optional(),
+    failBehavior: z.enum(['fail-open', 'fail-closed']).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+/** settings.json 的 hooks 键 schema（0.14.0）：四钩子点 + 工具匹配器注册。 */
+const ConfigHooksSchema = z
+  .object({
+    SessionStart: z.array(ConfigHookEntrySchema).optional(),
+    UserPromptSubmit: z.array(ConfigHookEntrySchema).optional(),
+    PreToolUse: z.array(ConfigHookEntrySchema).optional(),
+    PostToolUse: z.array(ConfigHookEntrySchema).optional(),
+  })
+  .strict()
+  .optional();
 
 /**
  * settings.json 支持项的 schema（T-080；按现有能力集，全部字段缺省可选）。
@@ -119,6 +191,8 @@ export const SettingsSchema = z
       .min(1)
       .refine((value) => isAbsolute(value), { message: '期望绝对路径' })
       .optional(),
+    /** Hooks（0.14.0）：按钩子点 + 工具匹配器注册外部进程钩子（缺省不挂钩子）。 */
+    hooks: ConfigHooksSchema,
   })
   .strict();
 
@@ -649,6 +723,8 @@ export interface ConfigOverrides {
   readonly keepTurns?: number;
   readonly snapshot?: ConfigSnapshot;
   readonly homeDir?: string;
+  /** Hooks（0.14.0）：显式覆盖 settings.json 的 hooks 键（最高优先级）。 */
+  readonly hooks?: ConfigHooks;
 }
 
 /** resolveConfig 入参。 */
@@ -680,6 +756,8 @@ export interface ResolvedConfig {
   readonly keepTurns: number;
   readonly snapshot?: ConfigSnapshot;
   readonly homeDir: string;
+  /** Hooks（0.14.0）：settings.json / 显式覆盖合并后的钩子配置（缺省无钩子）。 */
+  readonly hooks?: ConfigHooks;
 }
 
 /**
@@ -714,6 +792,9 @@ export function resolveConfig(input: ResolveConfigInput = {}): ResolvedConfig {
     keepTurns: overrides.keepTurns ?? settings.keepTurns ?? DEFAULT_KEEP_TURNS,
     ...((overrides.snapshot ?? settings.snapshot) !== undefined
       ? { snapshot: overrides.snapshot ?? settings.snapshot }
+      : {}),
+    ...((overrides.hooks ?? settings.hooks) !== undefined
+      ? { hooks: overrides.hooks ?? settings.hooks }
       : {}),
     homeDir:
       overrides.homeDir ?? settings.homeDir ?? input.homeDir ?? homedir(),

@@ -17,6 +17,7 @@ import {
   resolveConfig,
   SettingsValidationError,
 } from './settings';
+import type { Settings } from './settings';
 
 // ---------------------------------------------------------------------------
 // 测试辅助：临时目录 + 写设置文件
@@ -409,6 +410,113 @@ describe('快照配置（T-103 snapshot 键）', () => {
         const error = caught as SettingsValidationError;
         expect(error.field).toBe('settings.snapshot.maxAgeDays');
         expect(error.expected).toContain('number');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hooks（0.14.0 hooks 键）
+// ---------------------------------------------------------------------------
+
+describe('Hooks 配置（T-143 hooks 键）', () => {
+  test('settings.json 的 hooks 键经 loadSettings / resolveConfig 透传', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      const hooks: NonNullable<Settings['hooks']> = {
+        PreToolUse: [
+          {
+            command: '/repo/scripts/hooks/block-dangerous.mjs',
+            matcher: { tools: ['bash'] },
+            timeoutMs: 1000,
+            failBehavior: 'fail-closed',
+          },
+        ],
+        PostToolUse: [
+          {
+            command: '/repo/scripts/hooks/format-after-edit.mjs',
+            args: ['--check'],
+            matcher: { tools: '*' },
+            env: { MODOU_FORMAT_CMD: 'bunx prettier --write' },
+          },
+        ],
+        UserPromptSubmit: [{ command: '/repo/scripts/hooks/lint.mjs' }],
+        SessionStart: [],
+      };
+      writeSettings(project, '.modou', { hooks });
+      const loaded = loadSettings({ homeDir: home, projectRoot: project });
+      expect(loaded.settings.hooks).toEqual(hooks);
+      const resolved = resolveConfig({
+        homeDir: home,
+        env: {},
+        settings: loaded.settings,
+      });
+      expect(resolved.hooks).toEqual(hooks);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('缺省无 hooks 配置（管线直通）', () => {
+    const config = resolveConfig({ homeDir: '/tmp/fake-home', env: {} });
+    expect(config.hooks).toBeUndefined();
+  });
+
+  test('显式覆盖优先于 settings', () => {
+    const config = resolveConfig({
+      homeDir: '/tmp/fake-home',
+      env: {},
+      settings: { hooks: { PreToolUse: [{ command: '/a' }] } },
+      overrides: { hooks: { PreToolUse: [{ command: '/b' }] } },
+    });
+    expect(config.hooks?.PreToolUse?.[0].command).toBe('/b');
+  });
+
+  test('非法 hooks 条目报友好错误（字段 / 期望）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      // timeoutMs 给了字符串；command 缺失
+      writeSettings(home, '.modou', {
+        hooks: { PreToolUse: [{ command: '', timeoutMs: 'fast' }] },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        // 首个 issue：command 空串 → too_small；字段定位到 hooks.PreToolUse[0].command
+        expect(error.field).toContain('hooks.PreToolUse');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('hooks 条目未知字段报错（拼写错误可见，不静默）', () => {
+    const home = makeTempDir('home');
+    const project = makeTempDir('proj');
+    try {
+      writeSettings(home, '.modou', {
+        hooks: {
+          PreToolUse: [{ command: '/a', failBehavoir: 'fail-open' }],
+        },
+      });
+      try {
+        loadSettings({ homeDir: home, projectRoot: project });
+        throw new Error('应当抛出 SettingsValidationError');
+      } catch (caught) {
+        expect(caught).toBeInstanceOf(SettingsValidationError);
+        const error = caught as SettingsValidationError;
+        expect(error.field).toContain('hooks.PreToolUse');
+        expect(error.expected).toContain('未知字段');
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

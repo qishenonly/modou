@@ -205,9 +205,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
   // decider 对每个请求挂起等待用户从弹窗选择；退出时 denyAll 清空未裁决请求，
   // 防止 pending 审批悬挂导致轮次永不结束。
   const approval = createApprovalBridge(permission);
-  // 钩子总线（0.14.0）：显式注入（TuiOptions.hooks）或 T-143 按 settings.json
-  // hooks 键装配。提供时：管线 ④⑦ 挂载钩子、用户提交提示词走 UserPromptSubmit。
-  const hooksBus = options.hooks;
+  // 钩子总线（0.14.0）：显式注入（TuiOptions.hooks）优先，否则按 settings.json
+  // hooks 键装配（startup.hooks，T-143）。提供时：管线 ④⑦ 挂载钩子、用户提交
+  // 提示词走 UserPromptSubmit。
+  const hooksBus = options.hooks ?? startup.hooks;
 
   // —— 会话（T-060 旁路记录 / T-061 /resume）——
   const sessionStore = new SessionStore({ homeDir });
