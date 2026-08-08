@@ -27,6 +27,9 @@ import type { Tool, ToolContext, ToolOutcome } from '../types';
 /** 单次清单条目数上限：防止模型一次性塞入病态大列表撑爆上下文 / 日志。 */
 export const TODO_MAX_ITEMS = 100;
 
+/** TodoWrite 工具名（单一来源：注册 / 系统提示词分类 / 白名单判别复用）。 */
+export const TODO_WRITE_TOOL_NAME = 'todo_write';
+
 /** 待办状态（本地类型：与 context/summary 的 TodoStatus 同形，tools 边界内自持）。 */
 type TodoStatus = 'pending' | 'in_progress' | 'done';
 
@@ -109,7 +112,7 @@ function countStatuses(items: readonly TodoWriteItem[]): {
  */
 export function createTodoTool(): Tool<typeof todoWriteSchema> {
   return {
-    name: 'todo_write',
+    name: TODO_WRITE_TOOL_NAME,
     description:
       '更新待办任务清单：模型自主维护任务的状态（pending / in_progress / done）、' +
       '顺序与依赖。参数 list 是**全量期望清单**——每次调用都带上全部条目，' +

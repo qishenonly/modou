@@ -1,23 +1,69 @@
 import { describe, expect, test } from 'bun:test';
+import { planReadonlyRegistry } from '../plan/policy';
 import { defaultReadonlyTools, defaultWriteTools } from '../tools/impl';
 import { globTool } from '../tools/impl/glob';
 import { grepTool } from '../tools/impl/grep';
 import { readTool } from '../tools/impl/read';
+import { writeTool } from '../tools/impl/write';
 import { ToolRegistry } from '../tools/registry';
 import { buildSystemPrompt } from './system';
 
 describe('buildSystemPrompt（T-023 系统提示词首版）', () => {
   test('身份段：modou 身份与行为准则（照线干活、不越界、审批边界）', () => {
-    const prompt = buildSystemPrompt({ tools: defaultReadonlyTools() });
+    const prompt = buildSystemPrompt({ tools: defaultWriteTools() });
     expect(prompt).toContain('你是 modou');
     expect(prompt).toContain('照线干活');
     expect(prompt).toContain('不越界');
-    // 0.3.0 语义：有读与写/执行工具，写入与命令执行需经审批
+    // 0.3.0 语义：有写/执行工具 → 声明能改能跑、写入与命令执行需经审批
     expect(prompt).toContain('写入/执行工具');
+    expect(prompt).toContain('能改文件、能跑命令');
     expect(prompt).toContain('需经用户审批');
     expect(prompt).toContain('被拒绝时按拒绝提示调整方案');
     expect(prompt).toContain('不要换写法反复触发审批');
     expect(prompt).toContain('绝不编造');
+  });
+
+  test('能力声明从注册表派生：只读工具集声明「只有只读工具」，不声明写/执行能力', () => {
+    const prompt = buildSystemPrompt({ tools: defaultReadonlyTools() });
+    expect(prompt).toContain('只有只读工具');
+    expect(prompt).toContain('不能改文件、不能跑命令');
+    expect(prompt).not.toContain('写入/执行工具');
+    expect(prompt).not.toContain('需经用户审批');
+    // 编辑纪律段（引用 write/edit/bash）只在写/执行工具存在时渲染
+    expect(prompt).not.toContain('编辑纪律');
+    // 只走工具路径：只枚举读工具（按名排序），不出现写入/执行工具
+    expect(prompt).toContain('读用 glob / grep / read');
+    expect(prompt).not.toContain('写入用');
+    expect(prompt).not.toContain('执行命令用');
+  });
+
+  test('Plan Mode 只读白名单下自洽：只读声明、无编辑纪律、不列写工具', () => {
+    const prompt = buildSystemPrompt({
+      tools: planReadonlyRegistry(defaultWriteTools()),
+    });
+    expect(prompt).toContain('只有只读工具');
+    expect(prompt).not.toContain('写入/执行工具');
+    expect(prompt).not.toContain('需经用户审批');
+    expect(prompt).not.toContain('编辑纪律');
+    // 只读白名单 = read/grep/glob：write/edit/bash 工具说明不出现
+    expect(prompt).not.toContain('### write');
+    expect(prompt).not.toContain('### edit');
+    expect(prompt).not.toContain('### bash');
+  });
+
+  test('自定义命令白名单（read+write 无 exec）：声明能改文件但不夸口能跑命令', () => {
+    const filtered = new ToolRegistry()
+      .register(readTool)
+      .register(grepTool)
+      .register(globTool)
+      .register(writeTool);
+    const prompt = buildSystemPrompt({ tools: filtered });
+    expect(prompt).toContain('能改文件');
+    expect(prompt).not.toContain('能跑命令');
+    expect(prompt).toContain('需经用户审批');
+    expect(prompt).toContain('写入用 write');
+    expect(prompt).not.toContain('执行命令用');
+    expect(prompt).not.toContain('### bash');
   });
 
   test('搜索优先段：先 Glob/Grep 定位，再 Read 具体文件', () => {
