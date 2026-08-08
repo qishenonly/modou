@@ -12,7 +12,8 @@
     "build:renderer": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "bun test tests/",
-    "start": "electron ."
+    "check:electron": "node scripts/check-electron.mjs",
+    "start": "node scripts/check-electron.mjs && electron ."
   },
   "dependencies": {
     "@modou/core": "workspace:*",

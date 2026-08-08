@@ -17,17 +17,27 @@ let electronStarted = false;
 const startElectron = () => {
   if (electronStarted) return;
   electronStarted = true;
-  const electron = spawn('bun', ['x', 'electron', '.'], {
+  // 跨平台安装防护：electron 二进制平台不符时先报清晰错误（见 check-electron.mjs）
+  const check = spawn('node', ['scripts/check-electron.mjs'], {
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      MODOU_GUI_DEV: '1',
-      MODOU_GUI_DEV_URL: VITE_URL,
-    },
   });
-  electron.on('exit', () => {
-    vite.kill();
-    process.exit(0);
+  check.on('exit', (code) => {
+    if (code !== 0) {
+      process.exit(code ?? 1);
+      return;
+    }
+    const electron = spawn('bun', ['x', 'electron', '.'], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        MODOU_GUI_DEV: '1',
+        MODOU_GUI_DEV_URL: VITE_URL,
+      },
+    });
+    electron.on('exit', () => {
+      vite.kill();
+      process.exit(0);
+    });
   });
 };
 

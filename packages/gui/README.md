@@ -68,3 +68,19 @@ bun run --cwd packages/gui typecheck
 - 主进程 bundle（`esbuild`）把 `@modou/core` 等依赖打进去，`electron` 与 `@vscode/ripgrep` 外部化（二进制路径按 node_modules 解析）；
 - 跨平台安装：Electron 二进制按平台下载，换机器/换系统后重跑 `bun install` 即可；
 - 安全边界：contextIsolation + 无 nodeIntegration，渲染进程只能经 `window.modou` 与主进程通信。
+
+## 跨平台排障（node_modules 迁移/共享时）
+
+Electron 是**单包单二进制**：`node_modules/electron/dist/` 里只能有一个平台的二进制，而它的安装脚本只在包不存在时重跑。如果 node_modules 在异构平台间共享（例如开发 VM 安装后同步回 macOS），`electron .` 会直接 spawn 报错：
+
+```
+Error: spawn Unknown system error -8
+```
+
+修复（本机重下当前平台的二进制）：
+
+```bash
+rm -rf node_modules/electron && bun install
+```
+
+`bun run start` / `bun run dev` 前会自动跑 `scripts/check-electron.mjs` 校验二进制平台（读文件头魔数，Mach-O vs ELF），不符时给出上面的提示而不是晦涩的 spawn 报错。
