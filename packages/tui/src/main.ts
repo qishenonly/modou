@@ -10,6 +10,7 @@
  * 冒烟验证安装与 bin 链接（TUI 本体需要 TTY）。交互入口不带参数直接进 TUI。
  */
 import { defaultWriteTools } from '@modou/core';
+import { StructuredLogger } from '@modou/core';
 import { runTui, version } from './index';
 
 const USAGE = `modou ${version} — 终端编码 Agent
@@ -58,15 +59,31 @@ if (import.meta.main) {
     // exit(0) 覆写为 0，静默吞掉失败信号。
     process.exit(1);
   }
+  // 建议 0.13.0：二进制默认装配结构化日志——`~/.modou/logs/<project-hash>/` 下
+  // JSONL 追加写（request / tool_call / permission 三类，design 002 十一节）。
+  // 成本低（旁路记录，仅多一个目录 + 追加写），审计可回溯：每次请求的 token
+  // 分项 / 每次工具调用 / 每次权限裁决都有据可查。装配失败只告警不打断 TUI——
+  // 日志是旁路，绝不因日志问题影响主流程（写失败经 logger 的 onError 报 stderr）。
+  let structuredLog: StructuredLogger | undefined;
   try {
-    process.exitCode = await runTui({ tools: defaultWriteTools() }).then(
-      (result) => result.exitCode,
-    );
+    structuredLog = new StructuredLogger();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[modou] 结构化日志装配失败（不影响使用）：${message}`);
+  }
+  try {
+    process.exitCode = await runTui({
+      tools: defaultWriteTools(),
+      ...(structuredLog !== undefined ? { structuredLog } : {}),
+    }).then((result) => result.exitCode);
   } catch (error) {
     // T-080：启动期配置校验失败等以可读消息打到 stderr，退出码 1。
     // SettingsValidationError 的 message 已带字段 / 期望 / 文件行号。
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[modou] ${message}`);
     process.exitCode = 1;
+  } finally {
+    // 退出前等待已排队条目全部落盘（close 幂等：置 closed 后 flush 队列）。
+    await structuredLog?.close();
   }
 }
