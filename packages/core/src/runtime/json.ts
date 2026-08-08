@@ -25,6 +25,8 @@ import type { BudgetLedgerState } from '../context/budget';
 import type { LoopState } from './state';
 import type { Envelope, ProtocolEvent } from '../protocol/events';
 import { ApprovalGate } from '../permission/approval';
+import type { StructuredLogger } from '../logging/structured';
+import { EnvelopeLogAdapter } from '../logging/structured';
 
 // ---------------------------------------------------------------------------
 // 退出码（T-130 语义化：脚本 / CI 据此路由结果）
@@ -145,7 +147,7 @@ export function jsonSafeTurnResult(result: TurnResult): JsonSafeTurnResult {
 // runAgentTurnJson：事件流收集 + 退出码
 // ---------------------------------------------------------------------------
 
-/** runAgentTurnJson 的构造选项（信封发射器 + 事件过滤）。 */
+/** runAgentTurnJson 的构造选项（信封发射器 + 事件过滤 + 结构化日志）。 */
 export interface RunAgentTurnJsonOptions {
   /** 发出者 ID（子代理 / 测试用；缺省 'main'）。 */
   readonly agent?: string;
@@ -156,6 +158,12 @@ export interface RunAgentTurnJsonOptions {
    * tool_result 等子集以减小输出体积。
    */
   readonly only?: ReadonlySet<ProtocolEvent['type']>;
+  /**
+   * 结构化日志（T-131）：提供时，事件流经 EnvelopeLogAdapter 落盘 JSONL
+   * （request / tool_call / permission 三类条目，见 logging/structured.ts）。
+   * 缺省不记录——脚本自行决定是否要旁路日志。
+   */
+  readonly structuredLog?: StructuredLogger;
 }
 
 /** 收集一次 `runAgentTurn` 的事件流为 JSON 的产出。 */
@@ -194,9 +202,19 @@ export async function runAgentTurnJson(
           ...input,
           approval: createUnattendedApprovalGate(),
         };
+  // T-131 结构化日志：提供 logger 时把事件流经适配器落盘（request /
+  // tool_call / permission 三类，见 logging/structured.ts）。
+  const adapter =
+    options.structuredLog === undefined
+      ? null
+      : new EnvelopeLogAdapter(options.structuredLog, {
+          provider: input.provider.id,
+          model: input.provider.modelId,
+        });
   const result = await runAgentTurnStreaming(
     effectiveInput,
     (envelope) => {
+      adapter?.consume(envelope);
       if (options.only === undefined || options.only.has(envelope.type)) {
         envelopes.push(envelope);
       }

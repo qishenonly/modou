@@ -26,6 +26,7 @@ import {
   readOpencodeEnv,
   resolveConfig,
 } from '@modou/core';
+import type { StructuredLogger } from '@modou/core';
 
 /** /model 重建 provider 实例的工厂（与 core createProviderFromConfig 同形）。 */
 export type CreateProvider = (
@@ -106,6 +107,12 @@ export interface TuiOptions {
    * 外网、不读真实环境变量）。/resume 恢复会话模型时同样走本工厂。
    */
   readonly createProvider?: CreateProvider;
+  /**
+   * 结构化日志（T-131）：提供时，事件流经 EnvelopeLogAdapter 落盘 JSONL
+   * （request / tool_call / permission 三类，见 core logging/structured.ts）。
+   * 缺省不记录。调用方（main.ts / CI 包装）注入；测试注入临时目录 logger 断言。
+   */
+  readonly structuredLog?: StructuredLogger;
 }
 
 /** assembleTuiStartup 的产出：runTui 启动所需的全部装配结果。 */

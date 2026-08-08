@@ -35,6 +35,31 @@ if (import.meta.main) {
     console.log(USAGE);
     process.exit(0);
   }
+  // T-131 CI 友好化：无 TTY 自动降级——交互式 TUI 需要终端，管道 / CI 环境下
+  // 明确报错并提示改用程序化 API（runAgentTurnJson + readStdinPrompt），
+  // 绝不假装能渲染、也不静默吞掉输入。退出码 2（用法错误类）。
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    console.error(
+      '[modou] 检测到非 TTY 环境：交互式 TUI 需要真实终端。',
+    );
+    console.error(
+      '  请改用程序化 API（脚本 / CI 友好）：',
+    );
+    console.error(
+      '    import { runAgentTurnJson, readStdinPrompt } from "@modou/core";',
+    );
+    console.error(
+      '    const prompt = await readStdinPrompt(); // echo "任务" | modou 的管道形态',
+    );
+    console.error(
+      '    const { exitCode } = await runAgentTurnJson({ provider, messages: [{ role: "user", content: prompt }], options: { maxTurns: 10 } });',
+    );
+    console.error(
+      '  退出码：0 成功 / 1 失败 / 2 超限 / 3 需审批（默认拒绝，ADR 0012）/ 130 中断。',
+    );
+    process.exitCode = 2;
+    process.exit(0);
+  }
   try {
     process.exitCode = await runTui({ tools: defaultWriteTools() }).then(
       (result) => result.exitCode,

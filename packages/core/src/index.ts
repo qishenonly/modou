@@ -12,3 +12,4 @@ export * from './snapshot';
 export * from './config';
 export * from './eval';
 export * from './plan';
+export * from './logging';

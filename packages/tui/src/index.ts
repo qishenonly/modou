@@ -10,6 +10,7 @@ import {
   createProviderFromConfig,
   defaultReadonlyTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  EnvelopeLogAdapter,
   expandCommandPlaceholders,
   isEmptyPlan,
   listSessionsForResume,
@@ -433,6 +434,16 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
       if (currentController !== null) return; // 快照期间已有轮次开始
       const controller = new AbortController();
       currentController = controller;
+      // T-131 结构化日志：注入 logger 时，本轮事件流经适配器落盘 JSONL
+      // （request / tool_call / permission 三类；每轮新建适配器——模型可能
+      // 经 /model 切换，取本轮生效的 provider 标识）。
+      const logAdapter =
+        options.structuredLog === undefined
+          ? null
+          : new EnvelopeLogAdapter(options.structuredLog, {
+              provider: provider.id,
+              model: provider.modelId,
+            });
       const messages: ModelMessage[] = [
         ...historyMessages,
         { role: 'user', content: text },
@@ -478,7 +489,10 @@ export async function runTui(options: TuiOptions = {}): Promise<TuiResult> {
             retry: options.retry,
           },
         },
-        (envelope: Envelope) => channel.push(envelope),
+        (envelope: Envelope) => {
+          logAdapter?.consume(envelope);
+          channel.push(envelope);
+        },
       )
         .then((result) => {
           // T-070：压缩后的摘要状态随 TurnResult 演进，接续为下一轮的种子
