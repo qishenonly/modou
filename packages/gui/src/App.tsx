@@ -46,6 +46,10 @@ export function App(): ReactNode {
   const cardSeq = useRef(0);
   // 输入框引用（Cmd+K 聚焦用）
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // 编辑消息回填（用户点消息「编辑」后写入输入框）
+  const [editText, setEditText] = useState<string | null>(null);
+  // 侧栏折叠（Claude 式）
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const appendCard = useCallback((card: GuiCard): void => {
     cardSeq.current += 1;
@@ -305,6 +309,11 @@ export function App(): ReactNode {
     void window.modou.regenerate();
   };
 
+  const handleEditUser = (text: string): void => {
+    setEditText(text);
+    inputRef.current?.focus();
+  };
+
   const hasProject = ready !== null;
   const modelName = ready?.modelName ?? '';
   const permissionMode = ready?.permissionMode;
@@ -314,24 +323,37 @@ export function App(): ReactNode {
 
   return (
     <div className="app">
-      <Sidebar
-        projectName={projectName}
-        hasProject={hasProject}
-        currentSessionId={ready?.sessionId ?? null}
-        sessions={sessions}
-        running={state.running}
-        modelName={modelName}
-        titles={titles}
-        onNewChat={handleNewChat}
-        onResume={handleResume}
-        onDelete={handleDeleteSession}
-        onRename={handleRename}
-        onSelectDirectory={handleSelectDirectory}
-        onOpenModel={() => setModal('model')}
-        onOpenSettings={() => setModal('settings')}
-      />
+      {sidebarOpen && (
+        <Sidebar
+          projectName={projectName}
+          hasProject={hasProject}
+          currentSessionId={ready?.sessionId ?? null}
+          sessions={sessions}
+          running={state.running}
+          modelName={modelName}
+          titles={titles}
+          onNewChat={handleNewChat}
+          onResume={handleResume}
+          onDelete={handleDeleteSession}
+          onRename={handleRename}
+          onSelectDirectory={handleSelectDirectory}
+          onOpenModel={() => setModal('model')}
+          onOpenSettings={() => setModal('settings')}
+          onCollapse={() => setSidebarOpen(false)}
+        />
+      )}
 
       <div className="main">
+        {!sidebarOpen && (
+          <button
+            type="button"
+            className="sidebar-expand"
+            onClick={() => setSidebarOpen(true)}
+            title="展开侧栏"
+          >
+            ☰
+          </button>
+        )}
         {!hasProject ? (
           <Welcome
             hasProject={false}
@@ -361,6 +383,7 @@ export function App(): ReactNode {
                 onCloseCard={closeCard}
                 onPlanAction={handlePlanAction}
                 onRegenerate={handleRegenerate}
+                onEditUser={handleEditUser}
               />
             )}
             <InputBox
@@ -368,6 +391,7 @@ export function App(): ReactNode {
               onSubmit={handleSubmit}
               onStop={() => window.modou.sendCommand({ type: 'interrupt' })}
               inputRef={inputRef}
+              externalValue={editText ?? undefined}
             />
             <StatusBar
               modelName={modelName}

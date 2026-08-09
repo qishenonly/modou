@@ -7,6 +7,7 @@
  * - 粘贴 / 拖拽图片 → 转为 data URI 附件随消息提交（多模态）。
  */
 import {
+  useEffect,
   useRef,
   useState,
   type ClipboardEvent,
@@ -64,11 +65,14 @@ export function InputBox({
   onSubmit,
   onStop,
   inputRef,
+  externalValue,
 }: {
   readonly running: boolean;
   readonly onSubmit: (text: string, images?: readonly string[]) => void;
   readonly onStop: () => void;
   readonly inputRef?: RefObject<HTMLTextAreaElement>;
+  /** 外部注入的输入（编辑消息后回填）；变化时写入输入框并聚焦。 */
+  readonly externalValue?: string;
 }): ReactNode {
   const [value, setValue] = useState('');
   const [pendingImages, setPendingImages] = useState<readonly string[]>([]);
@@ -76,6 +80,15 @@ export function InputBox({
   const [history, setHistory] = useState<readonly string[]>([]);
   const [histPos, setHistPos] = useState(-1);
   const ref = inputRef ?? useRef<HTMLTextAreaElement>(null);
+
+  // 编辑消息回填：externalValue 变化时写入输入框并聚焦
+  useEffect(() => {
+    if (externalValue !== undefined) {
+      setValue(externalValue);
+      setHistPos(-1);
+      ref.current?.focus();
+    }
+  }, [externalValue, ref]);
 
   const showSlash = !running && value.trim().startsWith('/');
   const canSend = value.trim().length > 0 || pendingImages.length > 0;

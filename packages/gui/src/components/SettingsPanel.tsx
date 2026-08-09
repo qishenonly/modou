@@ -346,6 +346,39 @@ export function SettingsPanel({
                         </div>
                       )}
                     </div>
+                    <div className="settings-field">
+                      <label className="settings-label">正交矩阵</label>
+                      <table className="perm-matrix">
+                        <thead>
+                          <tr>
+                            <th />
+                            <th>untrusted</th>
+                            <th>on-request</th>
+                            <th>never</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td className="perm-dim">只读</td>
+                            <td>读也问</td>
+                            <td>基本不问</td>
+                            <td>静默只读</td>
+                          </tr>
+                          <tr>
+                            <td className="perm-dim">工作区写</td>
+                            <td>每次写/执行都问</td>
+                            <td>自认风险才问</td>
+                            <td>工作区内放手干</td>
+                          </tr>
+                          <tr>
+                            <td className="perm-dim">完全访问</td>
+                            <td>每次都问</td>
+                            <td>危险操作才问</td>
+                            <td>完全放手</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                     <p className="settings-desc">
                       当前生效：{PERMISSION_MODE_LABEL[config.permissionMode]}
                       。权限改动保存后需重启。

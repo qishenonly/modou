@@ -85,10 +85,28 @@ function ThinkingDots(): ReactNode {
   );
 }
 
-function UserMessage({ text }: { readonly text: string }): ReactNode {
+function UserMessage({
+  text,
+  onEdit,
+}: {
+  readonly text: string;
+  readonly onEdit?: (text: string) => void;
+}): ReactNode {
   return (
     <div className="msg msg-user">
-      <div className="msg-bubble msg-user-bubble">{text}</div>
+      <div className="msg-user-col">
+        <div className="msg-bubble msg-user-bubble">{text}</div>
+        {onEdit !== undefined && (
+          <button
+            type="button"
+            className="msg-copy msg-edit"
+            onClick={() => onEdit(text)}
+            title="编辑这条消息"
+          >
+            编辑
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -167,6 +185,7 @@ export function ChatThread({
   onCloseCard,
   onPlanAction,
   onRegenerate,
+  onEditUser,
 }: {
   readonly history: readonly ChatMessage[];
   readonly streamingText: string;
@@ -185,6 +204,7 @@ export function ChatThread({
   readonly onCloseCard: (id: number) => void;
   readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
   readonly onRegenerate: () => void;
+  readonly onEditUser: (text: string) => void;
 }): ReactNode {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -208,7 +228,7 @@ export function ChatThread({
 
         {history.map((entry, index) =>
           entry.role === 'user' ? (
-            <UserMessage key={index} text={entry.text} />
+            <UserMessage key={index} text={entry.text} onEdit={onEditUser} />
           ) : (
             <AssistantMessage
               key={index}

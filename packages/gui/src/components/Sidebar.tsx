@@ -30,6 +30,7 @@ export function Sidebar({
   onSelectDirectory,
   onOpenModel,
   onOpenSettings,
+  onCollapse,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
@@ -45,11 +46,18 @@ export function Sidebar({
   readonly onSelectDirectory: () => void;
   readonly onOpenModel: () => void;
   readonly onOpenSettings: () => void;
+  readonly onCollapse: () => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  // 右键上下文菜单（Claude 式）
+  const [ctx, setCtx] = useState<{
+    readonly x: number;
+    readonly y: number;
+    readonly sessionId: string;
+  } | null>(null);
 
   const visible = sessions.filter((session) => {
     if (query.trim().length === 0) return true;
@@ -86,6 +94,23 @@ export function Sidebar({
         <div className="sidebar-brand">
           <LogoMark size={26} />
           <span className="sidebar-brand-name">modou</span>
+          <button
+            type="button"
+            className="sidebar-collapse"
+            onClick={onCollapse}
+            title="折叠侧栏"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M9.5 4 6 8l3.5 4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
         </div>
         <button
           type="button"
@@ -179,6 +204,14 @@ export function Sidebar({
                 tabIndex={0}
                 onClick={() => {
                   if (!editing) onResume(session.sessionId);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setCtx({
+                    x: event.clientX,
+                    y: event.clientY,
+                    sessionId: session.sessionId,
+                  });
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -301,6 +334,64 @@ export function Sidebar({
           </svg>
         </button>
       </div>
+      {/* 右键上下文菜单 */}
+      {ctx !== null && (
+        <>
+          <div
+            className="ctx-overlay"
+            onClick={() => setCtx(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCtx(null);
+            }}
+          />
+          <div className="ctx-menu" style={{ left: ctx.x, top: ctx.y }}>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                onResume(ctx.sessionId);
+                setCtx(null);
+              }}
+            >
+              恢复会话
+            </button>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                const session = sessions.find(
+                  (s) => s.sessionId === ctx.sessionId,
+                );
+                if (session !== undefined) startEdit(session);
+                setCtx(null);
+              }}
+            >
+              重命名
+            </button>
+            <button
+              type="button"
+              className="ctx-item ctx-danger"
+              onClick={() => {
+                onDelete(ctx.sessionId);
+                setCtx(null);
+              }}
+            >
+              删除会话
+            </button>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                void navigator.clipboard.writeText(ctx.sessionId);
+                setCtx(null);
+              }}
+            >
+              复制会话 ID
+            </button>
+          </div>
+        </>
+      )}
     </aside>
   );
 }
