@@ -17,6 +17,8 @@ export const IPC = {
   EVENT: 'modou:event',
   /** main → renderer：配置摘要（ReadyPayload）。 */
   READY: 'modou:ready',
+  /** main → renderer：计划产出（PlanPayload；/plan 面板开合）。 */
+  PLAN: 'modou:plan',
   /** renderer → main：core Command（send，一次性）。 */
   COMMAND: 'modou:command',
   /** renderer → main（invoke）：可恢复会话列表。 */
@@ -33,6 +35,26 @@ export const IPC = {
   DELETE_SESSION: 'modou:deleteSession',
   /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
   SELECT_DIRECTORY: 'modou:selectDirectory',
+  /** renderer → main（invoke）：快照点列表（/rewind 面板）。 */
+  GET_SNAPSHOTS: 'modou:getSnapshots',
+  /** renderer → main（invoke）：回滚预览（/rewind 确认态）。 */
+  PREVIEW_REWIND: 'modou:previewRewind',
+  /** renderer → main（invoke）：执行还原到某快照点。 */
+  REWIND_TO: 'modou:rewindTo',
+  /** renderer → main（invoke）：快照占用与保留报告（/snapshots）。 */
+  SNAPSHOT_REPORT: 'modou:snapshotReport',
+  /** renderer → main（invoke）：快照过期清理（/snapshots --cleanup）。 */
+  SNAPSHOT_CLEANUP: 'modou:snapshotCleanup',
+  /** renderer → main（invoke）：成本统计（/cost）。 */
+  GET_COST: 'modou:getCost',
+  /** renderer → main（invoke）：MCP 服务器状态（/mcp）。 */
+  GET_MCP_STATUS: 'modou:getMcpStatus',
+  /** renderer → main（invoke）：探测仓库并生成 AGENTS.md 初稿（/init 预览）。 */
+  PLAN_INIT: 'modou:planInit',
+  /** renderer → main（invoke）：写入 /init 生成的 AGENTS.md 初稿。 */
+  WRITE_INIT: 'modou:writeInit',
+  /** renderer → main（invoke）：当前计划模式状态（/plan 面板拉取）。 */
+  GET_PLAN: 'modou:getPlan',
   /** renderer → main（invoke）：退出应用。 */
   QUIT: 'modou:quit',
 } as const;
@@ -83,3 +105,23 @@ export interface GuiConfigSummary {
   readonly keepTurns: number;
   readonly sessionId: string | null;
 }
+
+/** 计划产出（PLAN 通道 / GET_PLAN 返回）：null = 计划模式关闭或暂无计划。 */
+export interface PlanPayload {
+  /** 结构化计划（非空 = 计划面板打开）。 */
+  readonly plan: StructuredPlan | null;
+  /** 计划模式是否处于激活（只读研究中）。 */
+  readonly active: boolean;
+}
+
+import type { StructuredPlan } from '@modou/core';
+export type {
+  CostTotals,
+  DayCostTotals,
+  InitResult,
+  McpServerStatus,
+  RewindPreview,
+  RewindResult,
+  SnapshotPoint,
+  SnapshotUsageReport,
+} from '@modou/core';

@@ -1,57 +1,103 @@
 /**
  * GUI 主进程桥：core 编排 + 事件流广播。
  *
- * 与 runTui（packages/tui/src/index.ts）**同一套编排逻辑**的 Electron 版：
- * - 消费同一个 core 公开 API（runAgentTurnStreaming / SessionStore / SessionLog /
- *   BudgetLedger / buildContextState / resumeSession / rebuildSummaryState …），
- *   core 零改动——GUI 与 TUI 是 core 的两个平级前端（002 2.1）；
- * - 协议信封经 `emitEvent` 推给渲染进程（main.ts 接到 webContents.send），
- *   Command 经 `sendCommand` 进入——渲染进程是事件流**纯消费者**（002 3.3）；
- * - UI 模态（模型选择 / 会话选择 / 设置 / 上下文面板）由渲染进程驱动：本桥只
- *   提供「拉取型」查询（listModels / listSessions / getContext / getConfig），
- *   不持有 UI 状态——分工与 TUI 的「runTui 注入 App prop」一致，只是传输不同。
+ * 与 runTui（packages/tui/src/index.ts）**同一套编排逻辑**的 Electron 版，
+ * 覆盖 0.10–0.17 的编排能力：
+ * - 快照（0.10.0）：SnapshotStore + 每轮自动快照 + /rewind 列表/预览/还原；
+ * - 清单（0.11.0）：todo_update 事件由 loop 发出（协议已有），桥只演进 todoState；
+ * - Plan Mode（0.11.0）：只读白名单 → 结构化计划 → 批准/修改/拒绝（plan_* 命令）；
+ * - 子代理（0.12.0）：协议零改动（Envelope.agent 从第一天就有），前端按 agent 分组；
+ * - Hooks（0.14.0）：startup 装配的 HookBus 注入 loop（管线 ④⑦ 直通变为真实执行）；
+ * - Skills（0.15.0）/ 自定义 agents（0.17.0）：工具注入 + 清单进系统提示词；
+ * - MCP（0.16.0）：McpManager 注入工具注册表 + /mcp 状态；联网（0.17.0）经
+ *   withWebTools 注册；长期记忆（0.17.0）经 withMemoryTools + 启动注入。
  *
+ * 协议信封经 `emitEvent` 推给渲染进程，Command 经 `sendCommand` 进入——渲染进程
+ * 是事件流纯消费者（002 3.3）；UI 模态由渲染进程驱动，本桥只提供「拉取型」查询。
  * 本文件**不 import 'electron'**：主进程 / 单元测试共用（测试注入 stub provider
  * 与回调，离线覆盖），main.ts 只负责把桥接到 Electron IPC。
  */
-import { basename } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type {
+  AgentToolDeps,
+  AttachmentRef,
   Command,
   CompactOptions,
   CompactionData,
   ContextStateData,
+  CostTotals,
+  DayCostTotals,
   Envelope,
+  InitResult,
+  McpServerConfig,
+  McpServerStatus,
   ModelMessage,
   ModelProvider,
   NoticeLevel,
   ResumeCandidate,
   RetryOptions,
+  RewindPreview,
+  RewindResult,
+  SessionRecord,
+  SkillToolDeps,
+  SnapshotPoint,
+  SnapshotUsageReport,
+  StructuredPlan,
   SummaryState,
-  ToolRegistry,
+  TimestampedUsage,
+  TodoState,
 } from '@modou/core';
 import {
+  aggregateByDay,
+  aggregateCost,
+  attachImagesToUserMessage,
   BudgetLedger,
   buildContextState,
   buildSystemPrompt,
+  collectTouchedPaths,
   countUserMessages,
+  createAgentTool,
   createModelDeltaGenerator,
   createProviderFromConfig,
+  createSkillTool,
   defaultWriteTools,
   DEFAULT_MIN_TURNS_BETWEEN_COMPACTIONS,
+  discoverAgents,
+  discoverSkills,
+  isEmptyPlan,
   listSessionsForResume,
   loadInstructions,
+  loadMemoryText,
+  McpManager,
+  memoryDirFor,
+  parseStructuredPlan,
+  PLAN_MODE_INSTRUCTION,
+  planReadonlyRegistry,
   projectHash,
   projectMessages,
   rebuildReadFiles,
   rebuildSummaryState,
   resumeSession,
   runAgentTurnStreaming,
+  runInit,
+  serializeStructuredPlan,
   SessionLog,
   SessionStore,
+  SnapshotStore,
+  ToolRegistry,
+  usageEntriesFromRecords,
+  withMemoryTools,
+  withWebTools,
 } from '@modou/core';
 import { createApprovalBridge, type ApprovalBridge } from './approval';
 import { performCompact } from './compact';
-import type { GuiConfigSummary, ReadyPayload, ThreadMessage } from './ipc';
+import type {
+  GuiConfigSummary,
+  PlanPayload,
+  ReadyPayload,
+  ThreadMessage,
+} from './ipc';
 import {
   collectModelCandidates,
   describeError,
@@ -68,7 +114,7 @@ import {
   type GuiBridgeOptions,
 } from './startup';
 
-export const version = '0.9.0';
+export const version = '0.17.0';
 
 /** 从 AI SDK ModelMessage 内容里取展示文本（string 或 text part 拼接）。 */
 function messageText(content: ModelMessage['content']): string {
@@ -86,6 +132,8 @@ export interface GuiBridgeCallbacks {
   emitEvent(envelope: Envelope): void;
   /** 配置摘要（READY 通道）：启动 / 模型·会话切换后刷新。 */
   emitReady(payload: ReadyPayload): void;
+  /** 计划产出（PLAN 通道）：/plan 面板开合。 */
+  emitPlan(payload: PlanPayload): void;
 }
 
 export type { GuiConfigSummary } from './ipc';
@@ -103,24 +151,58 @@ function defaultCompactionThreshold(provider: ModelProvider): number {
   return 60_000;
 }
 
+/** 在既有注册表上复制并追加 skill 工具（与 runTui 同款：不动调用方资产）。 */
+function withSkillTool(
+  registry: ToolRegistry,
+  deps: SkillToolDeps,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  copy.register(createSkillTool(deps));
+  return copy;
+}
+
+/** 在既有注册表上复制并追加 agent 工具（与 runTui 同款）。 */
+function withAgentTool(
+  registry: ToolRegistry,
+  deps: AgentToolDeps,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) copy.register(tool);
+  copy.register(createAgentTool(deps));
+  return copy;
+}
+
+/** 复制注册表（MCP 注入用：连接后落在副本上，不修改调用方资产）。 */
+function copyTools(source: ToolRegistry): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of source.list()) copy.register(tool);
+  return copy;
+}
+
 /**
  * GuiBridge：Electron 主进程里的 core 编排桥（见文件头注释）。
  *
- * 生命周期：构造 → start()（装配 + 发指令告警）→ 渲染进程挂载后消费事件流
- * → sendCommand 驱动轮次 → dispose()（打断在跑轮次、deny 未裁决审批）。
+ * 生命周期：构造（装配工具集 / 快照 / MCP / 计划状态）→ start()（发指令告警）
+ * → 渲染进程挂载后消费事件流 → sendCommand 驱动轮次 → dispose()。
  */
 export class GuiBridge {
-  // —— 装配（T-080 配置系统：内置默认 → 全局 → 项目 → 环境变量 → 显式选项）——
+  // —— 装配（T-080 配置系统 + 0.15/0.16/0.17 工具扩展）——
   private readonly startup: ReturnType<typeof assembleGuiStartup>;
   private provider: ModelProvider;
-  private readonly tools: ToolRegistry;
   private readonly cwd: string;
   private readonly homeDir: string;
-  private readonly system: string;
-  private readonly readFiles: Set<string>;
   private readonly env: NodeJS.ProcessEnv;
   private readonly createProvider: CreateProvider;
   private readonly callbacks: GuiBridgeCallbacks;
+  /** 完整工具注册表（GUI 面向写/执行场景：write/edit/bash/todo/task + 扩展工具）。 */
+  private readonly tools: ToolRegistry;
+  /** 基准系统提示词（正常执行模式；Plan Mode 进入/退出时在 system 与 base 间切换）。 */
+  private baseSystem: string;
+  private system: string;
+  private readonly readFiles: Set<string>;
+  private readonly instructionsNotice: string | undefined;
+  private readonly memoryText: string | undefined;
 
   // —— 会话（T-060 旁路记录 / T-061 /resume）——
   private readonly sessionStore: SessionStore;
@@ -138,6 +220,20 @@ export class GuiBridge {
   // —— 审批（T-044：渲染进程弹窗裁决）——
   private readonly approval: ApprovalBridge;
 
+  // —— 快照（0.10.0 T-100/T-103）——
+  private readonly snapshotStore: SnapshotStore;
+  private readonly snapshotEnabled: boolean;
+
+  // —— MCP（0.16.0 T-163）——
+  private readonly mcpManager: McpManager | null;
+
+  // —— 清单（0.11.0 T-110）：loop 演进后随 TurnResult 返回，接续为下一轮种子 ——
+  private todoState: TodoState | undefined = undefined;
+
+  // —— Plan Mode（0.11.0 T-112）——
+  private planMode = false;
+  private planProposal: StructuredPlan | null = null;
+
   // —— 轮次 / 事件——
   private currentController: AbortController | null = null;
   private syntheticSeq = 0;
@@ -151,28 +247,126 @@ export class GuiBridge {
     this.startup = assembleGuiStartup(options, env);
     this.env = env;
     this.provider = this.startup.provider;
-    this.tools = options.tools ?? defaultWriteTools();
     this.cwd = this.startup.projectRoot;
     this.homeDir = this.startup.homeDir;
     this.createProvider = options.createProvider ?? createProviderFromConfig;
 
     // T-081 指令文件加载：AGENTS.md 三级指令（全局 → 项目根 → 子目录）。
-    // 超限截断的告警不静默——start() 里发 notice。
     const instructions =
       options.system === undefined
         ? loadInstructions({ homeDir: this.homeDir, cwd: this.cwd })
         : null;
-    this.system =
-      options.system ??
-      buildSystemPrompt({ tools: this.tools, extra: instructions?.text });
     this.instructionsNotice = instructions?.notice;
+
+    // —— 工具集装配（写/执行默认 + 0.15 技能 + 0.17 角色 + 联网 + 记忆）——
+    let tools = options.tools ?? defaultWriteTools();
+    const discoveredSkills = discoverSkills({
+      homeDir: this.homeDir,
+      projectRoot: this.cwd,
+    });
+    const skillIndex = new Map(
+      discoveredSkills.map((skill) => [skill.name, skill] as const),
+    );
+    const skillsEnabled = skillIndex.size > 0;
+    if (skillsEnabled) {
+      tools = withSkillTool(tools, {
+        resolve: (name) => skillIndex.get(name),
+        names: () => [...skillIndex.keys()],
+      });
+    }
+    const discoveredAgents = discoverAgents({
+      homeDir: this.homeDir,
+      projectRoot: this.cwd,
+    });
+    const agentIndex = new Map(
+      discoveredAgents.agents.map((agent) => [agent.name, agent] as const),
+    );
+    const agentsEnabled = agentIndex.size > 0;
+    if (agentsEnabled) {
+      tools = withAgentTool(tools, {
+        resolve: (name) => agentIndex.get(name),
+        names: () => [...agentIndex.keys()],
+      });
+    }
+    tools = withWebTools(tools, this.startup.web);
+    const memoryDir = memoryDirFor(this.cwd);
+    const memoryLoaded = loadMemoryText(memoryDir);
+    this.memoryText =
+      memoryLoaded.text.length > 0 ? memoryLoaded.text : undefined;
+    tools = withMemoryTools(tools, { dir: memoryDir });
+    this.tools = tools;
+
+    // —— 基准系统提示词（技能/角色清单常驻；MCP 连接完成后重建）——
+    const extraParts: string[] = [];
+    if (instructions !== null && instructions.text.length > 0) {
+      extraParts.push(instructions.text);
+    }
+    if (this.memoryText !== undefined) extraParts.push(this.memoryText);
+    const extra = extraParts.length > 0 ? extraParts.join('\n\n') : undefined;
+    const buildBaseSystem = (): string =>
+      options.system ??
+      buildSystemPrompt({
+        tools,
+        ...(extra !== undefined ? { extra } : {}),
+        ...(skillsEnabled
+          ? {
+              skills: discoveredSkills.map((skill) => ({
+                name: skill.name,
+                description: skill.description,
+              })),
+            }
+          : {}),
+        ...(agentsEnabled
+          ? {
+              agents: discoveredAgents.agents.map((agent) => ({
+                name: agent.name,
+                description: agent.description,
+              })),
+            }
+          : {}),
+      });
+    this.baseSystem = buildBaseSystem();
+    this.system = this.baseSystem;
 
     this.readFiles = new Set(options.readFiles ?? []);
     this.sessionStore = new SessionStore({ homeDir: this.homeDir });
     this.approval = createApprovalBridge(this.startup.permission);
     this.retry = options.retry;
 
-    // 压缩配置：生产模型生成器 + 上下文窗口 70% 阈值；测试可经 options.compact 覆盖
+    // —— 快照（0.10.0）：T-103 保留策略 + 体积/耗时上限 ——
+    const snapshotConfig = this.startup.snapshot;
+    this.snapshotEnabled = snapshotConfig?.enabled ?? true;
+    this.snapshotStore = new SnapshotStore({
+      homeDir: this.homeDir,
+      cwd: this.cwd,
+      ...(snapshotConfig !== undefined
+        ? {
+            retention: {
+              ...(snapshotConfig.maxAgeDays !== undefined
+                ? {
+                    maxAgeMs: snapshotConfig.maxAgeDays * 24 * 60 * 60 * 1000,
+                  }
+                : {}),
+              ...(snapshotConfig.keepPerSession !== undefined
+                ? { keepPerSession: snapshotConfig.keepPerSession }
+                : {}),
+              ...(snapshotConfig.maxPerProject !== undefined
+                ? { maxPerProject: snapshotConfig.maxPerProject }
+                : {}),
+            },
+            limits: {
+              ...(snapshotConfig.maxChangedPaths !== undefined
+                ? { maxChangedPaths: snapshotConfig.maxChangedPaths }
+                : {}),
+              ...(snapshotConfig.maxBytes !== undefined
+                ? { maxBytes: snapshotConfig.maxBytes }
+                : {}),
+            },
+          }
+        : {}),
+    });
+
+    // —— 压缩配置：生产模型生成器 + 上下文窗口 70% 阈值 ——
     this.compactConfig = {
       keepTurns: this.startup.keepTurns,
       thresholdTokens:
@@ -185,14 +379,52 @@ export class GuiBridge {
         options.compact?.generateDelta ??
         createModelDeltaGenerator(this.provider),
     };
-  }
 
-  private readonly instructionsNotice: string | undefined;
+    // —— MCP（0.16.0）：settings.json mcp.servers → McpManager → 工具注入 ——
+    const mcpServers = this.startup.mcpServers;
+    this.mcpManager =
+      mcpServers.length > 0
+        ? new McpManager({
+            servers: mcpServers as readonly McpServerConfig[],
+            registry: copyTools(this.tools),
+            onStatusChange: (status: McpServerStatus) => {
+              if (status.state === 'connected') {
+                this.pushNotice(
+                  'info',
+                  `MCP 服务器 ${status.name} 已连接（${status.toolCount} 个工具）`,
+                );
+              } else if (status.state === 'failed') {
+                this.pushNotice(
+                  'warn',
+                  `MCP 服务器 ${status.name} 连接失败：${status.error ?? '原因未知'}`,
+                );
+              } else if (status.state === 'disconnected') {
+                this.pushNotice(
+                  'warn',
+                  `MCP 服务器 ${status.name} 已断开：${status.error ?? '原因未知'}`,
+                );
+              }
+            },
+          })
+        : null;
+    if (this.mcpManager !== null) {
+      void this.mcpManager.start().then(() => {
+        if (this.mcpManager !== null && this.mcpManager.activeToolCount > 0) {
+          this.baseSystem = buildBaseSystem();
+          if (!this.planMode) this.system = this.baseSystem;
+          this.broadcastReady();
+        }
+      });
+    }
+  }
 
   /** 启动：把指令截断告警等启动期 notice 推给渲染进程，返回 ReadyPayload。 */
   start(): ReadyPayload {
     if (this.instructionsNotice !== undefined) {
       this.pushNotice('warn', this.instructionsNotice);
+    }
+    for (const notice of this.startup.notices ?? []) {
+      this.pushNotice('warn', notice);
     }
     return this.readyPayload();
   }
@@ -221,7 +453,7 @@ export class GuiBridge {
     });
   }
 
-  /** 当前线程的展示消息（resume / clear 后渲染进程播种历史用；T-061 显示是投影）。 */
+  /** 当前线程的展示消息（resume / clear 后渲染进程播种历史用）。 */
   getThread(): readonly ThreadMessage[] {
     const out: ThreadMessage[] = [];
     for (const message of this.historyMessages) {
@@ -231,7 +463,6 @@ export class GuiBridge {
           out.push({ role: message.role, text });
         }
       }
-      // tool 消息不展示为气泡（工具卡片由事件流重建）
     }
     return out;
   }
@@ -255,7 +486,7 @@ export class GuiBridge {
     };
   }
 
-  /** 删除一条会话（侧栏；成功后清空当前会话引用，防悬空）。 */
+  /** 删除一条会话（侧栏）。 */
   async deleteSession(sessionId: string): Promise<boolean> {
     const deleted = await this.sessionStore.delete(
       projectHash(this.cwd),
@@ -267,15 +498,136 @@ export class GuiBridge {
     return deleted;
   }
 
+  // —— 快照（0.10.0 /rewind /snapshots）——
+
+  /** 快照点列表（新 → 旧；/rewind 面板）。 */
+  async listSnapshots(): Promise<readonly SnapshotPoint[]> {
+    return this.snapshotStore.listSnapshots();
+  }
+
+  /** 回滚预览（/rewind 确认态；失败返回 null 由渲染进程提示）。 */
+  async previewRewind(snapshotId: string): Promise<RewindPreview | null> {
+    try {
+      return await this.snapshotStore.previewRewind(snapshotId);
+    } catch (caught) {
+      this.pushNotice('warn', `无法预览回滚：${describeError(caught)}`);
+      return null;
+    }
+  }
+
+  /** 执行还原到某快照点，并向会话插入「已回滚」说明（002 4.1）。 */
+  async rewindTo(snapshotId: string): Promise<RewindResult | null> {
+    try {
+      const result = await this.snapshotStore.rewindTo(snapshotId);
+      if (this.sessionLog === null) this.openSession();
+      const short = (result.snapshotId ?? '').slice(0, 8);
+      await this.sessionLog?.appendUser(
+        `用户已回滚到快照点 ${short}。文件已还原到该点状态，之前的改动已被撤销——请勿重复已撤销的工作。`,
+      );
+      this.refreshHistory();
+      return result;
+    } catch (caught) {
+      this.pushNotice('warn', `还原失败：${describeError(caught)}`);
+      return null;
+    }
+  }
+
+  /** 快照占用与保留报告（/snapshots）。 */
+  async snapshotReport(): Promise<SnapshotUsageReport> {
+    return this.snapshotStore.reportUsage();
+  }
+
+  /** 快照过期清理（/snapshots --cleanup）。 */
+  async snapshotCleanup(): Promise<void> {
+    try {
+      const result = await this.snapshotStore.cleanup();
+      this.pushNotice(
+        'info',
+        `快照清理完成：删除 ${result.removed} 个过期快照，释放 ${result.freedBytes} 字节`,
+      );
+    } catch (caught) {
+      this.pushNotice('warn', `快照清理失败：${describeError(caught)}`);
+    }
+  }
+
+  // —— 成本（0.13.0 /cost）——
+
+  /** 成本统计：本会话 + 本项目全部会话按天（结构化，渲染进程展示）。 */
+  async getCost(): Promise<{
+    readonly session: CostTotals;
+    readonly days: readonly DayCostTotals[];
+  } | null> {
+    if (this.sessionLog === null) return null;
+    try {
+      const project = projectHash(this.cwd);
+      const current = await this.sessionStore.read(
+        project,
+        this.sessionLog.sessionId,
+      );
+      const records: readonly SessionRecord[] = current?.records ?? [];
+      const session = aggregateCost(
+        usageEntriesFromRecords(records),
+        this.provider.modelId,
+      );
+      const allUsage: TimestampedUsage[] = [];
+      const summaries = await this.sessionStore.list(project);
+      for (const summary of summaries) {
+        const read = await this.sessionStore.read(project, summary.sessionId);
+        if (read !== null) {
+          allUsage.push(...usageEntriesFromRecords(read.records));
+        }
+      }
+      const days = aggregateByDay(allUsage, this.provider.modelId);
+      return { session, days };
+    } catch {
+      return null;
+    }
+  }
+
+  // —— MCP（0.16.0 /mcp）——
+
+  /** MCP 服务器状态（/mcp 面板）。 */
+  getMcpStatus(): readonly McpServerStatus[] {
+    return this.mcpManager?.status() ?? [];
+  }
+
+  // —— /init（0.13.0 T-132）——
+
+  /** 探测仓库并生成 AGENTS.md 初稿（/init 预览）。 */
+  planInit(): InitResult | null {
+    try {
+      return runInit(this.cwd);
+    } catch (caught) {
+      this.pushNotice('warn', `/init 探测失败：${describeError(caught)}`);
+      return null;
+    }
+  }
+
+  /** 写入 /init 初稿（runInit 已在预览时写入；本方法仅兜底提示）。 */
+  writeInit(): boolean {
+    this.pushNotice(
+      'info',
+      'AGENTS.md 初稿已由 /init 直接写入（若提示已存在则不覆盖，请手动合并）。',
+    );
+    return true;
+  }
+
+  // —— Plan Mode（0.11.0 /plan）——
+
+  /** 当前计划模式状态（/plan 面板拉取）。 */
+  getPlan(): PlanPayload {
+    return { plan: this.planProposal, active: this.planMode };
+  }
+
   // -------------------------------------------------------------------------
-  // 命令面（渲染进程 → core，002 3.3 反向通道）
+  // 命令面（渲染进程 → core，002 3.3 反向通道 + 0.11.0 plan_*）
   // -------------------------------------------------------------------------
 
-  /** 处理一条 Command（与 runTui 的 send 同构）。 */
+  /** 处理一条 Command。 */
   sendCommand(command: Command): void {
     switch (command.type) {
       case 'submit':
-        this.startTurn(command.text);
+        this.startTurn(command.text, { attachments: command.attachments });
         break;
       case 'interrupt':
         this.currentController?.abort('用户中断');
@@ -286,8 +638,16 @@ export class GuiBridge {
       case 'slash':
         this.handleSlash(command.name, command.args);
         break;
+      case 'plan_approve':
+        this.approvePlan();
+        break;
+      case 'plan_reject':
+        this.rejectPlan();
+        break;
+      case 'plan_modify':
+        this.editPlan();
+        break;
       default:
-        // steer：后续任务接线（与 runTui 一致）
         break;
     }
   }
@@ -296,10 +656,11 @@ export class GuiBridge {
   dispose(): void {
     this.currentController?.abort();
     this.approval.denyAll();
+    void this.mcpManager?.stop();
   }
 
   // -------------------------------------------------------------------------
-  // 事件推送（合成信封 / ReadyPayload）
+  // 事件推送（合成信封 / ReadyPayload / Plan）
   // -------------------------------------------------------------------------
 
   private pushNotice(level: NoticeLevel, text: string): void {
@@ -346,6 +707,14 @@ export class GuiBridge {
     this.callbacks.emitReady(this.readyPayload(totals));
   }
 
+  /** 计划面板开合（/plan 产出/批准/拒绝/修改后推送）。 */
+  private broadcastPlan(): void {
+    this.callbacks.emitPlan({
+      plan: this.planProposal,
+      active: this.planMode,
+    });
+  }
+
   // -------------------------------------------------------------------------
   // 会话（T-060 / T-061，逻辑与 runTui 一致）
   // -------------------------------------------------------------------------
@@ -384,18 +753,64 @@ export class GuiBridge {
     ).catch(() => {});
   }
 
-  /** 启动一轮（与 runTui startTurn 同构：历史投影串行化 + 独立 AbortController）。 */
-  private startTurn(text: string): void {
-    if (this.currentController !== null) return; // 已在运行，忽略
-    void this.historyRefresh.then(() => {
+  /** 修改前自动快照（0.10.0 T-102；首轮 = 初始基线，工作树未变返回 null）。 */
+  private async takeSnapshot(): Promise<void> {
+    if (!this.snapshotEnabled || this.sessionLog === null) return;
+    try {
+      const read = await this.sessionStore.read(
+        projectHash(this.cwd),
+        this.sessionLog.sessionId,
+      );
+      const paths = collectTouchedPaths(read?.records ?? [], {
+        cwd: this.cwd,
+      });
+      const point = await this.snapshotStore.snapshot({
+        paths,
+        sessionId: this.sessionLog.sessionId,
+      });
+      if (point !== null && !point.degraded && point.id !== null) {
+        await this.sessionLog.appendSnapshot({
+          ref: point.id,
+          summary: point.summary,
+        });
+      }
+    } catch (caught) {
+      this.pushNotice('warn', `自动快照失败：${describeError(caught)}`);
+    }
+  }
+
+  /** 启动一轮（附件支持 /image；快照先行；todo/plan 结果随 TurnResult 演进）。 */
+  private startTurn(
+    text: string,
+    opts?: { readonly attachments?: readonly AttachmentRef[] },
+  ): void {
+    if (this.currentController !== null) return;
+    void this.historyRefresh.then(async () => {
       if (this.currentController !== null) return;
       if (this.sessionLog === null) this.openSession();
+      await this.takeSnapshot();
+      if (this.currentController !== null) return;
       const controller = new AbortController();
       this.currentController = controller;
-      const messages: ModelMessage[] = [
-        ...this.historyMessages,
-        { role: 'user', content: text },
-      ];
+
+      // T-133 图片输入：附件 → 多模态消息（能力不支持时诚实降级）
+      const images = (opts?.attachments ?? []).map((ref) => ref.uri);
+      let userMessage: ModelMessage;
+      if (images.length > 0) {
+        const built = await attachImagesToUserMessage({
+          prompt: text,
+          images,
+          capabilities: this.provider.capabilities,
+        });
+        userMessage = built.messages[0] ?? { role: 'user', content: text };
+        for (const notice of built.notices) {
+          this.pushNotice('warn', notice);
+        }
+      } else {
+        userMessage = { role: 'user', content: text };
+      }
+
+      const messages: ModelMessage[] = [...this.historyMessages, userMessage];
       void runAgentTurnStreaming(
         {
           provider: this.provider,
@@ -405,10 +820,12 @@ export class GuiBridge {
           readFiles: this.readFiles,
           cwd: this.cwd,
           approval: this.approval.gate,
+          hooks: this.startup.hooks,
           session: this.sessionLog ?? undefined,
           loggedUserCount: this.loggedUserCount,
           budget: this.budget,
           summaryState: this.summaryState,
+          todoState: this.todoState,
           compact: this.compactConfig,
           options: {
             maxTurns: this.startup.maxTurns,
@@ -422,6 +839,25 @@ export class GuiBridge {
           if (result.summaryState !== undefined) {
             this.summaryState = result.summaryState;
           }
+          if (result.todoState !== undefined) {
+            this.todoState = result.todoState;
+          }
+          // T-112 Plan Mode：计划轮结束后解析模型输出为结构化计划，打开计划面板
+          if (this.planMode && result.text.trim().length > 0) {
+            const parsed = parseStructuredPlan(result.text);
+            if (parsed !== null && !isEmptyPlan(parsed)) {
+              this.planProposal = parsed;
+            } else {
+              this.planProposal = null;
+              this.planMode = false;
+              this.system = this.baseSystem;
+              this.pushNotice(
+                'warn',
+                'Plan Mode 未能解析出结构化计划（期望五段：目标/涉及文件/分步改动/验证方式/风险点）。已退出计划模式，请重试。',
+              );
+            }
+            this.broadcastPlan();
+          }
         })
         .catch(() => {
           // 错误以协议 error 事件呈现（core 归一为 ErrorData），渲染进程负责展示
@@ -434,7 +870,7 @@ export class GuiBridge {
   }
 
   // -------------------------------------------------------------------------
-  // 斜杠命令（T-082 框架；UI 模态在渲染进程，带参/副作用命令走这里）
+  // 斜杠命令（对齐 0.17.0 全部内置命令）
   // -------------------------------------------------------------------------
 
   private handleSlash(name: string, args?: string): void {
@@ -447,6 +883,21 @@ export class GuiBridge {
       },
       context: (slashArgs) => this.handleSlashContext(slashArgs),
       clear: () => this.handleSlashClear(),
+      rewind: () => {
+        void this.handleSlashRewind();
+      },
+      snapshots: (slashArgs) => {
+        void this.handleSlashSnapshots(slashArgs);
+      },
+      plan: (slashArgs) => this.handleSlashPlan(slashArgs),
+      init: () => {
+        void this.handleSlashInit();
+      },
+      image: (slashArgs) => this.handleSlashImage(slashArgs),
+      cost: () => {
+        void this.handleSlashCost();
+      },
+      mcp: () => this.handleSlashMcp(),
     };
     dispatchSlash(name, args, handlers, (unimplemented) => {
       this.pushNotice(
@@ -456,7 +907,7 @@ export class GuiBridge {
     });
   }
 
-  /** /context：把核算以 context_state 信封推入事件流（面板由渲染进程 getContext 打开）。 */
+  /** /context：把核算以 context_state 信封推入事件流（面板由渲染进程打开）。 */
   private handleSlashContext(args?: string): void {
     const snapshot = this.getContext();
     this.syntheticSeq += 1;
@@ -486,7 +937,6 @@ export class GuiBridge {
     void this.performCompact();
   }
 
-  /** 执行一次手动压缩（/compact 异步体，串行化在历史投影之后）。 */
   private async performCompact(): Promise<void> {
     await this.historyRefresh;
     if (this.sessionLog === null) this.openSession();
@@ -537,6 +987,7 @@ export class GuiBridge {
     this.readFiles.clear();
     for (const path of resumed.readFiles) this.readFiles.add(path);
     this.summaryState = rebuildSummaryState(resumed.records);
+    this.todoState = rebuiltTodoState(resumed.records);
     this.budget = BudgetLedger.rebuild([resumed.usage]);
     const restoredModel = lastModelSwitchTo(resumed.records);
     if (
@@ -558,8 +1009,6 @@ export class GuiBridge {
       cacheReadTokens: resumed.usage.cacheReadTokens ?? 0,
       cacheWriteTokens: resumed.usage.cacheWriteTokens ?? 0,
     });
-    // 恢复成功不推 notice：会话切换由 READY（sessionId）驱动侧栏高亮与线程播种，
-    // 对话流不刷系统消息（Claude Desktop 惯例）。
   }
 
   /** /clear：清空上下文并开启新会话（原日志保留）。 */
@@ -582,13 +1031,13 @@ export class GuiBridge {
     this.readFiles.clear();
     this.budget = new BudgetLedger();
     this.summaryState = undefined;
+    this.todoState = undefined;
     this.broadcastReady({
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
-    // 清空成功不推 notice：新会话由 READY（sessionId/totals）驱动，侧栏高亮随之刷新
   }
 
   /** /model：切换模型（带 ID 直接切换；无参时渲染进程打开候选列表）。 */
@@ -608,7 +1057,6 @@ export class GuiBridge {
     void this.switchModel(target);
   }
 
-  /** 执行模型切换（/model 异步体，上下文延续，model_switch 入日志）。 */
   private async switchModel(modelId: string): Promise<void> {
     const from = this.provider.modelId;
     if (modelId === from) {
@@ -626,7 +1074,6 @@ export class GuiBridge {
       return;
     }
     this.provider = next;
-    // 压缩配置随新模型能力联动（002 8.2：上下文长度 / 能力变化）
     this.compactConfig = {
       ...this.compactConfig,
       thresholdTokens: defaultCompactionThreshold(this.provider),
@@ -635,7 +1082,209 @@ export class GuiBridge {
     if (this.sessionLog === null) this.openSession();
     await this.sessionLog?.appendModelSwitch(from, modelId);
     this.broadcastReady();
-    // 切换成功不推 notice：状态栏模型名随 READY 刷新（对话流不刷系统消息）
+  }
+
+  // —— 0.10.0 /rewind /snapshots ——
+
+  /** /rewind：列出快照点（渲染进程打开面板，选中后经 previewRewind/rewindTo）。 */
+  private async handleSlashRewind(): Promise<void> {
+    if (this.currentController !== null) {
+      this.pushNotice(
+        'warn',
+        '任务运行中，暂不能 /rewind（等当前轮次结束后再试）',
+      );
+      return;
+    }
+    const points = await this.snapshotStore.listSnapshots();
+    const restorable = points.filter((point) => !point.degraded);
+    if (restorable.length === 0) {
+      this.pushNotice('info', '没有可回滚的快照点（本会话尚未产生快照）');
+    }
+    // 渲染进程自己打开 /rewind 面板（getSnapshots 拉取），这里无需额外动作
+  }
+
+  /** /snapshots：占用报告（--cleanup 触发清理；渲染进程打开报告面板）。 */
+  private async handleSlashSnapshots(args?: string): Promise<void> {
+    if ((args ?? '').includes('cleanup')) {
+      await this.snapshotCleanup();
+      return;
+    }
+    this.pushNotice('info', '快照占用报告见左侧 /snapshots 面板');
+  }
+
+  // —— 0.11.0 Plan Mode ——
+
+  /** 构造 Plan Mode 系统提示词（只读工具集 + 计划指令）。 */
+  private enterPlanModePrompt(): string {
+    if (this.system !== this.baseSystem) return this.system; // 显式 system 已接管
+    return buildSystemPrompt({
+      tools: planReadonlyRegistry(this.tools),
+      extra: [this.memoryText, PLAN_MODE_INSTRUCTION]
+        .filter((part) => part !== undefined && part.length > 0)
+        .join('\n\n'),
+    });
+  }
+
+  /** /plan：进入 / 退出计划模式；`/plan <请求>` 立即启动只读研究。 */
+  private handleSlashPlan(args?: string): void {
+    if (this.currentController !== null) {
+      this.pushNotice(
+        'warn',
+        '任务运行中，暂不能 /plan（等当前轮次结束后再试）',
+      );
+      return;
+    }
+    const trimmed = (args ?? '').trim();
+    if (this.planMode) {
+      this.planMode = false;
+      this.system = this.baseSystem;
+      this.planProposal = null;
+      this.broadcastPlan();
+      this.pushNotice('info', '已退出计划模式（工具集恢复为完整集合）。');
+      return;
+    }
+    this.planMode = true;
+    this.planProposal = null;
+    this.system = this.enterPlanModePrompt();
+    this.broadcastPlan();
+    this.pushNotice(
+      'info',
+      trimmed.length > 0
+        ? '已进入计划模式（只读）。正在研究现状并产出结构化计划…'
+        : '已进入计划模式（只读）。请描述要规划的任务；模型将只读研究并产出结构化计划。',
+    );
+    if (trimmed.length > 0) this.startTurn(trimmed);
+  }
+
+  /** 批准计划：切回执行模式，把计划回填为 user 消息开始实施。 */
+  private approvePlan(): void {
+    const proposal = this.planProposal;
+    this.planProposal = null;
+    this.planMode = false;
+    this.system = this.baseSystem;
+    this.broadcastPlan();
+    if (proposal === null) return;
+    // T-113 计划文档化：批准即落盘 markdown（失败不静默，计划仍执行）
+    try {
+      this.savePlanToFile(proposal);
+    } catch (caught) {
+      this.pushNotice(
+        'warn',
+        `计划落盘失败：${describeError(caught)}（计划仍将执行）`,
+      );
+    }
+    void this.sessionLog?.appendPlan(serializeStructuredPlan(proposal));
+    const text =
+      `计划已批准，开始执行。请严格按照以下计划实施，不要擅自扩大范围：\n\n` +
+      serializeStructuredPlan(proposal);
+    this.startTurn(text);
+  }
+
+  /** 拒绝计划：切回执行模式，零文件改动（只读白名单保证）。 */
+  private rejectPlan(): void {
+    this.planProposal = null;
+    this.planMode = false;
+    this.system = this.baseSystem;
+    this.broadcastPlan();
+    this.pushNotice(
+      'info',
+      '计划已拒绝，未做任何改动（Plan Mode 只读，工作区零文件改动）。',
+    );
+  }
+
+  /** 修改计划：关闭面板、保留计划模式，回显计划 markdown 供用户编辑后重新提交。 */
+  private editPlan(): void {
+    const proposal = this.planProposal;
+    this.planProposal = null;
+    this.broadcastPlan();
+    if (proposal !== null) {
+      this.pushNotice('info', serializeStructuredPlan(proposal));
+      this.pushNotice(
+        'info',
+        '计划已回显为 markdown。请复制到编辑器修改后重新提交，或直接输入修改意见（仍在计划模式，只读研究）。',
+      );
+    }
+  }
+
+  /** 计划落盘 `.modou/plans/<时间戳>.md`（T-113 文档化）。 */
+  private savePlanToFile(plan: StructuredPlan): void {
+    const dir = join(this.cwd, '.modou', 'plans');
+    const file = join(
+      dir,
+      `${new Date().toISOString().replace(/[:.]/g, '-')}.md`,
+    );
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, serializeStructuredPlan(plan), 'utf8');
+  }
+
+  // —— 0.13.0 /init /image /cost ——
+
+  /** /init：分析仓库结构 → 生成 AGENTS.md 初稿（预览后写入；已存在不覆盖）。 */
+  private handleSlashInit(): void {
+    const result = this.planInit();
+    if (result === null) return;
+    // 初稿整篇进输出区（notice 多行）；写入结果提示
+    this.pushNotice('info', result.draft);
+    if (result.wrote) {
+      this.pushNotice(
+        'info',
+        `已写入 ${result.targetPath}（基于仓库结构探测生成的初稿）。请核对并补充后使用——探测结果是尽力而为，不是权威事实。`,
+      );
+    } else {
+      this.pushNotice(
+        'warn',
+        `AGENTS.md 已存在（${result.targetPath}），未覆盖。请手动合并初稿内容；需要重新生成可先移走原文件再 /init。`,
+      );
+    }
+  }
+
+  /** /image：以图片输入发起一轮（`/image <文件路径 | URL>`）。 */
+  private handleSlashImage(args?: string): void {
+    if (this.currentController !== null) {
+      this.pushNotice(
+        'warn',
+        '任务运行中，暂不能 /image（等当前轮次结束后再试）',
+      );
+      return;
+    }
+    const target = (args ?? '').trim();
+    if (target.length === 0) {
+      this.pushNotice(
+        'info',
+        '用法：/image <文件路径 | URL>——以图片输入发起一轮（如 /image screenshot.png）',
+      );
+      return;
+    }
+    this.startTurn(`请查看并处理这张图片：${target}`, {
+      attachments: [{ uri: target }],
+    });
+  }
+
+  /** /cost：成本统计（渲染进程打开 /cost 面板拉取结构化数据）。 */
+  private async handleSlashCost(): Promise<void> {
+    if (this.sessionLog === null) {
+      this.pushNotice(
+        'info',
+        '尚无会话（先发起一轮对话后再 /cost——用量记录来自会话日志）',
+      );
+      return;
+    }
+    const cost = await this.getCost();
+    if (cost === null) return;
+    this.pushNotice(
+      'info',
+      `成本统计已就绪（${cost.days.length} 个活跃日）——见 /cost 面板。`,
+    );
+  }
+
+  /** /mcp：查看 MCP 服务器连接状态（渲染进程打开 /mcp 面板拉取）。 */
+  private handleSlashMcp(): void {
+    if (this.mcpManager === null) {
+      this.pushNotice(
+        'info',
+        '未配置 MCP 服务器（settings.json 的 mcp.servers 键）',
+      );
+    }
   }
 
   private rebuildProvider(modelId: string): ModelProvider {
@@ -650,4 +1299,17 @@ export class GuiBridge {
       this.env,
     );
   }
+}
+
+/** 从会话日志重建 todo 状态（T-110 /resume：todo_update 条目）。 */
+function rebuiltTodoState(
+  records: readonly SessionRecord[],
+): TodoState | undefined {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record.kind === 'todo_update') {
+      return { items: record.data.items };
+    }
+  }
+  return undefined;
 }

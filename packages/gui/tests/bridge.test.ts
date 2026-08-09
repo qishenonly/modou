@@ -84,6 +84,7 @@ function createBridge(provider: ModelProvider): BridgeHarness {
     {
       emitEvent: (envelope) => envelopes.push(envelope),
       emitReady: (payload) => readys.push(payload),
+      emitPlan: () => {},
     },
     { OPENAI_API_KEY: 'test-key' },
   );
@@ -108,7 +109,8 @@ describe('GuiBridge（core 编排桥）', () => {
     try {
       const ready = harness.bridge.start();
       expect(ready.modelName).toBe('stub-model');
-      expect(ready.permissionMode).toBe('readonly'); // defaultReadonlyTools
+      // withWebTools 恒注册联网工具（risk=network，默认需批准）→ 写/执行需审批
+      expect(ready.permissionMode).toBe('write-approval');
       expect(ready.sessionId).toBeNull();
     } finally {
       harness.cleanup();

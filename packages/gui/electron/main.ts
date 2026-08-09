@@ -173,6 +173,11 @@ function createBridge(cwd?: string): void {
       {
         emitEvent: sendEvent,
         emitReady: sendReady,
+        emitPlan: (payload) => {
+          if (mainWindow !== null && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send(IPC.PLAN, payload);
+          }
+        },
       },
     );
     sendReady(bridge.start());
@@ -232,6 +237,28 @@ function registerIpc(): void {
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,
   );
   ipcMain.handle(IPC.SELECT_DIRECTORY, () => handleSelectDirectory());
+  ipcMain.handle(IPC.GET_SNAPSHOTS, () => bridge?.listSnapshots() ?? []);
+  ipcMain.handle(
+    IPC.PREVIEW_REWIND,
+    (_event, id: string) => bridge?.previewRewind(id) ?? null,
+  );
+  ipcMain.handle(
+    IPC.REWIND_TO,
+    (_event, id: string) => bridge?.rewindTo(id) ?? null,
+  );
+  ipcMain.handle(IPC.SNAPSHOT_REPORT, () => bridge?.snapshotReport() ?? null);
+  ipcMain.handle(IPC.SNAPSHOT_CLEANUP, () => {
+    void bridge?.snapshotCleanup();
+    return null;
+  });
+  ipcMain.handle(IPC.GET_COST, () => bridge?.getCost() ?? null);
+  ipcMain.handle(IPC.GET_MCP_STATUS, () => bridge?.getMcpStatus() ?? []);
+  ipcMain.handle(IPC.PLAN_INIT, () => bridge?.planInit() ?? null);
+  ipcMain.handle(IPC.WRITE_INIT, () => bridge?.writeInit() ?? false);
+  ipcMain.handle(
+    IPC.GET_PLAN,
+    () => bridge?.getPlan() ?? { plan: null, active: false },
+  );
   ipcMain.handle(IPC.QUIT, () => {
     bridge?.dispose();
     app.quit();

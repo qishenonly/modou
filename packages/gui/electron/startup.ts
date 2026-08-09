@@ -1,5 +1,6 @@
 /**
- * GUI 启动装配（与 packages/tui/src/startup.ts 的 assembleTuiStartup 同源移植）。
+ * GUI 启动装配（与 packages/tui/src/startup.ts 的 assembleTuiStartup 同源移植，
+ * 覆盖 0.10–0.17 的配置面：快照 / 钩子 / MCP / 联网工具）。
  *
  * 把 core 的配置解析（loadSettings → resolveConfig）与供应商 / 权限装配收敛在
  * 这里：GuiBridge 只消费装配结果。配置优先级：内置默认 → ~/.modou/settings.json
@@ -8,7 +9,12 @@
 import { homedir } from 'node:os';
 import type {
   CompactOptions,
+  ConfigHooks,
+  ConfigMcp,
   ConfigOverrides,
+  ConfigSnapshot,
+  ConfigWeb,
+  HookBus,
   ModelProvider,
   PermissionConfig,
   ProviderFromConfigInput,
@@ -19,6 +25,9 @@ import type {
 } from '@modou/core';
 import {
   createProviderFromConfig,
+  defaultHookLogDir,
+  HookExecutionLog,
+  hooksFromSettings,
   loadSettings,
   readOpencodeEnv,
   resolveConfig,
@@ -54,6 +63,10 @@ export interface GuiBridgeOptions {
   readonly permission?: PermissionConfig;
   /** /model 切换时重建 provider 实例的工厂（缺省 createProviderFromConfig）。 */
   readonly createProvider?: CreateProvider;
+  /** 快照配置覆盖（缺省 = settings.json snapshot 键 / 引擎内置默认）。 */
+  readonly snapshot?: ConfigSnapshot;
+  /** 联网工具配置覆盖（缺省 = settings.json web 键）。 */
+  readonly web?: ConfigWeb;
 }
 
 /** assembleGuiStartup 的产出：GuiBridge 启动所需的全部装配结果。 */
@@ -69,11 +82,33 @@ export interface GuiStartupConfig {
     readonly baseURL?: string;
   };
   readonly env: NodeJS.ProcessEnv;
+  /** 快照配置（缺省 undefined = 引擎内置默认；0.10.0）。 */
+  readonly snapshot?: ConfigSnapshot;
+  /** 钩子总线（0.14.0；未配置 = undefined = 管线直通）。 */
+  readonly hooks?: HookBus;
+  /** 启动期提示（0.14.0：未接线的钩子点等，runTui 以 notice 展示）。 */
+  readonly notices?: readonly string[];
+  /** MCP 服务器配置表（0.16.0，T-163）。 */
+  readonly mcpServers: ReadonlyArray<{
+    readonly name: string;
+    readonly transport: 'stdio' | 'http';
+    readonly command?: string;
+    readonly args?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+    readonly url?: string;
+    readonly enabled: boolean;
+    readonly risk: string;
+    readonly tools?: readonly string[];
+    readonly connectTimeoutMs: number;
+    readonly callTimeoutMs: number;
+  }>;
+  /** 联网工具配置（0.17.0，T-171/T-172）。 */
+  readonly web?: ConfigWeb;
 }
 
 /**
  * 装配入口：加载配置并叠加 MODOU_* 环境变量与显式选项，装配 provider /
- * permission / 轮次（逻辑与 assembleTuiStartup 完全一致）。
+ * permission / 轮次 / 快照 / 钩子 / MCP / 联网（逻辑与 assembleTuiStartup 一致）。
  */
 export function assembleGuiStartup(
   options: GuiBridgeOptions,
@@ -86,6 +121,8 @@ export function assembleGuiStartup(
     maxTurns: options.maxTurns,
     keepTurns: options.compact?.keepTurns,
     homeDir: options.homeDir,
+    ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
+    ...(options.web !== undefined ? { web: options.web } : {}),
   };
   const resolved = resolveConfig({
     settings: loaded.settings,
@@ -107,6 +144,11 @@ export function assembleGuiStartup(
             ? opencode?.baseURL
             : env.OPENAI_BASE_URL
           : undefined));
+  // T-143 Hooks：settings.json hooks 键 → HookBus（外部进程钩子 + 执行日志）
+  const hooks =
+    resolved.hooks === undefined
+      ? undefined
+      : buildHooks(resolved, projectRoot);
   return {
     homeDir: resolved.homeDir,
     projectRoot,
@@ -124,12 +166,64 @@ export function assembleGuiStartup(
       options.permission ?? permissionFromResolved(resolved, projectRoot),
     maxTurns: resolved.maxTurns,
     keepTurns: resolved.keepTurns,
+    ...(resolved.snapshot !== undefined ? { snapshot: resolved.snapshot } : {}),
+    ...(hooks !== undefined ? { hooks } : {}),
+    ...(resolved.hooks !== undefined && sessionStartCount(resolved.hooks) > 0
+      ? {
+          notices: [
+            `settings.json 配置了 ${sessionStartCount(resolved.hooks)} 个 SessionStart 钩子，但本版本未接线（仅提供挂载点）——这些钩子不会执行。`,
+          ],
+        }
+      : {}),
+    mcpServers: normalizeMcpServers(resolved.mcp),
+    ...(resolved.web !== undefined ? { web: resolved.web } : {}),
     providerSpec: {
       type: (options.provider?.id as ProviderType) ?? resolved.provider,
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),
     },
     env,
   };
+}
+
+/** SessionStart 钩子计数（未接线点，配置了要提醒用户不静默）。 */
+function sessionStartCount(hooks: ConfigHooks): number {
+  return hooks['SessionStart']?.length ?? 0;
+}
+
+/** settings.json hooks 键 → HookBus（执行日志落 ~/.modou/logs/<project-hash>/）。 */
+function buildHooks(
+  resolved: ResolvedConfig,
+  projectRoot: string,
+): HookBus | undefined {
+  return hooksFromSettings(resolved.hooks, {
+    log: new HookExecutionLog({
+      dir: defaultHookLogDir({ homeDir: resolved.homeDir, cwd: projectRoot }),
+    }),
+    cwd: projectRoot,
+  });
+}
+
+/** settings.json mcp 键 → McpServerConfig 表（与 core normalizeMcpServers 同口径）。 */
+function normalizeMcpServers(
+  config: ConfigMcp | undefined,
+): GuiStartupConfig['mcpServers'] {
+  if (config === undefined) return [];
+  return Object.entries(config.servers).map(([name, server]) => {
+    const stdio = server.command !== undefined;
+    return {
+      name,
+      transport: stdio ? 'stdio' : 'http',
+      ...(server.command !== undefined ? { command: server.command } : {}),
+      ...(server.args !== undefined ? { args: server.args } : {}),
+      ...(server.env !== undefined ? { env: server.env } : {}),
+      ...(server.url !== undefined ? { url: server.url } : {}),
+      enabled: server.enabled ?? true,
+      risk: server.risk ?? 'network',
+      ...(server.tools !== undefined ? { tools: server.tools } : {}),
+      connectTimeoutMs: server.connectTimeoutMs ?? 10_000,
+      callTimeoutMs: server.callTimeoutMs ?? 120_000,
+    };
+  });
 }
 
 /** 配置 → PermissionConfig 的结构适配（002 2.2：Config 与 Permission 互不依赖）。 */

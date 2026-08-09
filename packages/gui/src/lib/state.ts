@@ -10,6 +10,7 @@ import type {
   ContextStateData,
   Envelope,
   NoticeLevel,
+  TodoItemData,
 } from '@modou/core';
 import {
   applyUsage,
@@ -31,6 +32,19 @@ export interface NoticeEntry {
   readonly text: string;
 }
 
+/** 一条子代理活动（0.12.0：Envelope.agent ≠ 'main' 的信封按 agent 分组折叠）。 */
+export interface SubagentEntry {
+  /** 子代理 ID（Envelope.agent）。 */
+  readonly id: string;
+  readonly status: 'running' | 'done' | 'error';
+  /** 过程文本摘要（text_delta 累计，截断到展示上限）。 */
+  readonly text: string;
+  /** 已发生的工具调用数（tool_call 计数）。 */
+  readonly toolCount: number;
+  /** 子代理开始轮次。 */
+  readonly turn: number;
+}
+
 /** GUI 渲染进程的完整 UI 状态。 */
 export interface GuiState {
   /** 已封存的对话历史（用户消息 + 完整 assistant 回复逐轮封存）。 */
@@ -43,6 +57,10 @@ export interface GuiState {
   readonly turn: number;
   readonly totals: TokenTotals;
   readonly tools: readonly ToolCallEntry[];
+  /** 待办清单（todo_update 事件的全量快照；0.11.0）。 */
+  readonly todo: readonly TodoItemData[];
+  /** 子代理活动（0.12.0；按 agent 分组，可折叠）。 */
+  readonly subagents: readonly SubagentEntry[];
   readonly notices: readonly NoticeEntry[];
   readonly error: string | null;
   readonly approval: ApprovalRequestData | null;
@@ -60,6 +78,8 @@ export function initialGuiState(): GuiState {
     turn: 0,
     totals: ZERO_TOKEN_TOTALS,
     tools: [],
+    todo: [],
+    subagents: [],
     notices: [],
     error: null,
     approval: null,
@@ -104,8 +124,75 @@ function appendNotice(
   };
 }
 
+/** 子代理过程文本的展示上限（超出截断，折叠块不膨胀）。 */
+const SUBAGENT_TEXT_MAX = 600;
+
+/** 处理一条子代理信封（0.12.0：Envelope.agent ≠ 'main' 时按 agent 分组折叠）。 */
+function applySubagent(state: GuiState, envelope: Envelope): GuiState {
+  const id = envelope.agent;
+  const patch = (
+    updater: (entry: SubagentEntry) => SubagentEntry,
+  ): GuiState => {
+    const existing = state.subagents.find((entry) => entry.id === id);
+    const next =
+      existing === undefined
+        ? {
+            id,
+            status: 'running' as const,
+            text: '',
+            toolCount: 0,
+            turn: envelope.turn,
+          }
+        : existing;
+    return {
+      ...state,
+      subagents: state.subagents.map((entry) =>
+        entry.id === id ? updater(next) : entry,
+      ),
+    };
+  };
+  switch (envelope.type) {
+    case 'turn_start':
+      return state.subagents.some((entry) => entry.id === id)
+        ? state
+        : {
+            ...state,
+            subagents: [
+              ...state.subagents,
+              {
+                id,
+                status: 'running',
+                text: '',
+                toolCount: 0,
+                turn: envelope.turn,
+              },
+            ],
+          };
+    case 'text_delta':
+      return patch((entry) =>
+        entry.text.length >= SUBAGENT_TEXT_MAX
+          ? entry
+          : { ...entry, text: entry.text + envelope.data.delta },
+      );
+    case 'tool_call':
+      return patch((entry) => ({ ...entry, toolCount: entry.toolCount + 1 }));
+    case 'turn_end':
+      return patch((entry) => ({ ...entry, status: 'done' }));
+    case 'error':
+      return patch((entry) => ({
+        ...entry,
+        status: 'error',
+        text: envelope.data.message,
+      }));
+    default:
+      return state;
+  }
+}
+
 /** 处理一条协议信封（只读消费；switch 穷尽联合，default 不处理新类型）。 */
 function applyEnvelope(state: GuiState, envelope: Envelope): GuiState {
+  // 子代理事件（agent ≠ 'main'）单独规约：不污染主对话的流式缓冲 / 轮次状态
+  if (envelope.agent !== 'main') return applySubagent(state, envelope);
   switch (envelope.type) {
     case 'turn_start':
       // 防御：前一轮若有残留缓冲立即封存（正常情况 turn_end 已封存）
@@ -140,6 +227,9 @@ function applyEnvelope(state: GuiState, envelope: Envelope): GuiState {
         `已压缩：折叠 ${envelope.data.coveredTurns[0]}..${envelope.data.coveredTurns[1]} 轮，` +
           `${envelope.data.beforeTokens} → ${envelope.data.afterTokens} tokens`,
       );
+    case 'todo_update':
+      // 0.11.0：TodoWrite 后全量清单快照（进度条 / 勾选渲染）
+      return { ...state, todo: envelope.data.items };
     case 'notice':
       return appendNotice(state, envelope.data.level, envelope.data.text);
     case 'tool_call':

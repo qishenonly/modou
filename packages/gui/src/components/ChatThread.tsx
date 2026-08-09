@@ -7,10 +7,13 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ChatMessage } from '../lib/state';
+import type { TodoItemData } from '@modou/core';
+import type { ChatMessage, SubagentEntry } from '../lib/state';
 import type { ToolCallEntry } from '../lib/tools';
 import { Markdown } from '../lib/markdown';
 import { LogoMark } from './LogoMark';
+import { SubagentBlock } from './SubagentBlock';
+import { TodoList } from './TodoList';
 import { ToolCard } from './ToolCard';
 
 /** 等待指示：三个脉冲圆点（Claude 式）。 */
@@ -88,6 +91,8 @@ export function ChatThread({
   streamingText,
   thinking,
   tools,
+  todo,
+  subagents,
   notices,
   error,
   running,
@@ -96,6 +101,8 @@ export function ChatThread({
   readonly streamingText: string;
   readonly thinking: string;
   readonly tools: readonly ToolCallEntry[];
+  readonly todo: readonly TodoItemData[];
+  readonly subagents: readonly SubagentEntry[];
   readonly notices: readonly {
     readonly id: number;
     readonly level: string;
@@ -122,6 +129,8 @@ export function ChatThread({
   return (
     <main className="chat">
       <div className="chat-inner">
+        <TodoList items={todo} />
+
         {history.map((entry, index) =>
           entry.role === 'user' ? (
             <UserMessage key={index} text={entry.text} />
@@ -129,6 +138,10 @@ export function ChatThread({
             <AssistantMessage key={index} text={entry.text} />
           ),
         )}
+
+        {subagents.map((entry) => (
+          <SubagentBlock key={entry.id} entry={entry} />
+        ))}
 
         {thinking.length > 0 && <ThinkingBlock text={thinking} />}
 

@@ -7,11 +7,20 @@
 import type {
   Command,
   ContextStateData,
+  CostTotals,
+  DayCostTotals,
   Envelope,
+  InitResult,
+  McpServerStatus,
   ResumeCandidate,
+  RewindPreview,
+  RewindResult,
+  SnapshotPoint,
+  SnapshotUsageReport,
 } from '@modou/core';
 import type {
   GuiConfigSummary,
+  PlanPayload,
   ReadyPayload,
   ThreadMessage,
 } from '../../electron/ipc';
@@ -22,7 +31,9 @@ export interface ModouApi {
   onEvent(callback: (envelope: Envelope) => void): () => void;
   /** 订阅配置摘要（启动一次 + 模型/会话切换后刷新）；返回退订函数。 */
   onReady(callback: (payload: ReadyPayload) => void): () => void;
-  /** 发送 core Command（submit / approve / interrupt / steer / slash）。 */
+  /** 订阅计划产出（/plan 面板开合）；返回退订函数。 */
+  onPlan(callback: (payload: PlanPayload) => void): () => void;
+  /** 发送 core Command（submit / approve / interrupt / steer / slash / plan_*）。 */
   sendCommand(command: Command): void;
   /** 可恢复会话列表（侧栏）。 */
   listSessions(): Promise<readonly ResumeCandidate[]>;
@@ -38,6 +49,29 @@ export interface ModouApi {
   deleteSession(sessionId: string): Promise<boolean>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
+  /** 快照点列表（/rewind 面板）。 */
+  getSnapshots(): Promise<readonly SnapshotPoint[]>;
+  /** 回滚预览（/rewind 确认态）。 */
+  previewRewind(snapshotId: string): Promise<RewindPreview | null>;
+  /** 执行还原到某快照点。 */
+  rewindTo(snapshotId: string): Promise<RewindResult | null>;
+  /** 快照占用与保留报告（/snapshots）。 */
+  snapshotReport(): Promise<SnapshotUsageReport | null>;
+  /** 快照过期清理（/snapshots --cleanup）。 */
+  snapshotCleanup(): Promise<unknown>;
+  /** 成本统计（/cost）。 */
+  getCost(): Promise<{
+    readonly session: CostTotals;
+    readonly days: readonly DayCostTotals[];
+  } | null>;
+  /** MCP 服务器状态（/mcp）。 */
+  getMcpStatus(): Promise<readonly McpServerStatus[]>;
+  /** 探测仓库并生成 AGENTS.md 初稿（/init 预览）。 */
+  planInit(): Promise<InitResult | null>;
+  /** 写入 /init 生成的 AGENTS.md 初稿。 */
+  writeInit(): Promise<boolean>;
+  /** 当前计划模式状态（/plan 面板拉取）。 */
+  getPlan(): Promise<PlanPayload>;
   /** 退出应用。 */
   quit(): void;
 }

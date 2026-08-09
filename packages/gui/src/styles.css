@@ -1344,6 +1344,440 @@ body {
   color: var(--text-secondary);
 }
 
+/* -------------------------------------------------------------- 待办清单 */
+.todo-list {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  padding: 12px 16px;
+  margin: 6px 0 16px;
+}
+
+.todo-bar-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.todo-label {
+  font-weight: 650;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+}
+
+.todo-count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.todo-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.todo-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s;
+}
+
+.todo-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.todo-item.todo-done .todo-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.todo-item.todo-in_progress .todo-text {
+  font-weight: 550;
+}
+
+.todo-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  color: #fff;
+}
+
+.todo-item.todo-done .todo-check {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.todo-check-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.todo-item.todo-in_progress .todo-check {
+  border-color: var(--accent);
+}
+
+.todo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: think-pulse 1.2s ease-in-out infinite;
+}
+
+/* -------------------------------------------------------------- 子代理 */
+.subagent {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  margin: 6px 0 12px;
+  overflow: hidden;
+}
+
+.subagent-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+}
+
+.subagent-head:hover {
+  background: var(--bg-hover);
+}
+
+.subagent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.subagent-running .subagent-dot {
+  background: var(--accent);
+  animation: think-pulse 1.2s ease-in-out infinite;
+}
+
+.subagent-done .subagent-dot {
+  background: var(--ok);
+}
+
+.subagent-error .subagent-dot {
+  background: var(--fail);
+}
+
+.subagent-title {
+  font-weight: 600;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.subagent-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.subagent-tools {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.subagent-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.subagent-body {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* -------------------------------------------------------------- 计划面板 */
+.plan-body {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.plan-section {
+  margin-bottom: 14px;
+}
+
+.plan-section-title {
+  font-size: 11.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.plan-section-lines {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+}
+
+.plan-section-lines li {
+  margin: 2px 0;
+}
+
+.plan-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.btn-danger {
+  background: var(--fail-bg);
+  color: var(--fail);
+  border: 1px solid transparent;
+}
+
+.btn-danger:hover {
+  background: #fbd8d3;
+}
+
+/* -------------------------------------------------------------- 快照面板 */
+.snapshot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 46vh;
+}
+
+.snapshot-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font);
+  color: var(--text);
+}
+
+.snapshot-item:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.snapshot-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.snapshot-summary {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snapshot-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.snapshot-preview ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+}
+
+.snapshot-preview li {
+  margin: 3px 0;
+}
+
+.snapshot-restore {
+  color: var(--ok);
+}
+
+.snapshot-delete {
+  color: var(--fail);
+}
+
+.snapshot-overwrite {
+  color: var(--warn);
+}
+
+/* -------------------------------------------------------------- 成本面板 */
+.cost-section-title {
+  font-size: 11.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  margin: 14px 0 4px;
+}
+
+.cost-day {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bg-subtle);
+  font-size: 13px;
+}
+
+.cost-day-key {
+  font-family: var(--mono);
+}
+
+.cost-day-meta {
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* -------------------------------------------------------------- MCP 面板 */
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.mcp-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+.mcp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mcp-connected .mcp-dot {
+  background: var(--ok);
+}
+
+.mcp-connecting .mcp-dot {
+  background: var(--accent);
+  animation: think-pulse 1.2s ease-in-out infinite;
+}
+
+.mcp-disconnected .mcp-dot,
+.mcp-failed .mcp-dot {
+  background: var(--fail);
+}
+
+.mcp-name {
+  font-weight: 600;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.mcp-state {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mcp-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-family: var(--mono);
+}
+
+.mcp-error {
+  display: block;
+  width: 100%;
+  color: var(--fail);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -------------------------------------------------------------- init 面板 */
+.init-status {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.init-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.init-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.init-draft {
+  margin: 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
 /* 滚动条 */
 ::-webkit-scrollbar {
   width: 10px;

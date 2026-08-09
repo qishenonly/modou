@@ -3,10 +3,13 @@
  *
  * 消费模型与 TUI App 完全一致：事件流是唯一输入（dispatch → reducer），
  * 用户输入转成 Command 经 sendCommand 回传 core（002 3.3 反向通道）。
- * UI 模态（模型选择 / 设置 / 上下文 / 帮助）是渲染进程驱动的本地弹窗。
+ * UI 模态（模型 / 设置 / 上下文 / 帮助 / 计划 / 快照 / 成本 / MCP / init）是
+ * 渲染进程驱动的本地弹窗，拉取型数据走 invoke 查询。
  *
- * 项目目录：无项目时显示欢迎页（选择项目目录）；选定后 READY 携带 cwd，
- * 切换项目时整体重置（app_reset）并重新拉取会话列表。
+ * 0.10–0.17 功能接线：
+ * - /rewind /snapshots /cost /mcp /init → 本地面板（invoke 拉取）；
+ * - /plan → 发送 slash（进入/退出计划模式），计划产出经 PLAN 通道自动弹面板；
+ * - todo_update / 子代理信封（agent ≠ main）由 reducer 规约，ChatThread 渲染。
  */
 import {
   useCallback,
@@ -16,21 +19,35 @@ import {
   type ReactNode,
 } from 'react';
 import type { ResumeCandidate } from '@modou/core';
-import type { ReadyPayload } from '../electron/ipc';
+import type { PlanPayload, ReadyPayload } from '../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread } from './components/ChatThread';
 import { ContextPanel } from './components/ContextPanel';
+import { CostPanel } from './components/CostPanel';
 import { HelpPanel } from './components/HelpPanel';
+import { InitPanel } from './components/InitPanel';
 import { InputBox } from './components/InputBox';
+import { McpPanel } from './components/McpPanel';
 import { ModelPicker } from './components/ModelPicker';
+import { PlanPanel } from './components/PlanPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
+import { SnapshotPanel } from './components/SnapshotPanel';
 import { StatusBar } from './components/StatusBar';
 import { Welcome } from './components/Welcome';
 
-type ModalKind = 'none' | 'settings' | 'model' | 'context' | 'help';
+type ModalKind =
+  | 'none'
+  | 'settings'
+  | 'model'
+  | 'context'
+  | 'help'
+  | 'rewind'
+  | 'cost'
+  | 'mcp'
+  | 'init';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -38,9 +55,10 @@ export function App(): ReactNode {
   const [ready, setReady] = useState<ReadyPayload | null>(null);
   const [sessions, setSessions] = useState<readonly ResumeCandidate[]>([]);
   const [modal, setModal] = useState<ModalKind>('none');
+  // 计划面板（PLAN 通道：计划产出后自动弹出；null = 面板关闭）
+  const [planPayload, setPlanPayload] = useState<PlanPayload | null>(null);
 
-  // 订阅事件流 + 配置摘要；挂载时用 getConfig 兜底初始状态（主进程启动期 READY
-  // 可能在渲染进程挂载前发出——getConfig 与 READY 同源，漏掉也不影响）
+  // 订阅事件流 + 配置摘要 + 计划产出；挂载时用 getConfig 兜底初始状态
   useEffect(() => {
     const offEvent = window.modou.onEvent((envelope) =>
       dispatch({ type: 'envelope', envelope }),
@@ -65,6 +83,10 @@ export function App(): ReactNode {
         return payload;
       });
     });
+    const offPlan = window.modou.onPlan((payload) => {
+      setPlanPayload(payload);
+      if (payload.plan !== null) setModal('none'); // 计划面板单独渲染，盖住其他模态
+    });
     void window.modou.getConfig().then((config) => {
       if (config !== null) {
         setReady((prev) => ({
@@ -78,6 +100,7 @@ export function App(): ReactNode {
     return () => {
       offEvent();
       offReady();
+      offPlan();
     };
   }, []);
 
@@ -94,6 +117,7 @@ export function App(): ReactNode {
     void window.modou.selectDirectory().then((result) => {
       if (result.ok) {
         setModal('none');
+        setPlanPayload(null);
         dispatch({ type: 'app_reset' });
         refreshSessions(); // READY 会随后到达并更新 ready
       }
@@ -131,6 +155,31 @@ export function App(): ReactNode {
         return;
       case 'context':
         setModal('context');
+        return;
+      case 'rewind':
+        setModal('rewind');
+        return;
+      case 'snapshots':
+        // 快照占用报告并入 /rewind 面板（含 --cleanup 由主进程处理）
+        window.modou.sendCommand({ type: 'slash', name });
+        setModal('rewind');
+        return;
+      case 'cost':
+        setModal('cost');
+        return;
+      case 'mcp':
+        setModal('mcp');
+        return;
+      case 'init':
+        setModal('init');
+        return;
+      case 'plan':
+        // 进入/退出计划模式；计划产出经 PLAN 通道弹面板
+        window.modou.sendCommand(
+          args === undefined
+            ? { type: 'slash', name }
+            : { type: 'slash', name, args },
+        );
         return;
       case 'clear':
         window.modou.sendCommand({ type: 'slash', name });
@@ -209,6 +258,8 @@ export function App(): ReactNode {
                 streamingText={state.streamingText}
                 thinking={state.thinking}
                 tools={state.tools}
+                todo={state.todo}
+                subagents={state.subagents}
                 notices={state.notices}
                 error={state.error}
                 running={state.running}
@@ -244,6 +295,26 @@ export function App(): ReactNode {
         />
       )}
 
+      {/* 计划面板（PLAN 通道驱动；批准/修改/拒绝经 plan_* 命令回传） */}
+      {planPayload !== null && planPayload.plan !== null && (
+        <PlanPanel
+          plan={planPayload.plan}
+          onApprove={() => {
+            window.modou.sendCommand({ type: 'plan_approve' });
+            setPlanPayload(null);
+          }}
+          onModify={() => {
+            window.modou.sendCommand({ type: 'plan_modify' });
+            setPlanPayload(null);
+          }}
+          onReject={() => {
+            window.modou.sendCommand({ type: 'plan_reject' });
+            setPlanPayload(null);
+          }}
+          onClose={() => setPlanPayload(null)}
+        />
+      )}
+
       {modal === 'settings' && (
         <SettingsPanel
           onClose={() => setModal('none')}
@@ -258,6 +329,10 @@ export function App(): ReactNode {
       )}
       {modal === 'context' && <ContextPanel onClose={() => setModal('none')} />}
       {modal === 'help' && <HelpPanel onClose={() => setModal('none')} />}
+      {modal === 'rewind' && <SnapshotPanel onClose={() => setModal('none')} />}
+      {modal === 'cost' && <CostPanel onClose={() => setModal('none')} />}
+      {modal === 'mcp' && <McpPanel onClose={() => setModal('none')} />}
+      {modal === 'init' && <InitPanel onClose={() => setModal('none')} />}
     </div>
   );
 }
