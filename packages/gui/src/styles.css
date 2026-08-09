@@ -1515,6 +1515,43 @@ body {
   font-size: 12px;
 }
 
+.rule-remove {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.rule-remove:hover {
+  color: var(--fail);
+  background: var(--fail-bg);
+}
+
+.rule-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.rule-add .input {
+  flex: 1;
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
 /* 钩子列表 */
 .hook-list {
   display: flex;
@@ -1524,7 +1561,8 @@ body {
 
 .hook-item {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   font-size: 12.5px;
   padding: 4px 8px;
   border-radius: 6px;
@@ -1533,10 +1571,18 @@ body {
 
 .hook-point {
   font-family: var(--mono);
+  flex-shrink: 0;
 }
 
 .hook-count {
   color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 /* 快捷键清单 */

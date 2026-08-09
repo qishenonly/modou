@@ -11,6 +11,7 @@ import type { McpServerStatus } from '@modou/core';
 import type {
   GuiConfigSummary,
   GuiSettings,
+  GuiSettingsPatch,
   GuiTheme,
 } from '../../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../../electron/status';
@@ -108,15 +109,47 @@ function Row({
   );
 }
 
-/** 可编辑表单字段（draft）。 */
-interface Draft {
-  readonly provider?: string;
-  readonly model?: string;
-  readonly baseURL?: string;
-  readonly sandbox?: string;
-  readonly policy?: string;
-  readonly maxTurns?: number;
-  readonly keepTurns?: number;
+/** 可编辑表单字段（draft；保存时整体传给 saveSettings）。 */
+type Draft = GuiSettingsPatch;
+
+/** 逗号分隔文本 → 域名数组（编辑 Web 白名单/黑名单用）。 */
+function splitList(text: string): string[] {
+  return text
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+/** 钩子扁平列表 → Record<point, entries>（settings.hooks 形状）。 */
+function hooksToRecord(
+  list: readonly {
+    readonly point: string;
+    readonly command: string;
+    readonly matcherTools?: readonly string[];
+  }[],
+): Record<
+  string,
+  readonly {
+    readonly command: string;
+    readonly matcherTools?: readonly string[];
+  }[]
+> {
+  const record: Record<
+    string,
+    readonly { command: string; matcherTools?: readonly string[] }[]
+  > = {};
+  for (const hook of list) {
+    record[hook.point] = [
+      ...(record[hook.point] ?? []),
+      {
+        command: hook.command,
+        ...(hook.matcherTools !== undefined
+          ? { matcherTools: hook.matcherTools }
+          : {}),
+      },
+    ];
+  }
+  return record;
 }
 
 export function SettingsPanel({
@@ -140,6 +173,13 @@ export function SettingsPanel({
   const [draft, setDraft] = useState<Draft>({});
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  // 扩展编辑的临时输入
+  const [ruleEffect, setRuleEffect] = useState<'allow' | 'deny'>('allow');
+  const [ruleMatch, setRuleMatch] = useState('');
+  const [mcpName, setMcpName] = useState('');
+  const [mcpCmd, setMcpCmd] = useState('');
+  const [hookPoint, setHookPoint] = useState('PreToolUse');
+  const [hookCmd, setHookCmd] = useState('');
 
   useEffect(() => {
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
@@ -189,6 +229,30 @@ export function SettingsPanel({
   const policy = draft.policy ?? settings?.policy ?? '';
   const maxTurns = draft.maxTurns ?? settings?.maxTurns ?? 10;
   const keepTurns = draft.keepTurns ?? settings?.keepTurns ?? 6;
+  // 扩展编辑的派生值（draft 优先，否则 settings 初值）
+  const rulesList = draft.rules ?? settings?.rules ?? [];
+  const mcpList = draft.mcpServers ?? settings?.mcpServers ?? [];
+  const hookList =
+    draft.hooks !== undefined
+      ? Object.entries(draft.hooks).flatMap(([point, entries]) =>
+          entries.map((entry) => ({
+            point,
+            command: entry.command,
+            matcherTools: entry.matcherTools,
+          })),
+        )
+      : (settings?.hooks ?? []);
+  const allowedText = (
+    draft.web?.allowedDomains ??
+    settings?.web?.allowedDomains ??
+    []
+  ).join(', ');
+  const deniedText = (
+    draft.web?.deniedDomains ??
+    settings?.web?.deniedDomains ??
+    []
+  ).join(', ');
+  const snap = draft.snapshot ?? settings?.snapshot ?? null;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -325,26 +389,75 @@ export function SettingsPanel({
                     </div>
                     <div className="settings-field">
                       <label className="settings-label">规则表</label>
-                      {settings.rules.length === 0 ? (
+                      {rulesList.length === 0 ? (
                         <p className="settings-desc">
-                          未配置 allow / deny 规则（在 settings.json 的
-                          permission.rules 添加）。
+                          没有规则；添加一条 allow / deny 命令前缀规则。
                         </p>
                       ) : (
                         <div className="rule-list">
-                          {settings.rules.map((rule, index) => (
+                          {rulesList.map((rule, index) => (
                             <div
-                              key={index}
+                              key={`${rule.effect}-${rule.match}-${index}`}
                               className={`rule-item rule-${rule.effect}`}
                             >
                               <span className="rule-effect">
                                 {rule.effect === 'allow' ? '允许' : '拒绝'}
                               </span>
                               <code className="rule-match">{rule.match}</code>
+                              <button
+                                type="button"
+                                className="rule-remove"
+                                title="删除规则"
+                                onClick={() =>
+                                  patch({
+                                    rules: rulesList.filter(
+                                      (_, i) => i !== index,
+                                    ),
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
                             </div>
                           ))}
                         </div>
                       )}
+                      <div className="rule-add">
+                        <select
+                          className="select"
+                          value={ruleEffect}
+                          onChange={(event) =>
+                            setRuleEffect(
+                              event.target.value as 'allow' | 'deny',
+                            )
+                          }
+                        >
+                          <option value="allow">允许</option>
+                          <option value="deny">拒绝</option>
+                        </select>
+                        <input
+                          className="input"
+                          value={ruleMatch}
+                          placeholder="命令前缀，如 rm -rf"
+                          onChange={(event) => setRuleMatch(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={ruleMatch.trim().length === 0}
+                          onClick={() => {
+                            patch({
+                              rules: [
+                                ...rulesList,
+                                { effect: ruleEffect, match: ruleMatch.trim() },
+                              ],
+                            });
+                            setRuleMatch('');
+                          }}
+                        >
+                          添加
+                        </button>
+                      </div>
                     </div>
                     <div className="settings-field">
                       <label className="settings-label">正交矩阵</label>
@@ -427,13 +540,11 @@ export function SettingsPanel({
                 {section === 'extensions' && (
                   <>
                     <h3 className="settings-section-title">扩展</h3>
+
+                    {/* MCP 服务器（配置可编辑） */}
                     <div className="settings-field">
                       <label className="settings-label">MCP 服务器</label>
-                      {mcpStatus.length === 0 ? (
-                        <p className="settings-desc">
-                          未配置（settings.json 的 mcp.servers 键）。
-                        </p>
-                      ) : (
+                      {mcpStatus.length > 0 && (
                         <div className="mcp-list">
                           {mcpStatus.map((server) => (
                             <div
@@ -458,26 +569,162 @@ export function SettingsPanel({
                           ))}
                         </div>
                       )}
-                    </div>
-                    <div className="settings-field">
-                      <label className="settings-label">Hooks</label>
-                      {settings.hooks.length === 0 ? (
+                      {mcpList.length === 0 ? (
                         <p className="settings-desc">
-                          未配置钩子（settings.json 的 hooks 键）。
+                          未配置服务器。下方添加（stdio 命令或 HTTP URL）。
                         </p>
                       ) : (
                         <div className="hook-list">
-                          {settings.hooks.map((hook) => (
-                            <div key={hook.point} className="hook-item">
-                              <span className="hook-point">{hook.point}</span>
+                          {mcpList.map((server) => (
+                            <div key={server.name} className="hook-item">
+                              <span className="hook-point">{server.name}</span>
                               <span className="hook-count">
-                                {hook.count} 条
+                                {server.command !== undefined
+                                  ? 'stdio'
+                                  : 'http'}{' '}
+                                · {server.enabled !== false ? '启用' : '停用'} ·{' '}
+                                {server.command ?? server.url ?? ''}
                               </span>
+                              <button
+                                type="button"
+                                className="rule-remove"
+                                title="删除服务器"
+                                onClick={() =>
+                                  patch({
+                                    mcpServers: mcpList.filter(
+                                      (s) => s.name !== server.name,
+                                    ),
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
                             </div>
                           ))}
                         </div>
                       )}
+                      <div className="rule-add">
+                        <input
+                          className="input"
+                          placeholder="名称，如 filesystem"
+                          value={mcpName}
+                          onChange={(event) => setMcpName(event.target.value)}
+                        />
+                        <input
+                          className="input"
+                          placeholder="命令 或 http://URL"
+                          value={mcpCmd}
+                          onChange={(event) => setMcpCmd(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={
+                            mcpName.trim().length === 0 ||
+                            mcpCmd.trim().length === 0
+                          }
+                          onClick={() => {
+                            const target = mcpCmd.trim();
+                            const isUrl = /^https?:\/\//.test(target);
+                            patch({
+                              mcpServers: [
+                                ...mcpList,
+                                {
+                                  name: mcpName.trim(),
+                                  ...(isUrl
+                                    ? { url: target }
+                                    : { command: target }),
+                                  enabled: true,
+                                  risk: 'network',
+                                },
+                              ],
+                            });
+                            setMcpName('');
+                            setMcpCmd('');
+                          }}
+                        >
+                          添加
+                        </button>
+                      </div>
+                      <p className="settings-desc">
+                        保存后重建会话并连接服务器。
+                      </p>
                     </div>
+
+                    {/* Hooks（配置可编辑） */}
+                    <div className="settings-field">
+                      <label className="settings-label">Hooks</label>
+                      {hookList.length === 0 ? (
+                        <p className="settings-desc">
+                          未配置钩子。添加一条（钩子点 + 命令）。
+                        </p>
+                      ) : (
+                        <div className="hook-list">
+                          {hookList.map((hook, index) => (
+                            <div
+                              key={`${hook.point}-${index}`}
+                              className="hook-item"
+                            >
+                              <span className="hook-point">{hook.point}</span>
+                              <span className="hook-count">{hook.command}</span>
+                              <button
+                                type="button"
+                                className="rule-remove"
+                                title="删除钩子"
+                                onClick={() =>
+                                  patch({
+                                    hooks: hooksToRecord(
+                                      hookList.filter((_, i) => i !== index),
+                                    ),
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="rule-add">
+                        <select
+                          className="select"
+                          value={hookPoint}
+                          onChange={(event) => setHookPoint(event.target.value)}
+                        >
+                          <option value="SessionStart">SessionStart</option>
+                          <option value="UserPromptSubmit">
+                            UserPromptSubmit
+                          </option>
+                          <option value="PreToolUse">PreToolUse</option>
+                          <option value="PostToolUse">PostToolUse</option>
+                        </select>
+                        <input
+                          className="input"
+                          placeholder="命令，如 ./scripts/check.sh"
+                          value={hookCmd}
+                          onChange={(event) => setHookCmd(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={hookCmd.trim().length === 0}
+                          onClick={() => {
+                            patch({
+                              hooks: hooksToRecord([
+                                ...hookList,
+                                { point: hookPoint, command: hookCmd.trim() },
+                              ]),
+                            });
+                            setHookCmd('');
+                          }}
+                        >
+                          添加
+                        </button>
+                      </div>
+                      <p className="settings-desc">保存后重建会话。</p>
+                    </div>
+
+                    {/* Skills（发现内容，只读） */}
                     <div className="settings-field">
                       <label className="settings-label">Skills</label>
                       {skills.length === 0 ? (
@@ -497,6 +744,8 @@ export function SettingsPanel({
                         </div>
                       )}
                     </div>
+
+                    {/* 自定义 agents（发现内容，只读） */}
                     <div className="settings-field">
                       <label className="settings-label">自定义 agents</label>
                       {settings.agents.length === 0 ? (
@@ -516,13 +765,91 @@ export function SettingsPanel({
                         </div>
                       )}
                     </div>
+
+                    {/* 联网工具（域名可编辑） */}
                     <div className="settings-field">
-                      <label className="settings-label">联网工具</label>
-                      <p className="settings-desc">
-                        {settings.web === null
-                          ? '未限制域名（settings.json 的 web 键可配白名单 / 黑名单）。'
-                          : `白名单 ${settings.web.allowedDomains} 个 / 黑名单 ${settings.web.deniedDomains} 个域名。`}
-                      </p>
+                      <label className="settings-label">联网域名白名单</label>
+                      <input
+                        className="input"
+                        value={allowedText}
+                        placeholder="逗号分隔，如 example.com（留空 = 不限制）"
+                        onChange={(event) =>
+                          patch({
+                            web: {
+                              allowedDomains: splitList(event.target.value),
+                              deniedDomains: splitList(deniedText),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-label">联网域名黑名单</label>
+                      <input
+                        className="input"
+                        value={deniedText}
+                        placeholder="逗号分隔，如 ads.example.com"
+                        onChange={(event) =>
+                          patch({
+                            web: {
+                              allowedDomains: splitList(allowedText),
+                              deniedDomains: splitList(event.target.value),
+                            },
+                          })
+                        }
+                      />
+                    </div>
+
+                    {/* 快照（配置可编辑） */}
+                    <div className="settings-field">
+                      <label className="settings-label">快照</label>
+                      <label className="settings-check">
+                        <input
+                          type="checkbox"
+                          checked={snap?.enabled ?? true}
+                          onChange={(event) =>
+                            patch({
+                              snapshot: {
+                                ...(snap ?? {}),
+                                enabled: event.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        启用自动快照（可 /rewind 回滚）
+                      </label>
+                      <div className="rule-add">
+                        <input
+                          className="input input-num"
+                          type="number"
+                          min={0}
+                          placeholder="保留天数"
+                          value={snap?.maxAgeDays ?? ''}
+                          onChange={(event) =>
+                            patch({
+                              snapshot: {
+                                ...(snap ?? {}),
+                                maxAgeDays: Number(event.target.value),
+                              },
+                            })
+                          }
+                        />
+                        <input
+                          className="input input-num"
+                          type="number"
+                          min={1}
+                          placeholder="每会话条数"
+                          value={snap?.keepPerSession ?? ''}
+                          onChange={(event) =>
+                            patch({
+                              snapshot: {
+                                ...(snap ?? {}),
+                                keepPerSession: Number(event.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </div>
                     </div>
                   </>
                 )}

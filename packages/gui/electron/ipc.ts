@@ -152,16 +152,28 @@ export interface GuiSettings {
     readonly name: string;
     readonly description: string;
   }[];
-  /** 钩子配置（各点条目数；未配置 = 空）。 */
-  readonly hooks: readonly { readonly point: string; readonly count: number }[];
-  /** 联网工具配置摘要（未配置 = null）。 */
+  /** 钩子配置（展开成可编辑条目；未配置 = 空）。 */
+  readonly hooks: readonly {
+    readonly point: string;
+    readonly command: string;
+    readonly matcherTools?: readonly string[];
+  }[];
+  /** 联网工具配置（未配置 = null）。 */
   readonly web: {
-    readonly allowedDomains: number;
-    readonly deniedDomains: number;
+    readonly allowedDomains: readonly string[];
+    readonly deniedDomains: readonly string[];
   } | null;
-  /** MCP 服务器配置数。 */
-  readonly mcpServerCount: number;
-  /** 快照配置摘要（未配置 = null）。 */
+  /** MCP 服务器配置（可编辑；未配置 = 空）。 */
+  readonly mcpServers: readonly {
+    readonly name: string;
+    readonly transport: 'stdio' | 'http';
+    readonly command?: string;
+    readonly url?: string;
+    readonly args?: readonly string[];
+    readonly enabled: boolean;
+    readonly risk: string;
+  }[];
+  /** 快照配置（未配置 = null）。 */
   readonly snapshot: {
     readonly enabled: boolean;
     readonly maxAgeDays?: number;
@@ -179,6 +191,42 @@ export interface GuiSettingsPatch {
   readonly policy?: string;
   readonly maxTurns?: number;
   readonly keepTurns?: number;
+  /** 规则表整体替换（permission.rules）。 */
+  readonly rules?: readonly {
+    readonly effect: 'allow' | 'deny';
+    readonly match: string;
+  }[];
+  /** 钩子整体替换（hooks 键；每点条目数组）。 */
+  readonly hooks?: Readonly<
+    Record<
+      string,
+      readonly {
+        readonly command: string;
+        readonly matcherTools?: readonly string[];
+      }[]
+    >
+  >;
+  /** 联网工具域名（web 键）。 */
+  readonly web?: {
+    readonly allowedDomains?: readonly string[];
+    readonly deniedDomains?: readonly string[];
+  };
+  /** MCP 服务器表整体替换（mcp.servers 键）。 */
+  readonly mcpServers?: readonly {
+    readonly name: string;
+    readonly command?: string;
+    readonly url?: string;
+    readonly args?: readonly string[];
+    readonly enabled?: boolean;
+    readonly risk?: string;
+  }[];
+  /** 快照配置（snapshot 键）。 */
+  readonly snapshot?: {
+    readonly enabled?: boolean;
+    readonly maxAgeDays?: number;
+    readonly keepPerSession?: number;
+    readonly maxPerProject?: number;
+  };
 }
 
 /** 保存设置的结果。 */

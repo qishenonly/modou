@@ -586,6 +586,29 @@ export class GuiBridge {
     const hooksConfig = this.startup.hooksConfig;
     const web = this.startup.web;
     const snapshot = this.startup.snapshot;
+    const hooks: Array<{
+      point: string;
+      command: string;
+      matcherTools?: readonly string[];
+    }> = [];
+    if (hooksConfig !== undefined) {
+      for (const [point, entries] of Object.entries(hooksConfig)) {
+        for (const entry of entries ?? []) {
+          hooks.push({
+            point,
+            command: entry.command,
+            ...(entry.matcher !== undefined &&
+            entry.matcher.tools !== undefined &&
+            !Array.isArray(entry.matcher.tools)
+              ? {}
+              : entry.matcher?.tools !== undefined &&
+                  Array.isArray(entry.matcher.tools)
+                ? { matcherTools: entry.matcher.tools }
+                : {}),
+          });
+        }
+      }
+    }
     return {
       provider: this.startup.providerSpec.type,
       model: this.provider.modelId,
@@ -601,21 +624,23 @@ export class GuiBridge {
         match: rule.match,
       })),
       agents: this.agents,
-      hooks:
-        hooksConfig === undefined
-          ? []
-          : Object.entries(hooksConfig).map(([point, entries]) => ({
-              point,
-              count: entries?.length ?? 0,
-            })),
+      hooks,
       web:
         web === undefined
           ? null
           : {
-              allowedDomains: web.allowedDomains?.length ?? 0,
-              deniedDomains: web.deniedDomains?.length ?? 0,
+              allowedDomains: web.allowedDomains ?? [],
+              deniedDomains: web.deniedDomains ?? [],
             },
-      mcpServerCount: this.startup.mcpServers.length,
+      mcpServers: this.startup.mcpServers.map((server) => ({
+        name: server.name,
+        transport: server.transport,
+        ...(server.command !== undefined ? { command: server.command } : {}),
+        ...(server.url !== undefined ? { url: server.url } : {}),
+        ...(server.args !== undefined ? { args: server.args } : {}),
+        enabled: server.enabled,
+        risk: server.risk,
+      })),
       snapshot:
         snapshot === undefined
           ? null
@@ -657,17 +682,59 @@ export class GuiBridge {
     if (patch.provider !== undefined) next.provider = patch.provider;
     if (patch.model !== undefined) next.model = patch.model;
     if (patch.baseURL !== undefined) next.baseURL = patch.baseURL;
-    if (patch.sandbox !== undefined || patch.policy !== undefined) {
+    if (
+      patch.sandbox !== undefined ||
+      patch.policy !== undefined ||
+      patch.rules !== undefined
+    ) {
       const permission =
         typeof existing.permission === 'object' && existing.permission !== null
           ? { ...(existing.permission as Record<string, unknown>) }
           : {};
       if (patch.sandbox !== undefined) permission.sandbox = patch.sandbox;
       if (patch.policy !== undefined) permission.policy = patch.policy;
+      if (patch.rules !== undefined) permission.rules = patch.rules;
       next.permission = permission;
     }
     if (patch.maxTurns !== undefined) next.maxTurns = patch.maxTurns;
     if (patch.keepTurns !== undefined) next.keepTurns = patch.keepTurns;
+    if (patch.hooks !== undefined) next.hooks = patch.hooks;
+    if (patch.web !== undefined) {
+      const currentWeb =
+        typeof existing.web === 'object' && existing.web !== null
+          ? { ...(existing.web as Record<string, unknown>) }
+          : {};
+      if (patch.web.allowedDomains !== undefined) {
+        currentWeb.allowedDomains = patch.web.allowedDomains;
+      }
+      if (patch.web.deniedDomains !== undefined) {
+        currentWeb.deniedDomains = patch.web.deniedDomains;
+      }
+      next.web = currentWeb;
+    }
+    if (patch.mcpServers !== undefined) {
+      const servers: Record<string, unknown> = {};
+      for (const server of patch.mcpServers) {
+        servers[server.name] = {
+          ...(server.command !== undefined ? { command: server.command } : {}),
+          ...(server.url !== undefined ? { url: server.url } : {}),
+          ...(server.args !== undefined ? { args: server.args } : {}),
+          ...(server.enabled !== undefined ? { enabled: server.enabled } : {}),
+          ...(server.risk !== undefined ? { risk: server.risk } : {}),
+        };
+      }
+      next.mcp = { servers };
+    }
+    if (patch.snapshot !== undefined) {
+      const currentSnapshot =
+        typeof existing.snapshot === 'object' && existing.snapshot !== null
+          ? { ...(existing.snapshot as Record<string, unknown>) }
+          : {};
+      for (const [key, value] of Object.entries(patch.snapshot)) {
+        if (value !== undefined) currentSnapshot[key] = value;
+      }
+      next.snapshot = currentSnapshot;
+    }
     try {
       mkdirSync(dir, { recursive: true });
       writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
@@ -682,14 +749,19 @@ export class GuiBridge {
     if (patch.model !== undefined && patch.model !== this.provider.modelId) {
       await this.switchModel(patch.model);
     }
-    // 权限 / 供应商 / 上下文类改动需要重建 bridge 生效（main.ts 收到 needRestart 重建）
+    // 权限 / 供应商 / 上下文 / 扩展类改动需要重建 bridge 生效（main.ts 重建）
     const needRestart =
       patch.sandbox !== undefined ||
       patch.policy !== undefined ||
       patch.provider !== undefined ||
       patch.baseURL !== undefined ||
       patch.maxTurns !== undefined ||
-      patch.keepTurns !== undefined;
+      patch.keepTurns !== undefined ||
+      patch.rules !== undefined ||
+      patch.hooks !== undefined ||
+      patch.web !== undefined ||
+      patch.mcpServers !== undefined ||
+      patch.snapshot !== undefined;
     return { ok: true, needRestart };
   }
 
