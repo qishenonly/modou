@@ -3,9 +3,18 @@
  * - 圆角大输入区，无默认边框（hover/聚焦加深）；自动增高；
  * - 右侧圆形发送按钮：有内容时橙色，否则灰色禁用；
  * - 运行中：发送按钮变为「停止」方块，输入禁用；
- * - 输入以 / 开头时提示内置斜杠命令。
+ * - 输入以 / 开头时提示内置斜杠命令；
+ * - 粘贴 / 拖拽图片 → 转为 data URI 附件随消息提交（多模态）。
  */
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { BUILTIN_SLASH_COMMANDS } from '../../electron/slash';
 
 /** 发送箭头（↑）与停止方块（■）图标。 */
@@ -32,26 +41,48 @@ function StopIcon(): ReactNode {
   );
 }
 
+/** 从 FileList 里挑出图片文件，逐个转 data URI。 */
+function readImageFiles(files: FileList | readonly File[]): Promise<string[]> {
+  const images = Array.from(files).filter((file) =>
+    file.type.startsWith('image/'),
+  );
+  return Promise.all(
+    images.map(
+      (file) =>
+        new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        }),
+    ),
+  );
+}
+
 export function InputBox({
   running,
   onSubmit,
   onStop,
+  inputRef,
 }: {
   readonly running: boolean;
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, images?: readonly string[]) => void;
   readonly onStop: () => void;
+  readonly inputRef?: RefObject<HTMLTextAreaElement>;
 }): ReactNode {
   const [value, setValue] = useState('');
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const [pendingImages, setPendingImages] = useState<readonly string[]>([]);
+  const ref = inputRef ?? useRef<HTMLTextAreaElement>(null);
 
   const showSlash = !running && value.trim().startsWith('/');
-  const canSend = value.trim().length > 0;
+  const canSend = value.trim().length > 0 || pendingImages.length > 0;
 
   const submit = (): void => {
     const text = value.trim();
-    if (text.length === 0) return;
-    onSubmit(text);
+    if (text.length === 0 && pendingImages.length === 0) return;
+    onSubmit(text, pendingImages);
     setValue('');
+    setPendingImages([]);
     if (ref.current !== null) ref.current.style.height = 'auto';
   };
 
@@ -64,6 +95,42 @@ export function InputBox({
       event.preventDefault();
       if (!running) submit();
       return;
+    }
+    if (event.key === 'Escape' && running) {
+      event.preventDefault();
+      event.stopPropagation();
+      onStop();
+    }
+  };
+
+  /** 粘贴 / 拖拽图片：转 data URI 加入待发附件。 */
+  const ingestImages = async (
+    files: FileList | readonly File[],
+  ): Promise<void> => {
+    const uris = await readImageFiles(files);
+    if (uris.length > 0) {
+      setPendingImages((prev) => [...prev, ...uris]);
+      if (ref.current !== null) ref.current.focus();
+    }
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = event.clipboardData?.files;
+    if (
+      files !== undefined &&
+      files.length > 0 &&
+      Array.from(files).some((f) => f.type.startsWith('image/'))
+    ) {
+      event.preventDefault();
+      void ingestImages(files);
+    }
+  };
+
+  const onDrop = (event: DragEvent<HTMLTextAreaElement>): void => {
+    const files = event.dataTransfer?.files;
+    if (files !== undefined && files.length > 0) {
+      event.preventDefault();
+      void ingestImages(files);
     }
   };
 
@@ -85,19 +152,41 @@ export function InputBox({
           ))}
         </div>
       )}
+      {pendingImages.length > 0 && (
+        <div className="image-preview-row">
+          {pendingImages.map((uri, index) => (
+            <div key={index} className="image-preview">
+              <img src={uri} alt="待发送图片" />
+              <button
+                type="button"
+                className="image-preview-remove"
+                onClick={() =>
+                  setPendingImages((prev) => prev.filter((_, i) => i !== index))
+                }
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="input-box-shell">
         <textarea
           ref={ref}
           className="input-box"
           value={value}
           rows={1}
-          placeholder={running ? '正在运行…' : '输入任务，Enter 发送'}
+          placeholder={
+            running ? '正在运行…' : '输入任务，Enter 发送（可粘贴 / 拖拽图片）'
+          }
           disabled={running}
           onChange={(event) => {
             setValue(event.target.value);
             autoGrow();
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
+          onDrop={onDrop}
         />
         {running ? (
           <button
@@ -121,7 +210,7 @@ export function InputBox({
         )}
       </div>
       <div className="input-foot">
-        <span>Enter 发送 · Shift+Enter 换行</span>
+        <span>Enter 发送 · Shift+Enter 换行 · 支持粘贴图片</span>
         <span>/ 开头触发斜杠命令</span>
       </div>
     </div>

@@ -44,6 +44,8 @@ export function App(): ReactNode {
   // 命令结果卡片（对话内展示；/help /context /cost /mcp /init /rewind /plan）
   const [cards, setCards] = useState<readonly GuiCardEntry[]>([]);
   const cardSeq = useRef(0);
+  // 输入框引用（Cmd+K 聚焦用）
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const appendCard = useCallback((card: GuiCard): void => {
     cardSeq.current += 1;
@@ -110,10 +112,60 @@ export function App(): ReactNode {
     refreshSessions();
   }, [refreshSessions, ready?.cwd, state.running]);
 
+  // 会话标题映射（重命名；gui-state 持久化）
+  const [titles, setTitles] = useState<Readonly<Record<string, string>>>({});
+  const loadTitles = useCallback(() => {
+    void window.modou.getSessionTitles().then((value) => setTitles(value));
+  }, []);
+  useEffect(() => {
+    loadTitles();
+  }, [loadTitles, ready?.cwd]);
+  const handleRename = (sessionId: string, title: string): void => {
+    void window.modou
+      .renameSession(sessionId, title)
+      .then((value) => setTitles(value));
+  };
+
   // 外观：启动时恢复主题
   useEffect(() => {
     void window.modou.getTheme().then((theme) => applyTheme(theme));
   }, []);
+
+  // ---- 侧栏操作 ----
+  const handleNewChat = useCallback((): void => {
+    if (state.running) return;
+    window.modou.sendCommand({ type: 'slash', name: 'clear' });
+  }, [state.running]);
+
+  // 快捷键：Cmd+K 聚焦输入、Cmd+N 新对话、Cmd+, 设置、Esc 关模态
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent): void => {
+      if (event.metaKey || event.ctrlKey) {
+        const key = event.key.toLowerCase();
+        if (key === 'k') {
+          event.preventDefault();
+          inputRef.current?.focus();
+          return;
+        }
+        if (key === 'n') {
+          event.preventDefault();
+          handleNewChat();
+          return;
+        }
+        if (key === ',') {
+          event.preventDefault();
+          setModal('settings');
+          return;
+        }
+        return;
+      }
+      if (event.key === 'Escape' && modal !== 'none') {
+        setModal('none');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal, handleNewChat]);
 
   // ---- 项目目录 ----
   const handleSelectDirectory = (): void => {
@@ -127,10 +179,22 @@ export function App(): ReactNode {
     });
   };
 
-  // ---- 输入提交（普通文本 → submit；/ 开头 → 斜杠命令 / 对话内结果）----
-  const handleSubmit = (raw: string): void => {
+  // ---- 输入提交（普通文本 → submit；/ 开头 → 斜杠命令 / 对话内结果；附件 → 多模态）----
+  const handleSubmit = (raw: string, images?: readonly string[]): void => {
     if (state.running) return;
     const text = raw.trim();
+    if (images !== undefined && images.length > 0) {
+      dispatch({
+        type: 'user_submit',
+        text: text.length > 0 ? text : '（图片附件）',
+      });
+      window.modou.sendCommand({
+        type: 'submit',
+        text,
+        attachments: images.map((uri) => ({ uri })),
+      });
+      return;
+    }
     if (text.length === 0) return;
     if (text.startsWith('/')) {
       handleSlash(text);
@@ -211,11 +275,6 @@ export function App(): ReactNode {
   };
 
   // ---- 侧栏操作 ----
-  const handleNewChat = (): void => {
-    if (state.running) return;
-    window.modou.sendCommand({ type: 'slash', name: 'clear' });
-  };
-
   const handleResume = (sessionId: string): void => {
     window.modou.sendCommand({
       type: 'slash',
@@ -256,9 +315,11 @@ export function App(): ReactNode {
         sessions={sessions}
         running={state.running}
         modelName={modelName}
+        titles={titles}
         onNewChat={handleNewChat}
         onResume={handleResume}
         onDelete={handleDeleteSession}
+        onRename={handleRename}
         onSelectDirectory={handleSelectDirectory}
         onOpenModel={() => setModal('model')}
         onOpenSettings={() => setModal('settings')}
@@ -299,6 +360,7 @@ export function App(): ReactNode {
               running={state.running}
               onSubmit={handleSubmit}
               onStop={() => window.modou.sendCommand({ type: 'interrupt' })}
+              inputRef={inputRef}
             />
             <StatusBar
               modelName={modelName}
@@ -329,6 +391,13 @@ export function App(): ReactNode {
         <SettingsPanel
           onClose={() => setModal('none')}
           onSelectDirectory={handleSelectDirectory}
+          onSaved={(needRestart) => {
+            if (needRestart) {
+              dispatch({ type: 'app_reset' });
+              setCards([]);
+              refreshSessions(); // 重建后的 READY 会刷新 ready / sessionId
+            }
+          }}
         />
       )}
       {modal === 'model' && (

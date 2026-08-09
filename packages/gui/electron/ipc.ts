@@ -43,6 +43,10 @@ export const IPC = {
   SET_THEME: 'modou:setTheme',
   /** renderer → main（invoke）：删除一条会话（侧栏）。 */
   DELETE_SESSION: 'modou:deleteSession',
+  /** renderer → main（invoke）：重命名会话（标题映射存 gui-state）。 */
+  RENAME_SESSION: 'modou:renameSession',
+  /** renderer → main（invoke）：读取会话标题映射。 */
+  GET_SESSION_TITLES: 'modou:getSessionTitles',
   /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
   SELECT_DIRECTORY: 'modou:selectDirectory',
   /** renderer → main（invoke）：快照点列表（/rewind 面板）。 */

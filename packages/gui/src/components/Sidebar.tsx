@@ -2,10 +2,15 @@
  * 左侧会话侧栏（Claude Desktop 式）：
  * - 顶部：品牌标 + 项目切换（当前目录名 + 切换按钮，无项目时「选择项目目录」）；
  * - 「+ 新对话」主按钮；
- * - 会话历史列表（预览 + 时间；当前会话高亮；悬停可删除）；
+ * - 会话搜索框 + 历史列表（自定义标题优先、预览兜底；当前高亮；悬停可重命名/删除）；
  * - 底部：模型选择器 + 设置。
  */
-import { type ReactNode } from 'react';
+import {
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import type { ResumeCandidate } from '@modou/core';
 import { formatTime } from '../lib/format';
 import { LogoMark } from './LogoMark';
@@ -17,9 +22,11 @@ export function Sidebar({
   sessions,
   running,
   modelName,
+  titles,
   onNewChat,
   onResume,
   onDelete,
+  onRename,
   onSelectDirectory,
   onOpenModel,
   onOpenSettings,
@@ -30,13 +37,49 @@ export function Sidebar({
   readonly sessions: readonly ResumeCandidate[];
   readonly running: boolean;
   readonly modelName: string;
+  readonly titles: Readonly<Record<string, string>>;
   readonly onNewChat: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onDelete: (sessionId: string) => void;
+  readonly onRename: (sessionId: string, title: string) => void;
   readonly onSelectDirectory: () => void;
   readonly onOpenModel: () => void;
   readonly onOpenSettings: () => void;
 }): ReactNode {
+  const [query, setQuery] = useState('');
+  // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const visible = sessions.filter((session) => {
+    if (query.trim().length === 0) return true;
+    const haystack =
+      `${titles[session.sessionId] ?? ''} ${session.preview}`.toLowerCase();
+    return haystack.includes(query.trim().toLowerCase());
+  });
+
+  const startEdit = (session: ResumeCandidate): void => {
+    setEditingId(session.sessionId);
+    setEditValue(titles[session.sessionId] ?? session.preview ?? '');
+  };
+
+  const commitEdit = (sessionId: string): void => {
+    onRename(sessionId, editValue.trim());
+    setEditingId(null);
+  };
+
+  const onQueryChange = (event: ChangeEvent<HTMLInputElement>): void => {
+    setQuery(event.target.value);
+  };
+
+  const onEditKeyDown = (
+    event: KeyboardEvent<HTMLInputElement>,
+    sessionId: string,
+  ): void => {
+    if (event.key === 'Enter') commitEdit(sessionId);
+    else if (event.key === 'Escape') setEditingId(null);
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -86,54 +129,134 @@ export function Sidebar({
           新对话
         </button>
 
+        {hasProject && sessions.length > 0 && (
+          <div className="session-search">
+            <svg viewBox="0 0 16 16" className="search-icon" aria-hidden="true">
+              <circle
+                cx="7"
+                cy="7"
+                r="4.25"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              />
+              <path
+                d="m10.5 10.5 3 3"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+            <input
+              className="search-input"
+              value={query}
+              onChange={onQueryChange}
+              placeholder="搜索会话…"
+            />
+          </div>
+        )}
+
         <nav className="session-list">
-          {sessions.length === 0 && hasProject && (
-            <div className="session-empty">还没有历史对话</div>
+          {visible.length === 0 && (
+            <div className="session-empty">
+              {hasProject
+                ? query.trim().length > 0
+                  ? '没有匹配的会话'
+                  : '还没有历史对话'
+                : '先选择项目目录'}
+            </div>
           )}
-          {sessions.map((session) => {
+          {visible.map((session) => {
             const active = session.sessionId === currentSessionId;
+            const editing = editingId === session.sessionId;
+            const title =
+              titles[session.sessionId] ?? session.preview ?? '（空会话）';
             return (
               <div
                 key={session.sessionId}
                 className={`session-item${active ? ' session-active' : ''}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => onResume(session.sessionId)}
+                onClick={() => {
+                  if (!editing) onResume(session.sessionId);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    onResume(session.sessionId);
+                    if (!editing) onResume(session.sessionId);
                   }
                 }}
               >
-                <div className="session-preview" title={session.preview}>
-                  {session.preview || '（空会话）'}
-                </div>
-                <div className="session-meta">
-                  <span>{formatTime(session.lastTs)}</span>
-                  {!active && (
-                    <button
-                      type="button"
-                      className="session-delete"
-                      title="删除会话"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDelete(session.sessionId);
-                      }}
-                    >
-                      <svg
-                        viewBox="0 0 16 16"
-                        aria-hidden="true"
-                        className="session-delete-icon"
-                      >
-                        <path
-                          d="M6.5 2.5h3a.75.75 0 0 1 .75.75V4h-4.5v-.75a.75.75 0 0 1 .75-.75ZM4.75 5.5h6.5v6.5a1.75 1.75 0 0 1-1.75 1.75H6.5a1.75 1.75 0 0 1-1.75-1.75V5.5Zm1.5 1.25v5.5h1.5v-5.5h-1.5Zm2 0v5.5h1.5v-5.5h-1.5Z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    </button>
-                  )}
-                </div>
+                {editing ? (
+                  <input
+                    className="session-rename-input"
+                    value={editValue}
+                    autoFocus
+                    placeholder="会话标题"
+                    onChange={(event) => setEditValue(event.target.value)}
+                    onKeyDown={(event) =>
+                      onEditKeyDown(event, session.sessionId)
+                    }
+                    onBlur={() => commitEdit(session.sessionId)}
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <div className="session-preview" title={title}>
+                      {title}
+                    </div>
+                    <div className="session-meta">
+                      <span>{formatTime(session.lastTs)}</span>
+                      <span className="session-count">
+                        {session.entryCount} 条
+                      </span>
+                      {!active && (
+                        <>
+                          <button
+                            type="button"
+                            className="session-rename"
+                            title="重命名会话"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              startEdit(session);
+                            }}
+                          >
+                            <svg
+                              viewBox="0 0 16 16"
+                              className="session-delete-icon"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="m9.9 2.8 3.3 3.3-7 7a.75.75 0 0 1-.32.19l-3.02.9a.25.25 0 0 1-.3-.3l.9-3.02a.75.75 0 0 1 .19-.32l7-7ZM10.6 2.1l1.7-1.7a.99.99 0 0 1 1.4 0l1.9 1.9a.99.99 0 0 1 0 1.4l-1.7 1.7-3.3-3.3Z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="session-delete"
+                            title="删除会话"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onDelete(session.sessionId);
+                            }}
+                          >
+                            <svg
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                              className="session-delete-icon"
+                            >
+                              <path
+                                d="M6.5 2.5h3a.75.75 0 0 1 .75.75V4h-4.5v-.75a.75.75 0 0 1 .75-.75ZM4.75 5.5h6.5v6.5a1.75 1.75 0 0 1-1.75 1.75H6.5a1.75 1.75 0 0 1-1.75-1.75V5.5Zm1.5 1.25v5.5h1.5v-5.5h-1.5Zm2 0v5.5h1.5v-5.5h-1.5Z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             );
           })}

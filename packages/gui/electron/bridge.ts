@@ -627,6 +627,11 @@ export class GuiBridge {
         message: `写入 ${file} 失败：${describeError(caught)}`,
       };
     }
+    // 模型改动即时切换（/model 语义，上下文延续；错误由内部 notice 呈现）
+    if (patch.model !== undefined && patch.model !== this.provider.modelId) {
+      await this.switchModel(patch.model);
+    }
+    // 权限 / 供应商 / 上下文类改动需要重建 bridge 生效（main.ts 收到 needRestart 重建）
     const needRestart =
       patch.sandbox !== undefined ||
       patch.policy !== undefined ||

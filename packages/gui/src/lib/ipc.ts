@@ -61,6 +61,13 @@ export interface ModouApi {
   setTheme(theme: GuiTheme): Promise<void>;
   /** 删除一条会话（侧栏）。 */
   deleteSession(sessionId: string): Promise<boolean>;
+  /** 重命名会话（标题映射存 gui-state；空标题 = 恢复默认）。返回新映射。 */
+  renameSession(
+    sessionId: string,
+    title: string,
+  ): Promise<Record<string, string>>;
+  /** 读取会话标题映射。 */
+  getSessionTitles(): Promise<Record<string, string>>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

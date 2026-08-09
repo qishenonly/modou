@@ -33,6 +33,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let bridge: GuiBridge | null = null;
+/** 当前装配的桥的工作目录（saveSettings 重建用）。 */
+let currentCwd: string | undefined = undefined;
 
 // ---------------------------------------------------------------------------
 // .env 加载（向上搜索，已存在的变量不覆盖）
@@ -80,6 +82,8 @@ const guiStateFile = join(homedir(), '.modou', 'gui-state.json');
 interface GuiStateFile {
   readonly lastDirectory?: string;
   readonly lastTheme?: 'light' | 'dark' | 'system';
+  /** 会话标题映射（重命名；key = sessionId）。 */
+  readonly sessionTitles?: Readonly<Record<string, string>>;
 }
 
 function readGuiState(): GuiStateFile {
@@ -167,6 +171,7 @@ function sendReady(payload: ReadyPayload): void {
 function createBridge(cwd?: string): void {
   bridge?.dispose();
   bridge = null;
+  currentCwd = cwd;
   if (cwd === undefined) return;
   try {
     bridge = new GuiBridge(
@@ -237,14 +242,40 @@ function registerIpc(): void {
   ipcMain.handle(IPC.GET_SETTINGS, () => bridge?.getSettings() ?? null);
   ipcMain.handle(
     IPC.SAVE_SETTINGS,
-    (_event, patch: Parameters<GuiBridge['saveSettings']>[0]) =>
-      bridge?.saveSettings(patch) ?? { ok: false, needRestart: false },
+    async (_event, patch: Parameters<GuiBridge['saveSettings']>[0]) => {
+      const result = await bridge?.saveSettings(patch);
+      const outcome = result ?? { ok: false, needRestart: false };
+      // 权限/供应商/上下文类改动：保存后自动重建桥（新配置立即生效）
+      if (outcome.ok && outcome.needRestart) {
+        createBridge(currentCwd);
+      }
+      return outcome;
+    },
   );
   ipcMain.handle(IPC.GET_THEME, () => readGuiState().lastTheme ?? 'system');
   ipcMain.handle(
     IPC.SET_THEME,
     (_event, theme: 'light' | 'dark' | 'system') => {
       writeGuiState({ ...readGuiState(), lastTheme: theme });
+    },
+  );
+  ipcMain.handle(
+    IPC.GET_SESSION_TITLES,
+    () => readGuiState().sessionTitles ?? {},
+  );
+  ipcMain.handle(
+    IPC.RENAME_SESSION,
+    (_event, sessionId: string, title: string) => {
+      const state = readGuiState();
+      const trimmed = title.trim();
+      const titles = { ...(state.sessionTitles ?? {}) };
+      if (trimmed.length === 0) {
+        delete titles[sessionId];
+      } else {
+        titles[sessionId] = trimmed;
+      }
+      writeGuiState({ ...state, sessionTitles: titles });
+      return titles;
     },
   );
   ipcMain.handle(

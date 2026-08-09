@@ -103,9 +103,11 @@ interface Draft {
 export function SettingsPanel({
   onClose,
   onSelectDirectory,
+  onSaved,
 }: {
   readonly onClose: () => void;
   readonly onSelectDirectory: () => void;
+  readonly onSaved?: (needRestart: boolean) => void;
 }): ReactNode {
   const [section, setSection] = useState<Section>('model');
   const [config, setConfig] = useState<GuiConfigSummary | null>(null);
@@ -142,11 +144,16 @@ export function SettingsPanel({
   const save = async (): Promise<void> => {
     setSaving(true);
     const result = await window.modou.saveSettings(draft);
-    setSaveNote(
-      result.ok
-        ? `已保存到项目 .modou/settings.json${result.needRestart ? '——权限 / 供应商 / 上下文类改动需重启应用后生效。' : '。'}`
-        : (result.message ?? '保存失败'),
-    );
+    if (result.ok) {
+      setSaveNote(
+        result.needRestart
+          ? '已保存并应用（权限 / 上下文 / 供应商类改动已重建会话）。'
+          : '已保存。',
+      );
+      onSaved?.(result.needRestart);
+    } else {
+      setSaveNote(result.message ?? '保存失败');
+    }
     setDraft({});
     setSaving(false);
   };

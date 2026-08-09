@@ -93,6 +93,14 @@ const api = {
   deleteSession(sessionId: string): Promise<unknown> {
     return ipcRenderer.invoke(IPC.DELETE_SESSION, sessionId);
   },
+  /** 重命名会话（标题映射存 gui-state；空标题 = 恢复默认）。返回新映射。 */
+  renameSession(sessionId: string, title: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.RENAME_SESSION, sessionId, title);
+  },
+  /** 读取会话标题映射。 */
+  getSessionTitles(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_SESSION_TITLES);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);
