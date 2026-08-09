@@ -207,10 +207,21 @@ export function ChatThread({
   readonly onEditUser: (text: string) => void;
 }): ReactNode {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const chatRef = useRef<HTMLElement>(null);
+  // 自动滚动：用户停留在底部附近才跟随（上滚阅读历史时不打断）
+  const [sticky, setSticky] = useState(true);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [history, streamingText, tools, notices, running, cards]);
+    if (sticky) {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+    }
+  }, [history, streamingText, tools, notices, running, cards, sticky]);
+
+  const onScroll = (): void => {
+    const el = chatRef.current;
+    if (el === null) return;
+    setSticky(el.scrollHeight - el.scrollTop - el.clientHeight < 120);
+  };
 
   // 等待动画触发条件：running 且「没有文本、没有思考、没有进行中工具」
   const hasOutput =
@@ -222,7 +233,7 @@ export function ChatThread({
   const showThinking = running && !hasOutput;
 
   return (
-    <main className="chat">
+    <main className="chat" ref={chatRef} onScroll={onScroll}>
       <div className="chat-inner">
         <TodoList items={todo} />
 
