@@ -196,37 +196,49 @@ async function listRemoteModels(input: {
   const base = input.baseURL.trim().replace(/\/+$/, '');
   if (base.length === 0)
     return { ok: false, models: [], message: 'baseURL 为空' };
-  try {
-    const res = await fetch(`${base}/models`, {
-      headers: {
-        Authorization: `Bearer ${input.apiKey.trim()}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      return {
-        ok: false,
-        models: [],
-        message: `HTTP ${res.status}${body.length > 0 ? `：${body.slice(0, 200)}` : ''}`,
-      };
+  // OpenAI 兼容中转站端点形态不统一：先试 {base}/models，若 base 不以
+  // /v1 结尾再试 {base}/v1/models（很多中转站只认 /v1 前缀）。Anthropic
+  // 官方是 {base}/v1/models（直接数组）。失败返回最近一次错误信息。
+  const candidates: readonly string[] = [
+    `${base}/models`,
+    ...(/\/(v1|api)$/.test(base) ? [] : [`${base}/v1/models`]),
+  ];
+  let lastMessage = '未知错误';
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${input.apiKey.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        lastMessage = `HTTP ${res.status}（${url}）${
+          body.length > 0 ? `：${body.slice(0, 120)}` : ''
+        }`;
+        continue;
+      }
+      const data = (await res.json()) as unknown;
+      // OpenAI 兼容：{ data: [{ id }] }；Anthropic：直接数组
+      const wrapped = (data as { data?: Array<{ id?: unknown }> }).data;
+      const models = Array.isArray(wrapped)
+        ? wrapped
+            .map((item) => (typeof item.id === 'string' ? item.id : ''))
+            .filter((id) => id.length > 0)
+        : Array.isArray(data)
+          ? (data as Array<{ id?: unknown }>)
+              .map((item) => (typeof item.id === 'string' ? item.id : ''))
+              .filter((id) => id.length > 0)
+          : [];
+      if (models.length > 0) return { ok: true, models };
+      return { ok: true, models, message: '接口返回为空（端点可能不对）' };
+    } catch (caught) {
+      lastMessage = caught instanceof Error ? caught.message : String(caught);
     }
-    const data = (await res.json()) as unknown;
-    const list = (data as { data?: Array<{ id?: unknown }> }).data;
-    const models = Array.isArray(list)
-      ? list
-          .map((item) => (typeof item.id === 'string' ? item.id : ''))
-          .filter((id) => id.length > 0)
-      : [];
-    return { ok: true, models };
-  } catch (caught) {
-    return {
-      ok: false,
-      models: [],
-      message: caught instanceof Error ? caught.message : String(caught),
-    };
   }
+  return { ok: false, models: [], message: `拉取失败：${lastMessage}` };
 }
 
 // ---------------------------------------------------------------------------

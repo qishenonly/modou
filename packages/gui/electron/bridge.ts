@@ -274,12 +274,18 @@ export class GuiBridge {
 
     // —— 工具集装配（写/执行默认 + 0.15 技能 + 0.17 角色 + 联网 + 记忆）——
     let tools = options.tools ?? defaultWriteTools();
+    // 技能默认扫描：内置 → 全局 ~/.modou/skills → ~/.claude/skills（Claude
+    // 生态，像 codex/claude 的全局固定技能目录）→ 项目 .modou/skills →
+    // GUI 配置的额外目录（extraDirs，同名覆盖所有默认层级）。
+    const defaultSkillDirs = [join(this.homeDir, '.claude', 'skills')];
+    const skillsDirs = [
+      ...defaultSkillDirs,
+      ...(options.skillsDirs ?? []),
+    ].filter((dir, index, all) => all.indexOf(dir) === index);
     const discoveredSkills = discoverSkills({
       homeDir: this.homeDir,
       projectRoot: this.cwd,
-      ...(options.skillsDirs !== undefined && options.skillsDirs.length > 0
-        ? { extraDirs: options.skillsDirs }
-        : {}),
+      extraDirs: skillsDirs,
     });
     const skillIndex = new Map(
       discoveredSkills.map((skill) => [skill.name, skill] as const),

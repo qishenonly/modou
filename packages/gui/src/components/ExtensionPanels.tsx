@@ -39,13 +39,31 @@ export function SaveBar({
 }
 
 function hooksToRecord(
-  list: readonly { readonly point: string; readonly command: string }[],
-): Record<string, readonly { readonly command: string }[]> {
-  const record: Record<string, readonly { readonly command: string }[]> = {};
+  list: readonly {
+    readonly point: string;
+    readonly command: string;
+    readonly matcherTools?: readonly string[];
+  }[],
+): Record<
+  string,
+  readonly {
+    readonly command: string;
+    readonly matcherTools?: readonly string[];
+  }[]
+> {
+  const record: Record<
+    string,
+    readonly { command: string; matcherTools?: readonly string[] }[]
+  > = {};
   for (const hook of list) {
     record[hook.point] = [
       ...(record[hook.point] ?? []),
-      { command: hook.command },
+      {
+        command: hook.command,
+        ...(hook.matcherTools !== undefined && hook.matcherTools.length > 0
+          ? { matcherTools: hook.matcherTools }
+          : {}),
+      },
     ];
   }
   return record;
@@ -76,6 +94,7 @@ export function McpContent(): ReactNode {
   const [draft, setDraft] = useState<GuiSettingsPatch>({});
   const [name, setName] = useState('');
   const [cmd, setCmd] = useState('');
+  const [argsText, setArgsText] = useState('');
   const [risk, setRisk] = useState('network');
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -152,6 +171,9 @@ export function McpContent(): ReactNode {
                 {server.command !== undefined ? 'stdio' : 'http'} ·{' '}
                 {server.enabled !== false ? '启用' : '停用'} ·{' '}
                 {server.command ?? server.url ?? ''}
+                {server.args !== undefined && server.args.length > 0
+                  ? ` ${server.args.join(' ')}`
+                  : ''}
               </span>
               <button
                 type="button"
@@ -194,6 +216,12 @@ export function McpContent(): ReactNode {
             </option>
           ))}
         </select>
+        <input
+          className="input"
+          placeholder="参数（空格分隔，可选）"
+          value={argsText}
+          onChange={(event) => setArgsText(event.target.value)}
+        />
         <button
           type="button"
           className="btn btn-ghost"
@@ -201,6 +229,10 @@ export function McpContent(): ReactNode {
           onClick={() => {
             const target = cmd.trim();
             const isUrl = /^https?:\/\//.test(target);
+            const args = argsText
+              .trim()
+              .split(/\s+/)
+              .filter((item) => item.length > 0);
             setDraft((prev) => ({
               ...prev,
               mcpServers: [
@@ -208,6 +240,7 @@ export function McpContent(): ReactNode {
                 {
                   name: name.trim(),
                   ...(isUrl ? { url: target } : { command: target }),
+                  ...(args.length > 0 ? { args } : {}),
                   enabled: true,
                   risk,
                 },
@@ -215,6 +248,7 @@ export function McpContent(): ReactNode {
             }));
             setName('');
             setCmd('');
+            setArgsText('');
           }}
         >
           添加
@@ -239,6 +273,7 @@ export function HooksContent(): ReactNode {
   const [draft, setDraft] = useState<GuiSettingsPatch>({});
   const [point, setPoint] = useState('PreToolUse');
   const [cmd, setCmd] = useState('');
+  const [matcherText, setMatcherText] = useState('');
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -249,7 +284,13 @@ export function HooksContent(): ReactNode {
   const list =
     draft.hooks !== undefined
       ? Object.entries(draft.hooks).flatMap(([p, entries]) =>
-          entries.map((entry) => ({ point: p, command: entry.command })),
+          entries.map((entry) => ({
+            point: p,
+            command: entry.command,
+            ...(entry.matcherTools !== undefined
+              ? { matcherTools: entry.matcherTools }
+              : {}),
+          })),
         )
       : (settings?.hooks ?? []);
   const dirty = draft.hooks !== undefined;
@@ -266,11 +307,20 @@ export function HooksContent(): ReactNode {
     setSaving(false);
   };
 
+  const matcherList = (text: string): readonly string[] | undefined => {
+    const tools = text
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    return tools.length > 0 ? tools : undefined;
+  };
+
   return (
     <div className="ext-content">
       <p className="settings-desc">
         生命周期钩子：在指定点执行外部命令（可拦截 / 改写工具调用）。四个点：
-        SessionStart / UserPromptSubmit / PreToolUse / PostToolUse。
+        SessionStart / UserPromptSubmit / PreToolUse / PostToolUse。 matcher
+        限定只对指定工具生效（留空 = 全部工具）。
       </p>
       <div className="panel-section-title">钩子列表</div>
       {list.length === 0 ? (
@@ -280,7 +330,12 @@ export function HooksContent(): ReactNode {
           {list.map((hook, index) => (
             <div key={`${hook.point}-${index}`} className="hook-item">
               <span className="hook-point">{hook.point}</span>
-              <span className="hook-count">{hook.command}</span>
+              <span className="hook-count">
+                {hook.command}
+                {hook.matcherTools !== undefined && hook.matcherTools.length > 0
+                  ? `（工具：${hook.matcherTools.join(', ')}）`
+                  : ''}
+              </span>
               <button
                 type="button"
                 className="rule-remove"
@@ -316,16 +371,31 @@ export function HooksContent(): ReactNode {
           value={cmd}
           onChange={(event) => setCmd(event.target.value)}
         />
+        <input
+          className="input"
+          placeholder="工具 matcher，如 bash,edit（可选）"
+          value={matcherText}
+          onChange={(event) => setMatcherText(event.target.value)}
+        />
         <button
           type="button"
           className="btn btn-ghost"
           disabled={cmd.trim().length === 0}
           onClick={() => {
+            const matcherTools = matcherList(matcherText);
             setDraft((prev) => ({
               ...prev,
-              hooks: hooksToRecord([...list, { point, command: cmd.trim() }]),
+              hooks: hooksToRecord([
+                ...list,
+                {
+                  point,
+                  command: cmd.trim(),
+                  ...(matcherTools !== undefined ? { matcherTools } : {}),
+                },
+              ]),
             }));
             setCmd('');
+            setMatcherText('');
           }}
         >
           添加
