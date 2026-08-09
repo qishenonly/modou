@@ -133,6 +133,18 @@ const api = {
   setSkillDirs(dirs: readonly string[]): void {
     void ipcRenderer.invoke(IPC.SET_SKILL_DIRS, dirs);
   },
+  /** 读取自定义 agent 文件内容。 */
+  readAgent(name: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.READ_AGENT, name);
+  },
+  /** 写入自定义 agent 文件（重建 bridge 生效）。 */
+  writeAgent(name: string, content: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.WRITE_AGENT, name, content);
+  },
+  /** 删除自定义 agent 文件（重建 bridge 生效）。 */
+  deleteAgent(name: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.DELETE_AGENT, name);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

@@ -17,7 +17,13 @@
  * 装配失败（如缺 API Key）时窗口照常打开、推一条 error notice 给渲染进程，
  * IPC handler 仍注册（空桥兜底），避免「No handler registered」刷屏。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -471,6 +477,47 @@ function registerIpc(): void {
       .filter((dir) => dir.length > 0);
     writeGuiState({ ...readGuiState(), skillsDirs: [...new Set(cleaned)] });
     createBridge(currentCwd); // 重建使新技能目录生效
+  });
+  // —— 自定义 agents（.modou/agents/<name>.md 文件读写；重建 bridge 生效）——
+  const agentDir = (): string =>
+    currentCwd === undefined ? '' : join(currentCwd, '.modou', 'agents');
+  const agentPath = (name: string): string | null => {
+    // 名字白名单：防路径穿越（只允许字母数字 _ -）
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return null;
+    return join(agentDir(), `${name}.md`);
+  };
+  ipcMain.handle(IPC.READ_AGENT, (_event, name: string) => {
+    const file = agentPath(name);
+    if (file === null) return null;
+    try {
+      if (!existsSync(file)) return null;
+      return readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle(IPC.WRITE_AGENT, (_event, name: string, content: string) => {
+    const file = agentPath(name);
+    if (file === null || currentCwd === undefined) return false;
+    try {
+      mkdirSync(agentDir(), { recursive: true });
+      writeFileSync(file, content, 'utf8');
+      createBridge(currentCwd); // 重建使新 agent 生效
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  ipcMain.handle(IPC.DELETE_AGENT, (_event, name: string) => {
+    const file = agentPath(name);
+    if (file === null || currentCwd === undefined) return false;
+    try {
+      if (existsSync(file)) rmSync(file, { force: true });
+      createBridge(currentCwd);
+      return true;
+    } catch {
+      return false;
+    }
   });
   ipcMain.handle(
     IPC.DELETE_SESSION,

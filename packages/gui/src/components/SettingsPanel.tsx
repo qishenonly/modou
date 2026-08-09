@@ -15,15 +15,34 @@ import type {
 } from '../../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../../electron/status';
 import { applyTheme } from '../lib/theme';
-import { formatTokens } from '../lib/format';
+import {
+  AgentsContent,
+  HooksContent,
+  McpContent,
+  SkillsContent,
+} from './ExtensionPanels';
+import { ModelManagerContent } from './ModelManagerPanel';
 
 type Section =
-  'model' | 'permissions' | 'context' | 'appearance' | 'shortcuts' | 'about';
+  | 'model'
+  | 'permissions'
+  | 'context'
+  | 'mcp'
+  | 'hooks'
+  | 'skills'
+  | 'agents'
+  | 'appearance'
+  | 'shortcuts'
+  | 'about';
 
 const SECTIONS: readonly { readonly id: Section; readonly label: string }[] = [
   { id: 'model', label: '模型' },
   { id: 'permissions', label: '权限安全' },
   { id: 'context', label: '上下文' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'hooks', label: 'Hooks' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'agents', label: 'Agents' },
   { id: 'appearance', label: '外观' },
   { id: 'shortcuts', label: '快捷键' },
   { id: 'about', label: '关于' },
@@ -39,12 +58,6 @@ const SHORTCUTS: readonly { readonly keys: string; readonly desc: string }[] = [
   { keys: 'Shift+Enter', desc: '换行' },
   { keys: '↑ / ↓', desc: '召回上一条输入' },
 ];
-
-const PROVIDERS: readonly { readonly value: string; readonly label: string }[] =
-  [
-    { value: 'openai-compat', label: 'OpenAI 兼容（含国产模型 / Ollama）' },
-    { value: 'anthropic', label: 'Anthropic' },
-  ];
 
 /** 沙箱范围（Codex 式正交维度 1）。 */
 const SANDBOXES: readonly {
@@ -116,17 +129,14 @@ export function SettingsPanel({
   onClose,
   onSelectDirectory,
   onSaved,
-  onOpenModels,
 }: {
   readonly onClose: () => void;
   readonly onSelectDirectory: () => void;
   readonly onSaved?: (needRestart: boolean) => void;
-  readonly onOpenModels?: () => void;
 }): ReactNode {
   const [section, setSection] = useState<Section>('model');
   const [config, setConfig] = useState<GuiConfigSummary | null>(null);
   const [settings, setSettings] = useState<GuiSettings | null>(null);
-  const [models, setModels] = useState<readonly string[]>([]);
   const [theme, setTheme] = useState<GuiTheme>('system');
   const [draft, setDraft] = useState<Draft>({});
   const [saving, setSaving] = useState(false);
@@ -138,7 +148,6 @@ export function SettingsPanel({
   useEffect(() => {
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
     void window.modou.getSettings().then((value) => setSettings(value ?? null));
-    void window.modou.listModels().then((value) => setModels(value));
     void window.modou.getTheme().then((value) => {
       setTheme(value);
       applyTheme(value);
@@ -175,8 +184,6 @@ export function SettingsPanel({
     void window.modou.setTheme(value);
   };
 
-  const baseURL = draft.baseURL ?? settings?.baseURL ?? '';
-  const model = draft.model ?? settings?.model ?? '';
   const sandbox = draft.sandbox ?? settings?.sandbox ?? '';
   const policy = draft.policy ?? settings?.policy ?? '';
   const maxTurns = draft.maxTurns ?? settings?.maxTurns ?? 10;
@@ -227,75 +234,7 @@ export function SettingsPanel({
                 {section === 'model' && (
                   <>
                     <h3 className="settings-section-title">模型</h3>
-                    {onOpenModels !== undefined && (
-                      <div className="settings-field">
-                        <button
-                          type="button"
-                          className="btn btn-ghost settings-switch"
-                          onClick={onOpenModels}
-                        >
-                          打开完整模型管理（多供应商 / 中转站 / 上游拉取）…
-                        </button>
-                      </div>
-                    )}
-                    <div className="settings-field">
-                      <label className="settings-label">供应商</label>
-                      <select
-                        className="select"
-                        value={settings.provider}
-                        onChange={(event) =>
-                          patch({ provider: event.target.value })
-                        }
-                      >
-                        {PROVIDERS.map((provider) => (
-                          <option key={provider.value} value={provider.value}>
-                            {provider.label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="settings-desc">
-                        供应商决定 API 端点与密钥来源；保存后重启生效。
-                      </p>
-                    </div>
-                    <div className="settings-field">
-                      <label className="settings-label">模型</label>
-                      <select
-                        className="select"
-                        value={model}
-                        onChange={(event) =>
-                          patch({ model: event.target.value })
-                        }
-                      >
-                        {models.map((candidate) => (
-                          <option key={candidate} value={candidate}>
-                            {candidate}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="settings-desc">
-                        切换后上下文延续；也可直接发送 /model &lt;ID&gt;。
-                      </p>
-                    </div>
-                    <div className="settings-field">
-                      <label className="settings-label">Base URL</label>
-                      <input
-                        className="input"
-                        value={baseURL}
-                        placeholder="OpenAI 兼容端点（可留空）"
-                        onChange={(event) =>
-                          patch({ baseURL: event.target.value })
-                        }
-                      />
-                    </div>
-                    {config.contextWindow !== undefined && (
-                      <div className="settings-field">
-                        <label className="settings-label">上下文窗口</label>
-                        <p className="settings-desc">
-                          {formatTokens(config.contextWindow)}{' '}
-                          tokens（当前模型能力；压缩阈值默认取 70%）
-                        </p>
-                      </div>
-                    )}
+                    <ModelManagerContent />
                   </>
                 )}
 
@@ -520,6 +459,34 @@ export function SettingsPanel({
                         上下文压缩时保留的最近 N 轮原文（更早的折叠进摘要）。
                       </p>
                     </div>
+                  </>
+                )}
+
+                {section === 'mcp' && (
+                  <>
+                    <h3 className="settings-section-title">MCP</h3>
+                    <McpContent />
+                  </>
+                )}
+
+                {section === 'hooks' && (
+                  <>
+                    <h3 className="settings-section-title">Hooks</h3>
+                    <HooksContent />
+                  </>
+                )}
+
+                {section === 'skills' && (
+                  <>
+                    <h3 className="settings-section-title">Skills</h3>
+                    <SkillsContent />
+                  </>
+                )}
+
+                {section === 'agents' && (
+                  <>
+                    <h3 className="settings-section-title">Agents</h3>
+                    <AgentsContent />
                   </>
                 )}
 

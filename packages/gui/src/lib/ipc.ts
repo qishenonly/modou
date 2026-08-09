@@ -93,6 +93,12 @@ export interface ModouApi {
   getSkillDirs(): Promise<readonly string[]>;
   /** 保存额外技能扫描目录（重建 bridge 生效）。 */
   setSkillDirs(dirs: readonly string[]): void;
+  /** 读取自定义 agent 文件内容（不存在返回 null）。 */
+  readAgent(name: string): Promise<string | null>;
+  /** 写入自定义 agent 文件（重建 bridge 生效）。 */
+  writeAgent(name: string, content: string): Promise<boolean>;
+  /** 删除自定义 agent 文件（重建 bridge 生效）。 */
+  deleteAgent(name: string): Promise<boolean>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

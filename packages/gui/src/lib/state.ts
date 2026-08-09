@@ -237,8 +237,7 @@ function applyEnvelope(state: GuiState, envelope: Envelope): GuiState {
       );
     case 'notice':
       return appendNotice(state, envelope.data.level, envelope.data.text);
-    case 'tool_call': // 工具调用发生时：封存当前流式文本段，把工具条目追加进时间线（内联展示）
-    {
+    case 'tool_call': { // 工具调用发生时：封存当前流式文本段，把工具条目追加进时间线（内联展示）
       const sealed = sealAssistant(state);
       timelineSeq += 1;
       return {

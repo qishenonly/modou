@@ -87,6 +87,12 @@ export const IPC = {
   GET_SKILL_DIRS: 'modou:getSkillDirs',
   /** renderer → main（invoke）：保存额外技能扫描目录（重建 bridge 生效）。 */
   SET_SKILL_DIRS: 'modou:setSkillDirs',
+  /** renderer → main（invoke）：读取自定义 agent 文件内容。 */
+  READ_AGENT: 'modou:readAgent',
+  /** renderer → main（invoke）：写入自定义 agent 文件（重建 bridge 生效）。 */
+  WRITE_AGENT: 'modou:writeAgent',
+  /** renderer → main（invoke）：删除自定义 agent 文件（重建 bridge 生效）。 */
+  DELETE_AGENT: 'modou:deleteAgent',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

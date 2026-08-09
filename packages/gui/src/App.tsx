@@ -24,14 +24,7 @@ import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread, type GuiCardEntry } from './components/ChatThread';
-import {
-  AgentsPanel,
-  HooksPanel,
-  McpPanel,
-  SkillsPanel,
-} from './components/ExtensionPanels';
 import { InputBox } from './components/InputBox';
-import { ModelManagerPanel } from './components/ModelManagerPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
@@ -39,8 +32,7 @@ import { Welcome } from './components/Welcome';
 import type { GuiCard } from './components/CommandCards';
 import { applyTheme } from './lib/theme';
 
-type ModalKind =
-  'none' | 'settings' | 'models' | 'mcp' | 'skills' | 'hooks' | 'agents';
+type ModalKind = 'none' | 'settings';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -226,7 +218,7 @@ export function App(): ReactNode {
         return;
       case 'model':
         if (args === undefined || args.trim().length === 0) {
-          setModal('models');
+          setModal('settings'); // 设置面板默认「模型」分类即完整模型管理
           return;
         }
         window.modou.sendCommand({ type: 'slash', name, args: args.trim() });
@@ -337,20 +329,14 @@ export function App(): ReactNode {
           currentSessionId={ready?.sessionId ?? null}
           sessions={sessions}
           running={state.running}
-          modelName={modelName}
           titles={titles}
           onNewChat={handleNewChat}
           onResume={handleResume}
           onDelete={handleDeleteSession}
           onRename={handleRename}
           onSelectDirectory={handleSelectDirectory}
-          onOpenModel={() => setModal('models')}
           onOpenSettings={() => setModal('settings')}
           onCollapse={() => setSidebarOpen(false)}
-          onOpenMcp={() => setModal('mcp')}
-          onOpenSkills={() => setModal('skills')}
-          onOpenHooks={() => setModal('hooks')}
-          onOpenAgents={() => setModal('agents')}
         />
       )}
 
@@ -432,7 +418,6 @@ export function App(): ReactNode {
         <SettingsPanel
           onClose={() => setModal('none')}
           onSelectDirectory={handleSelectDirectory}
-          onOpenModels={() => setModal('models')}
           onSaved={(needRestart) => {
             if (needRestart) {
               dispatch({ type: 'app_reset' });
@@ -442,13 +427,6 @@ export function App(): ReactNode {
           }}
         />
       )}
-      {modal === 'models' && (
-        <ModelManagerPanel onClose={() => setModal('none')} />
-      )}
-      {modal === 'mcp' && <McpPanel onClose={() => setModal('none')} />}
-      {modal === 'skills' && <SkillsPanel onClose={() => setModal('none')} />}
-      {modal === 'hooks' && <HooksPanel onClose={() => setModal('none')} />}
-      {modal === 'agents' && <AgentsPanel onClose={() => setModal('none')} />}
     </div>
   );
 }

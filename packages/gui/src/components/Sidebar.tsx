@@ -21,40 +21,28 @@ export function Sidebar({
   currentSessionId,
   sessions,
   running,
-  modelName,
   titles,
   onNewChat,
   onResume,
   onDelete,
   onRename,
   onSelectDirectory,
-  onOpenModel,
   onOpenSettings,
   onCollapse,
-  onOpenMcp,
-  onOpenSkills,
-  onOpenHooks,
-  onOpenAgents,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
   readonly currentSessionId: string | null;
   readonly sessions: readonly ResumeCandidate[];
   readonly running: boolean;
-  readonly modelName: string;
   readonly titles: Readonly<Record<string, string>>;
   readonly onNewChat: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onDelete: (sessionId: string) => void;
   readonly onRename: (sessionId: string, title: string) => void;
   readonly onSelectDirectory: () => void;
-  readonly onOpenModel: () => void;
   readonly onOpenSettings: () => void;
   readonly onCollapse: () => void;
-  readonly onOpenMcp: () => void;
-  readonly onOpenSkills: () => void;
-  readonly onOpenHooks: () => void;
-  readonly onOpenAgents: () => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
@@ -304,68 +292,7 @@ export function Sidebar({
         </nav>
       </div>
 
-      <div className="sidebar-extensions">
-        <div className="sidebar-ext-label">扩展</div>
-        <div className="sidebar-ext-grid">
-          <button
-            type="button"
-            className="ext-chip"
-            onClick={onOpenMcp}
-            title="MCP 服务器"
-          >
-            MCP
-          </button>
-          <button
-            type="button"
-            className="ext-chip"
-            onClick={onOpenSkills}
-            title="技能"
-          >
-            Skills
-          </button>
-          <button
-            type="button"
-            className="ext-chip"
-            onClick={onOpenHooks}
-            title="钩子"
-          >
-            Hooks
-          </button>
-          <button
-            type="button"
-            className="ext-chip"
-            onClick={onOpenAgents}
-            title="自定义 agents"
-          >
-            Agents
-          </button>
-        </div>
-      </div>
-
       <div className="sidebar-footer">
-        <button
-          type="button"
-          className="model-pill"
-          onClick={onOpenModel}
-          disabled={!hasProject}
-          title="切换模型"
-        >
-          <span className="model-pill-name">{modelName || '未配置模型'}</span>
-          <svg
-            viewBox="0 0 16 16"
-            className="model-pill-chevron"
-            aria-hidden="true"
-          >
-            <path
-              d="M4.5 6.5 8 10l3.5-3.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
         <button
           type="button"
           className="icon-btn"

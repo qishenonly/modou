@@ -9,18 +9,13 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ProviderEntry, ProviderState } from '../../electron/ipc';
-import { ExtensionPanel } from './ExtensionPanels';
 
 const TYPE_LABEL: Readonly<Record<string, string>> = {
   'openai-compat': 'OpenAI 兼容（含中转站 / Ollama / 国产模型）',
   anthropic: 'Anthropic',
 };
 
-export function ModelManagerPanel({
-  onClose,
-}: {
-  readonly onClose: () => void;
-}): ReactNode {
+export function ModelManagerContent(): ReactNode {
   const [state, setState] = useState<ProviderState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -114,7 +109,7 @@ export function ModelManagerPanel({
     : '未配置模型';
 
   return (
-    <ExtensionPanel title="模型管理" onClose={onClose}>
+    <div className="ext-content">
       {state === null ? (
         <div className="modal-hint">加载中…</div>
       ) : (
@@ -334,6 +329,6 @@ export function ModelManagerPanel({
           </div>
         </>
       )}
-    </ExtensionPanel>
+    </div>
   );
 }
