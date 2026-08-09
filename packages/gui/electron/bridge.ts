@@ -464,9 +464,22 @@ export class GuiBridge {
   // 查询面（渲染进程「拉取型」控制）
   // -------------------------------------------------------------------------
 
-  /** 可恢复会话列表（侧栏）。 */
+  /** 可恢复会话列表（侧栏）。entryCount 重算为「消息数」（user + assistant 条）。 */
   async listSessions(): Promise<ResumeCandidate[]> {
-    return listSessionsForResume(this.sessionStore, projectHash(this.cwd));
+    const project = projectHash(this.cwd);
+    const candidates = await listSessionsForResume(this.sessionStore, project);
+    return Promise.all(
+      candidates.map(async (candidate) => {
+        const read = await this.sessionStore.read(project, candidate.sessionId);
+        let messages = 0;
+        if (read !== null) {
+          messages = read.records.filter(
+            (record) => record.kind === 'user' || record.kind === 'assistant',
+          ).length;
+        }
+        return { ...candidate, entryCount: messages };
+      }),
+    );
   }
 
   /** /model 候选模型 ID（模型选择器）。 */

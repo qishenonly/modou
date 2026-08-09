@@ -1,10 +1,10 @@
 /**
- * 底部输入框（Claude Desktop 式）：
- * - 圆角大输入区，无默认边框（hover/聚焦加深）；自动增高；
- * - 右侧圆形发送按钮：有内容时橙色，否则灰色禁用；
- * - 运行中：发送按钮变为「停止」方块，输入禁用；
- * - 输入以 / 开头时提示内置斜杠命令；
- * - 粘贴 / 拖拽图片 → 转为 data URI 附件随消息提交（多模态）。
+ * 底部输入框（Claude Desktop / Codex 式）：
+ * - 圆角大输入区，自动增高；右侧圆形发送/停止按钮；
+ * - 工具条（输入框内底部）：左侧「+」添加图片附件；右侧权限模式按钮
+ *   （点击在输入框上方弹出选择框，切换沙箱范围 × 审批策略，保存即生效）；
+ * - 粘贴 / 拖拽图片 → data URI 附件；
+ * - 输入以 / 开头时提示斜杠命令。
  */
 import {
   useEffect,
@@ -18,7 +18,63 @@ import {
 } from 'react';
 import { BUILTIN_SLASH_COMMANDS } from '../../electron/slash';
 
-/** 发送箭头（↑）与停止方块（■）图标。 */
+/** 权限模式预设（沙箱范围 × 审批策略，Codex 式正交）。 */
+const PERM_OPTIONS: readonly {
+  readonly sandbox: string;
+  readonly policy: string;
+  readonly label: string;
+  readonly desc: string;
+}[] = [
+  {
+    sandbox: 'read-only',
+    policy: 'on-request',
+    label: '只读',
+    desc: '只能读取文件，不能修改或执行',
+  },
+  {
+    sandbox: 'workspace-write',
+    policy: 'untrusted',
+    label: '工作区写 · 询问',
+    desc: '每次写/执行都弹确认',
+  },
+  {
+    sandbox: 'workspace-write',
+    policy: 'on-request',
+    label: '工作区写 · 按需',
+    desc: '模型自认风险时才询问（默认）',
+  },
+  {
+    sandbox: 'workspace-write',
+    policy: 'never',
+    label: '工作区写 · 不拦截',
+    desc: '工作区内放手干（危险命令仍确认）',
+  },
+  {
+    sandbox: 'full-access',
+    policy: 'on-request',
+    label: '完全访问',
+    desc: '危险操作才问（需显式开启）',
+  },
+];
+
+function permLabel(sandbox: string, policy: string): string {
+  const found = PERM_OPTIONS.find(
+    (option) => option.sandbox === sandbox && option.policy === policy,
+  );
+  if (found !== undefined) return found.label;
+  const sb: Readonly<Record<string, string>> = {
+    'read-only': '只读',
+    'workspace-write': '工作区写',
+    'full-access': '完全访问',
+  };
+  const pol: Readonly<Record<string, string>> = {
+    untrusted: '询问',
+    'on-request': '按需',
+    never: '不拦截',
+  };
+  return `${sb[sandbox] ?? sandbox} · ${pol[policy] ?? policy}`;
+}
+
 function SendIcon(): ReactNode {
   return (
     <svg viewBox="0 0 16 16" className="icon-send" aria-hidden="true">
@@ -42,7 +98,6 @@ function StopIcon(): ReactNode {
   );
 }
 
-/** 从 FileList 里挑出图片文件，逐个转 data URI。 */
 function readImageFiles(files: FileList | readonly File[]): Promise<string[]> {
   const images = Array.from(files).filter((file) =>
     file.type.startsWith('image/'),
@@ -71,17 +126,27 @@ export function InputBox({
   readonly onSubmit: (text: string, images?: readonly string[]) => void;
   readonly onStop: () => void;
   readonly inputRef?: RefObject<HTMLTextAreaElement>;
-  /** 外部注入的输入（编辑消息后回填）；变化时写入输入框并聚焦。 */
   readonly externalValue?: string;
 }): ReactNode {
   const [value, setValue] = useState('');
   const [pendingImages, setPendingImages] = useState<readonly string[]>([]);
-  // 输入历史（↑ 召回上一条提交；Claude 式）
   const [history, setHistory] = useState<readonly string[]>([]);
   const [histPos, setHistPos] = useState(-1);
+  // 权限模式（当前 sandbox/policy）+ 上拉选择框开合
+  const [sandbox, setSandbox] = useState('workspace-write');
+  const [policy, setPolicy] = useState('on-request');
+  const [permOpen, setPermOpen] = useState(false);
   const ref = inputRef ?? useRef<HTMLTextAreaElement>(null);
 
-  // 编辑消息回填：externalValue 变化时写入输入框并聚焦
+  useEffect(() => {
+    void window.modou.getConfig().then((value) => {
+      if (value !== null) {
+        setSandbox(value.sandbox);
+        setPolicy(value.policy);
+      }
+    });
+  }, []);
+
   useEffect(() => {
     if (externalValue !== undefined) {
       setValue(externalValue);
@@ -96,9 +161,7 @@ export function InputBox({
   const submit = (): void => {
     const text = value.trim();
     if (text.length === 0 && pendingImages.length === 0) return;
-    if (text.length > 0) {
-      setHistory((prev) => [...prev, text].slice(-50));
-    }
+    if (text.length > 0) setHistory((prev) => [...prev, text].slice(-50));
     setHistPos(-1);
     onSubmit(text, pendingImages);
     setValue('');
@@ -116,13 +179,19 @@ export function InputBox({
       if (!running) submit();
       return;
     }
-    if (event.key === 'Escape' && running) {
-      event.preventDefault();
-      event.stopPropagation();
-      onStop();
-      return;
+    if (event.key === 'Escape') {
+      if (permOpen) {
+        setPermOpen(false);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (running) {
+        event.preventDefault();
+        event.stopPropagation();
+        onStop();
+      }
     }
-    // ↑ / ↓ 召回输入历史（仅空输入框时触发，避免干扰多行编辑）
     if (event.key === 'ArrowUp' && value.length === 0 && history.length > 0) {
       event.preventDefault();
       const pos =
@@ -144,7 +213,6 @@ export function InputBox({
     }
   };
 
-  /** 粘贴 / 拖拽图片：转 data URI 加入待发附件。 */
   const ingestImages = async (
     files: FileList | readonly File[],
   ): Promise<void> => {
@@ -175,6 +243,25 @@ export function InputBox({
     }
   };
 
+  const pickImages = (): void => {
+    void window.modou.selectImages().then((uris) => {
+      if (uris.length > 0) {
+        setPendingImages((prev) => [...prev, ...uris]);
+        if (ref.current !== null) ref.current.focus();
+      }
+    });
+  };
+
+  const switchPerm = (option: (typeof PERM_OPTIONS)[number]): void => {
+    setSandbox(option.sandbox);
+    setPolicy(option.policy);
+    setPermOpen(false);
+    void window.modou.saveSettings({
+      sandbox: option.sandbox,
+      policy: option.policy,
+    });
+  };
+
   const autoGrow = (): void => {
     const el = ref.current;
     if (el === null) return;
@@ -184,6 +271,31 @@ export function InputBox({
 
   return (
     <div className="input-area">
+      {/* 权限模式上拉选择框（输入框上方连接弹出，Claude/Codex 式） */}
+      {permOpen && (
+        <>
+          <div className="perm-overlay" onClick={() => setPermOpen(false)} />
+          <div className="perm-popover">
+            {PERM_OPTIONS.map((option) => {
+              const current =
+                option.sandbox === sandbox && option.policy === policy;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  className={`perm-option${current ? ' perm-option-current' : ''}`}
+                  onClick={() => switchPerm(option)}
+                >
+                  <span className="perm-label">{option.label}</span>
+                  <span className="perm-desc">{option.desc}</span>
+                  {current && <span className="picker-tag">当前</span>}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       {showSlash && (
         <div className="slash-hint">
           {BUILTIN_SLASH_COMMANDS.map((command) => (
@@ -203,6 +315,7 @@ export function InputBox({
           ))}
         </div>
       )}
+
       {pendingImages.length > 0 && (
         <div className="image-preview-row">
           {pendingImages.map((uri, index) => (
@@ -221,15 +334,31 @@ export function InputBox({
           ))}
         </div>
       )}
+
       <div className="input-box-shell">
+        <button
+          type="button"
+          className="input-plus"
+          onClick={pickImages}
+          title="添加图片附件"
+        >
+          <svg
+            viewBox="0 0 16 16"
+            className="input-plus-icon"
+            aria-hidden="true"
+          >
+            <path
+              d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
         <textarea
           ref={ref}
           className="input-box"
           value={value}
           rows={1}
-          placeholder={
-            running ? '正在运行…' : '输入任务，Enter 发送（可粘贴 / 拖拽图片）'
-          }
+          placeholder={running ? '正在运行…' : '输入任务，Enter 发送'}
           disabled={running}
           onChange={(event) => {
             setValue(event.target.value);
@@ -239,6 +368,28 @@ export function InputBox({
           onPaste={onPaste}
           onDrop={onDrop}
         />
+        <button
+          type="button"
+          className="input-perm"
+          onClick={() => setPermOpen((prev) => !prev)}
+          title="切换权限模式"
+        >
+          {permLabel(sandbox, policy)}
+          <svg
+            viewBox="0 0 16 16"
+            className="input-perm-chevron"
+            aria-hidden="true"
+          >
+            <path
+              d="M4.5 6.5 8 10l3.5-3.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
         {running ? (
           <button
             type="button"
@@ -261,8 +412,8 @@ export function InputBox({
         )}
       </div>
       <div className="input-foot">
-        <span>Enter 发送 · Shift+Enter 换行 · 支持粘贴图片</span>
-        <span>/ 开头触发斜杠命令</span>
+        <span>Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽/➕ 图片</span>
+        <span>权限：{permLabel(sandbox, policy)}</span>
       </div>
     </div>
   );

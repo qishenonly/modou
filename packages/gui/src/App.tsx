@@ -28,11 +28,12 @@ import { InputBox } from './components/InputBox';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
+import { TasksPanel, UsagePanel } from './components/UtilityPanels';
 import { Welcome } from './components/Welcome';
 import type { GuiCard } from './components/CommandCards';
 import { applyTheme } from './lib/theme';
 
-type ModalKind = 'none' | 'settings';
+type ModalKind = 'none' | 'settings' | 'tasks' | 'usage';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -337,6 +338,8 @@ export function App(): ReactNode {
           onSelectDirectory={handleSelectDirectory}
           onOpenSettings={() => setModal('settings')}
           onCollapse={() => setSidebarOpen(false)}
+          onOpenTasks={() => setModal('tasks')}
+          onOpenUsage={() => setModal('usage')}
         />
       )}
 
@@ -382,6 +385,18 @@ export function App(): ReactNode {
                 onEditUser={handleEditUser}
               />
             )}
+            {state.approval !== null && (
+              <ApprovalDialog
+                request={state.approval}
+                onApprove={(requestId, decision) =>
+                  window.modou.sendCommand({
+                    type: 'approve',
+                    requestId,
+                    decision,
+                  })
+                }
+              />
+            )}
             <InputBox
               running={state.running}
               onSubmit={handleSubmit}
@@ -404,16 +419,6 @@ export function App(): ReactNode {
         )}
       </div>
 
-      {/* 审批弹窗（模态；打开时其他交互让位） */}
-      {state.approval !== null && (
-        <ApprovalDialog
-          request={state.approval}
-          onApprove={(requestId, decision) =>
-            window.modou.sendCommand({ type: 'approve', requestId, decision })
-          }
-        />
-      )}
-
       {modal === 'settings' && (
         <SettingsPanel
           onClose={() => setModal('none')}
@@ -427,6 +432,8 @@ export function App(): ReactNode {
           }}
         />
       )}
+      {modal === 'tasks' && <TasksPanel onClose={() => setModal('none')} />}
+      {modal === 'usage' && <UsagePanel onClose={() => setModal('none')} />}
     </div>
   );
 }

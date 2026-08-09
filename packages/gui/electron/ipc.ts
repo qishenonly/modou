@@ -93,6 +93,12 @@ export const IPC = {
   WRITE_AGENT: 'modou:writeAgent',
   /** renderer → main（invoke）：删除自定义 agent 文件（重建 bridge 生效）。 */
   DELETE_AGENT: 'modou:deleteAgent',
+  /** renderer → main（invoke）：读取定时任务列表。 */
+  GET_TASKS: 'modou:getTasks',
+  /** renderer → main（invoke）：保存定时任务列表。 */
+  SAVE_TASKS: 'modou:saveTasks',
+  /** renderer → main（invoke）：选择图片附件（系统对话框，返回 data URI）。 */
+  SELECT_IMAGES: 'modou:selectImages',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -294,6 +300,18 @@ export interface RemoteModelsResult {
   readonly ok: boolean;
   readonly models: readonly string[];
   readonly message?: string;
+}
+
+/** 一条定时任务（GUI 管理；存 ~/.modou/tasks.json）。 */
+export interface ScheduledTask {
+  readonly id: string;
+  readonly name: string;
+  /** 要交给 agent 执行的提示词。 */
+  readonly prompt: string;
+  /** cron 表达式（5 段，本地时区）。 */
+  readonly cron: string;
+  /** 是否启用。 */
+  readonly enabled: boolean;
 }
 
 import type { StructuredPlan } from '@modou/core';

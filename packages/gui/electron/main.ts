@@ -42,6 +42,7 @@ import type {
   ProviderEntry,
   ProviderState,
   RemoteModelsResult,
+  ScheduledTask,
 } from './ipc';
 import type { Command, Envelope } from '@modou/core';
 
@@ -530,6 +531,50 @@ function registerIpc(): void {
     } catch {
       return false;
     }
+  });
+  // —— 定时任务（GUI 管理；~/.modou/tasks.json；执行由应用运行期间调度）——
+  const tasksFile = join(homedir(), '.modou', 'tasks.json');
+  const readTasks = (): ScheduledTask[] => {
+    try {
+      const parsed = JSON.parse(readFileSync(tasksFile, 'utf8')) as unknown;
+      return Array.isArray(parsed) ? (parsed as ScheduledTask[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  ipcMain.handle(IPC.GET_TASKS, () => readTasks());
+  ipcMain.handle(IPC.SAVE_TASKS, (_event, tasks: readonly ScheduledTask[]) => {
+    try {
+      mkdirSync(dirname(tasksFile), { recursive: true });
+      writeFileSync(tasksFile, JSON.stringify(tasks, null, 2), 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  ipcMain.handle(IPC.SELECT_IMAGES, async () => {
+    if (mainWindow === null) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择图片附件',
+      buttonLabel: '添加',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return [];
+    const uris: string[] = [];
+    for (const file of result.filePaths) {
+      try {
+        const ext = file.split('.').pop()?.toLowerCase() ?? 'png';
+        const mime = ext === 'jpg' ? 'jpeg' : ext;
+        const data = readFileSync(file);
+        uris.push(`data:image/${mime};base64,${data.toString('base64')}`);
+      } catch {
+        // 单张读取失败跳过，不阻塞其余
+      }
+    }
+    return uris;
   });
   ipcMain.handle(
     IPC.DELETE_SESSION,

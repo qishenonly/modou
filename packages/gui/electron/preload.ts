@@ -145,6 +145,18 @@ const api = {
   deleteAgent(name: string): Promise<unknown> {
     return ipcRenderer.invoke(IPC.DELETE_AGENT, name);
   },
+  /** 读取定时任务列表。 */
+  getTasks(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_TASKS);
+  },
+  /** 保存定时任务列表。 */
+  saveTasks(tasks: unknown): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SAVE_TASKS, tasks);
+  },
+  /** 选择图片附件（系统对话框，返回 data URI 数组）。 */
+  selectImages(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SELECT_IMAGES);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

@@ -29,6 +29,7 @@ import type {
   ReadyPayload,
   RemoteModelsResult,
   SaveSettingsResult,
+  ScheduledTask,
   ThreadMessage,
 } from '../../electron/ipc';
 
@@ -99,6 +100,12 @@ export interface ModouApi {
   writeAgent(name: string, content: string): Promise<boolean>;
   /** 删除自定义 agent 文件（重建 bridge 生效）。 */
   deleteAgent(name: string): Promise<boolean>;
+  /** 读取定时任务列表。 */
+  getTasks(): Promise<readonly ScheduledTask[]>;
+  /** 保存定时任务列表。 */
+  saveTasks(tasks: readonly ScheduledTask[]): Promise<boolean>;
+  /** 选择图片附件（系统对话框，返回 data URI 数组）。 */
+  selectImages(): Promise<readonly string[]>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

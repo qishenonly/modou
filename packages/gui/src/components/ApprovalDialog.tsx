@@ -1,7 +1,7 @@
 /**
- * 审批弹窗（Claude Desktop 式模态）：展示待执行操作与风险级别，三选项裁决
- * （本次允许 / 始终允许 / 拒绝）。裁决经 App 层转成 `approve` Command。
- * 危险命令由 core 强制逐次确认，可选项只透传 core 给的。
+ * 审批请求（Claude Desktop / Codex 式内联条）：
+ * 展示在输入框上方，不弹模态。待执行操作 + 风险级别 + 三选项裁决
+ * （本次允许 / 始终允许 / 拒绝），键盘可操作。
  */
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import type {
@@ -60,33 +60,30 @@ export function ApprovalDialog({
 
   return (
     <div
-      className="modal-backdrop"
+      className="approval-inline"
       onKeyDown={onKeyDown}
       role="dialog"
-      aria-modal="true"
+      aria-modal="false"
     >
-      <div className="modal approval-dialog">
-        <div className="modal-title">审批请求</div>
-        <div className="approval-risk">
-          <span className="risk-badge">
-            风险：{RISK_LABEL[request.risk] ?? request.risk}
-          </span>
-        </div>
-        <pre className="approval-desc">{request.description}</pre>
-        <div className="approval-options">
-          {request.options.map((option, index) => (
-            <button
-              key={option.id}
-              type="button"
-              className={`btn btn-approval btn-${OPTION_TONE[option.id] ?? 'allow'}${index === focus ? ' btn-focus' : ''}`}
-              onClick={() => onApprove(request.id, option.id)}
-              onMouseEnter={() => setFocus(index)}
-            >
-              <span className="btn-num">{index + 1}</span> {option.label}
-            </button>
-          ))}
-        </div>
-        <div className="modal-hint">数字键选择 · Enter 确认 · Esc 拒绝</div>
+      <div className="approval-inline-head">
+        <span className="risk-badge">
+          审批 · 风险：{RISK_LABEL[request.risk] ?? request.risk}
+        </span>
+        <span className="approval-inline-hint">Esc 拒绝</span>
+      </div>
+      <pre className="approval-desc">{request.description}</pre>
+      <div className="approval-options">
+        {request.options.map((option, index) => (
+          <button
+            key={option.id}
+            type="button"
+            className={`btn btn-approval btn-${OPTION_TONE[option.id] ?? 'allow'}${index === focus ? ' btn-focus' : ''}`}
+            onClick={() => onApprove(request.id, option.id)}
+            onMouseEnter={() => setFocus(index)}
+          >
+            <span className="btn-num">{index + 1}</span> {option.label}
+          </button>
+        ))}
       </div>
     </div>
   );

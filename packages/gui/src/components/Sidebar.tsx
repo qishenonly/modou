@@ -29,6 +29,8 @@ export function Sidebar({
   onSelectDirectory,
   onOpenSettings,
   onCollapse,
+  onOpenTasks,
+  onOpenUsage,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
@@ -43,6 +45,8 @@ export function Sidebar({
   readonly onSelectDirectory: () => void;
   readonly onOpenSettings: () => void;
   readonly onCollapse: () => void;
+  readonly onOpenTasks: () => void;
+  readonly onOpenUsage: () => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
@@ -54,6 +58,29 @@ export function Sidebar({
     readonly y: number;
     readonly sessionId: string;
   } | null>(null);
+  // 会话列表标题行：搜索框开合 / 全选批量删除模式
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [batch, setBatch] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleSelected = (sessionId: string): void => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const exitBatch = (): void => {
+    setBatch(false);
+    setSelected(new Set());
+  };
+
+  const deleteSelected = (): void => {
+    for (const sessionId of selected) onDelete(sessionId);
+    exitBatch();
+  };
 
   const visible = sessions.filter((session) => {
     if (query.trim().length === 0) return true;
@@ -150,7 +177,119 @@ export function Sidebar({
           新对话
         </button>
 
+        <div className="utility-row">
+          <button type="button" className="utility-btn" onClick={onOpenTasks}>
+            <svg
+              viewBox="0 0 16 16"
+              className="utility-icon"
+              aria-hidden="true"
+            >
+              <circle
+                cx="8"
+                cy="8"
+                r="6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+              />
+              <path
+                d="M8 4.5V8l2.5 1.5"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                fill="none"
+                strokeLinecap="round"
+              />
+            </svg>
+            定时任务
+          </button>
+          <button type="button" className="utility-btn" onClick={onOpenUsage}>
+            <svg
+              viewBox="0 0 16 16"
+              className="utility-icon"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 9h2v4H4zM7 6h2v7H7zM10 3h2v10h-2z"
+                fill="currentColor"
+              />
+            </svg>
+            用量
+          </button>
+        </div>
+
         {hasProject && sessions.length > 0 && (
+          <div className="history-header">
+            <span className="history-title">{projectName}</span>
+            <div className="history-actions">
+              <button
+                type="button"
+                className="history-icon"
+                title="搜索会话"
+                onClick={() => {
+                  setSearchOpen((prev) => !prev);
+                  if (!searchOpen) setBatch(false);
+                }}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  className="history-icon-svg"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r="4.25"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  />
+                  <path
+                    d="m10.5 10.5 3 3"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`history-icon${batch ? ' history-icon-active' : ''}`}
+                title={batch ? '退出批量选择' : '批量选择'}
+                onClick={() => {
+                  setBatch((prev) => !prev);
+                  if (batch) setSelected(new Set());
+                }}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  className="history-icon-svg"
+                  aria-hidden="true"
+                >
+                  <rect
+                    x="3"
+                    y="3"
+                    width="10"
+                    height="10"
+                    rx="2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                  />
+                  <path
+                    d="M6 8.3 7.4 9.7 10.2 6.6"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {searchOpen && hasProject && sessions.length > 0 && (
           <div className="session-search">
             <svg viewBox="0 0 16 16" className="search-icon" aria-hidden="true">
               <circle
@@ -177,6 +316,26 @@ export function Sidebar({
           </div>
         )}
 
+        {batch && selected.size > 0 && (
+          <div className="batch-bar">
+            <span>已选 {selected.size} 个</span>
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              onClick={deleteSelected}
+            >
+              删除
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={exitBatch}
+            >
+              取消
+            </button>
+          </div>
+        )}
+
         <nav className="session-list">
           {visible.length === 0 && (
             <div className="session-empty">
@@ -199,10 +358,12 @@ export function Sidebar({
                 role="button"
                 tabIndex={0}
                 onClick={() => {
-                  if (!editing) onResume(session.sessionId);
+                  if (batch) toggleSelected(session.sessionId);
+                  else if (!editing) onResume(session.sessionId);
                 }}
                 onContextMenu={(event) => {
                   event.preventDefault();
+                  if (batch) return;
                   setCtx({
                     x: event.clientX,
                     y: event.clientY,
@@ -212,10 +373,20 @@ export function Sidebar({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    if (!editing) onResume(session.sessionId);
+                    if (batch) toggleSelected(session.sessionId);
+                    else if (!editing) onResume(session.sessionId);
                   }
                 }}
               >
+                {batch && (
+                  <input
+                    type="checkbox"
+                    className="session-check"
+                    checked={selected.has(session.sessionId)}
+                    onChange={() => toggleSelected(session.sessionId)}
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                )}
                 {editing ? (
                   <input
                     className="session-rename-input"
@@ -237,9 +408,9 @@ export function Sidebar({
                     <div className="session-meta">
                       <span>{formatTime(session.lastTs)}</span>
                       <span className="session-count">
-                        {session.entryCount} 条
+                        {session.entryCount} 条消息
                       </span>
-                      {!active && (
+                      {!active && !batch && (
                         <>
                           <button
                             type="button"
