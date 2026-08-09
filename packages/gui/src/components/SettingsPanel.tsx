@@ -1,13 +1,12 @@
 /**
  * 设置面板（Claude Desktop 式：左侧分类导航 + 右侧表单；Codex 式：每项带
- * 描述与控件）。分类：模型 / 权限安全 / 上下文 / 扩展 / 外观 / 关于。
+ * 描述与控件）。分类：模型 / 权限安全 / 上下文 / 外观 / 快捷键 / 关于。
  *
- * 可编辑项（模型、供应商、Base URL、沙箱、审批策略、轮次、压缩保留）经
- * 保存写入项目 `.modou/settings.json`；主题即时生效并持久化。运行时不可改项
- * （规则表、扩展配置等）只展示，提示到 settings.json 编辑。
+ * 可编辑项（模型、供应商、Base URL、沙箱、审批策略、轮次、压缩保留、规则表）
+ * 保存即生效（权限/上下文类自动重建会话）。扩展功能（MCP/Hooks/Skills/Agents）
+ * 在左侧栏「扩展」区各自独立页面管理。
  */
 import { useEffect, useState, type ReactNode } from 'react';
-import type { McpServerStatus } from '@modou/core';
 import type {
   GuiConfigSummary,
   GuiSettings,
@@ -19,19 +18,12 @@ import { applyTheme } from '../lib/theme';
 import { formatTokens } from '../lib/format';
 
 type Section =
-  | 'model'
-  | 'permissions'
-  | 'context'
-  | 'extensions'
-  | 'appearance'
-  | 'shortcuts'
-  | 'about';
+  'model' | 'permissions' | 'context' | 'appearance' | 'shortcuts' | 'about';
 
 const SECTIONS: readonly { readonly id: Section; readonly label: string }[] = [
   { id: 'model', label: '模型' },
   { id: 'permissions', label: '权限安全' },
   { id: 'context', label: '上下文' },
-  { id: 'extensions', label: '扩展' },
   { id: 'appearance', label: '外观' },
   { id: 'shortcuts', label: '快捷键' },
   { id: 'about', label: '关于' },
@@ -112,44 +104,12 @@ function Row({
 /** 可编辑表单字段（draft；保存时整体传给 saveSettings）。 */
 type Draft = GuiSettingsPatch;
 
-/** 逗号分隔文本 → 域名数组（编辑 Web 白名单/黑名单用）。 */
+/** 逗号分隔文本 → 域名数组（联网白名单/黑名单编辑）。 */
 function splitList(text: string): string[] {
   return text
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-}
-
-/** 钩子扁平列表 → Record<point, entries>（settings.hooks 形状）。 */
-function hooksToRecord(
-  list: readonly {
-    readonly point: string;
-    readonly command: string;
-    readonly matcherTools?: readonly string[];
-  }[],
-): Record<
-  string,
-  readonly {
-    readonly command: string;
-    readonly matcherTools?: readonly string[];
-  }[]
-> {
-  const record: Record<
-    string,
-    readonly { command: string; matcherTools?: readonly string[] }[]
-  > = {};
-  for (const hook of list) {
-    record[hook.point] = [
-      ...(record[hook.point] ?? []),
-      {
-        command: hook.command,
-        ...(hook.matcherTools !== undefined
-          ? { matcherTools: hook.matcherTools }
-          : {}),
-      },
-    ];
-  }
-  return record;
 }
 
 export function SettingsPanel({
@@ -165,28 +125,18 @@ export function SettingsPanel({
   const [config, setConfig] = useState<GuiConfigSummary | null>(null);
   const [settings, setSettings] = useState<GuiSettings | null>(null);
   const [models, setModels] = useState<readonly string[]>([]);
-  const [skills, setSkills] = useState<
-    readonly { readonly name: string; readonly description: string }[]
-  >([]);
-  const [mcpStatus, setMcpStatus] = useState<readonly McpServerStatus[]>([]);
   const [theme, setTheme] = useState<GuiTheme>('system');
   const [draft, setDraft] = useState<Draft>({});
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
-  // 扩展编辑的临时输入
+  // 规则编辑的临时输入
   const [ruleEffect, setRuleEffect] = useState<'allow' | 'deny'>('allow');
   const [ruleMatch, setRuleMatch] = useState('');
-  const [mcpName, setMcpName] = useState('');
-  const [mcpCmd, setMcpCmd] = useState('');
-  const [hookPoint, setHookPoint] = useState('PreToolUse');
-  const [hookCmd, setHookCmd] = useState('');
 
   useEffect(() => {
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
     void window.modou.getSettings().then((value) => setSettings(value ?? null));
     void window.modou.listModels().then((value) => setModels(value));
-    void window.modou.listSkills().then((value) => setSkills(value));
-    void window.modou.getMcpStatus().then((value) => setMcpStatus(value));
     void window.modou.getTheme().then((value) => {
       setTheme(value);
       applyTheme(value);
@@ -229,19 +179,9 @@ export function SettingsPanel({
   const policy = draft.policy ?? settings?.policy ?? '';
   const maxTurns = draft.maxTurns ?? settings?.maxTurns ?? 10;
   const keepTurns = draft.keepTurns ?? settings?.keepTurns ?? 6;
-  // 扩展编辑的派生值（draft 优先，否则 settings 初值）
+  // 规则编辑（draft 优先，否则 settings 初值）
   const rulesList = draft.rules ?? settings?.rules ?? [];
-  const mcpList = draft.mcpServers ?? settings?.mcpServers ?? [];
-  const hookList =
-    draft.hooks !== undefined
-      ? Object.entries(draft.hooks).flatMap(([point, entries]) =>
-          entries.map((entry) => ({
-            point,
-            command: entry.command,
-            matcherTools: entry.matcherTools,
-          })),
-        )
-      : (settings?.hooks ?? []);
+  // 联网域名编辑（draft 优先，否则 settings 初值）
   const allowedText = (
     draft.web?.allowedDomains ??
     settings?.web?.allowedDomains ??
@@ -252,7 +192,6 @@ export function SettingsPanel({
     settings?.web?.deniedDomains ??
     []
   ).join(', ');
-  const snap = draft.snapshot ?? settings?.snapshot ?? null;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -492,6 +431,41 @@ export function SettingsPanel({
                         </tbody>
                       </table>
                     </div>
+                    <div className="settings-field">
+                      <label className="settings-label">联网域名白名单</label>
+                      <input
+                        className="input"
+                        value={allowedText}
+                        placeholder="逗号分隔，如 example.com（留空 = 不限制）"
+                        onChange={(event) =>
+                          patch({
+                            web: {
+                              allowedDomains: splitList(event.target.value),
+                              deniedDomains: splitList(deniedText),
+                            },
+                          })
+                        }
+                      />
+                      <p className="settings-desc">
+                        WebFetch / WebSearch 允许访问的域名；留空不限制。
+                      </p>
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-label">联网域名黑名单</label>
+                      <input
+                        className="input"
+                        value={deniedText}
+                        placeholder="逗号分隔，如 ads.example.com"
+                        onChange={(event) =>
+                          patch({
+                            web: {
+                              allowedDomains: splitList(allowedText),
+                              deniedDomains: splitList(event.target.value),
+                            },
+                          })
+                        }
+                      />
+                    </div>
                     <p className="settings-desc">
                       当前生效：{PERMISSION_MODE_LABEL[config.permissionMode]}
                       。权限改动保存后需重启。
@@ -532,324 +506,6 @@ export function SettingsPanel({
                       <p className="settings-desc">
                         上下文压缩时保留的最近 N 轮原文（更早的折叠进摘要）。
                       </p>
-                    </div>
-                  </>
-                )}
-
-                {/* 扩展 */}
-                {section === 'extensions' && (
-                  <>
-                    <h3 className="settings-section-title">扩展</h3>
-
-                    {/* MCP 服务器（配置可编辑） */}
-                    <div className="settings-field">
-                      <label className="settings-label">MCP 服务器</label>
-                      {mcpStatus.length > 0 && (
-                        <div className="mcp-list">
-                          {mcpStatus.map((server) => (
-                            <div
-                              key={server.name}
-                              className={`mcp-item mcp-${server.state}`}
-                            >
-                              <span className="mcp-dot" aria-hidden="true" />
-                              <span className="mcp-name">{server.name}</span>
-                              <span className="mcp-state">
-                                {server.state === 'connected'
-                                  ? '已连接'
-                                  : server.state === 'connecting'
-                                    ? '连接中'
-                                    : server.state === 'disconnected'
-                                      ? '已断开'
-                                      : '失败'}
-                              </span>
-                              <span className="mcp-meta">
-                                {server.toolCount} 工具
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {mcpList.length === 0 ? (
-                        <p className="settings-desc">
-                          未配置服务器。下方添加（stdio 命令或 HTTP URL）。
-                        </p>
-                      ) : (
-                        <div className="hook-list">
-                          {mcpList.map((server) => (
-                            <div key={server.name} className="hook-item">
-                              <span className="hook-point">{server.name}</span>
-                              <span className="hook-count">
-                                {server.command !== undefined
-                                  ? 'stdio'
-                                  : 'http'}{' '}
-                                · {server.enabled !== false ? '启用' : '停用'} ·{' '}
-                                {server.command ?? server.url ?? ''}
-                              </span>
-                              <button
-                                type="button"
-                                className="rule-remove"
-                                title="删除服务器"
-                                onClick={() =>
-                                  patch({
-                                    mcpServers: mcpList.filter(
-                                      (s) => s.name !== server.name,
-                                    ),
-                                  })
-                                }
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="rule-add">
-                        <input
-                          className="input"
-                          placeholder="名称，如 filesystem"
-                          value={mcpName}
-                          onChange={(event) => setMcpName(event.target.value)}
-                        />
-                        <input
-                          className="input"
-                          placeholder="命令 或 http://URL"
-                          value={mcpCmd}
-                          onChange={(event) => setMcpCmd(event.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          disabled={
-                            mcpName.trim().length === 0 ||
-                            mcpCmd.trim().length === 0
-                          }
-                          onClick={() => {
-                            const target = mcpCmd.trim();
-                            const isUrl = /^https?:\/\//.test(target);
-                            patch({
-                              mcpServers: [
-                                ...mcpList,
-                                {
-                                  name: mcpName.trim(),
-                                  ...(isUrl
-                                    ? { url: target }
-                                    : { command: target }),
-                                  enabled: true,
-                                  risk: 'network',
-                                },
-                              ],
-                            });
-                            setMcpName('');
-                            setMcpCmd('');
-                          }}
-                        >
-                          添加
-                        </button>
-                      </div>
-                      <p className="settings-desc">
-                        保存后重建会话并连接服务器。
-                      </p>
-                    </div>
-
-                    {/* Hooks（配置可编辑） */}
-                    <div className="settings-field">
-                      <label className="settings-label">Hooks</label>
-                      {hookList.length === 0 ? (
-                        <p className="settings-desc">
-                          未配置钩子。添加一条（钩子点 + 命令）。
-                        </p>
-                      ) : (
-                        <div className="hook-list">
-                          {hookList.map((hook, index) => (
-                            <div
-                              key={`${hook.point}-${index}`}
-                              className="hook-item"
-                            >
-                              <span className="hook-point">{hook.point}</span>
-                              <span className="hook-count">{hook.command}</span>
-                              <button
-                                type="button"
-                                className="rule-remove"
-                                title="删除钩子"
-                                onClick={() =>
-                                  patch({
-                                    hooks: hooksToRecord(
-                                      hookList.filter((_, i) => i !== index),
-                                    ),
-                                  })
-                                }
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="rule-add">
-                        <select
-                          className="select"
-                          value={hookPoint}
-                          onChange={(event) => setHookPoint(event.target.value)}
-                        >
-                          <option value="SessionStart">SessionStart</option>
-                          <option value="UserPromptSubmit">
-                            UserPromptSubmit
-                          </option>
-                          <option value="PreToolUse">PreToolUse</option>
-                          <option value="PostToolUse">PostToolUse</option>
-                        </select>
-                        <input
-                          className="input"
-                          placeholder="命令，如 ./scripts/check.sh"
-                          value={hookCmd}
-                          onChange={(event) => setHookCmd(event.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          disabled={hookCmd.trim().length === 0}
-                          onClick={() => {
-                            patch({
-                              hooks: hooksToRecord([
-                                ...hookList,
-                                { point: hookPoint, command: hookCmd.trim() },
-                              ]),
-                            });
-                            setHookCmd('');
-                          }}
-                        >
-                          添加
-                        </button>
-                      </div>
-                      <p className="settings-desc">保存后重建会话。</p>
-                    </div>
-
-                    {/* Skills（发现内容，只读） */}
-                    <div className="settings-field">
-                      <label className="settings-label">Skills</label>
-                      {skills.length === 0 ? (
-                        <p className="settings-desc">
-                          未发现技能（.modou/skills/&lt;name&gt;/SKILL.md）。
-                        </p>
-                      ) : (
-                        <div className="skill-list">
-                          {skills.map((skill) => (
-                            <div key={skill.name} className="skill-item">
-                              <span className="skill-name">{skill.name}</span>
-                              <span className="skill-desc">
-                                {skill.description}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 自定义 agents（发现内容，只读） */}
-                    <div className="settings-field">
-                      <label className="settings-label">自定义 agents</label>
-                      {settings.agents.length === 0 ? (
-                        <p className="settings-desc">
-                          未发现角色（.modou/agents/&lt;name&gt;.md）。
-                        </p>
-                      ) : (
-                        <div className="skill-list">
-                          {settings.agents.map((agent) => (
-                            <div key={agent.name} className="skill-item">
-                              <span className="skill-name">{agent.name}</span>
-                              <span className="skill-desc">
-                                {agent.description}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 联网工具（域名可编辑） */}
-                    <div className="settings-field">
-                      <label className="settings-label">联网域名白名单</label>
-                      <input
-                        className="input"
-                        value={allowedText}
-                        placeholder="逗号分隔，如 example.com（留空 = 不限制）"
-                        onChange={(event) =>
-                          patch({
-                            web: {
-                              allowedDomains: splitList(event.target.value),
-                              deniedDomains: splitList(deniedText),
-                            },
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="settings-field">
-                      <label className="settings-label">联网域名黑名单</label>
-                      <input
-                        className="input"
-                        value={deniedText}
-                        placeholder="逗号分隔，如 ads.example.com"
-                        onChange={(event) =>
-                          patch({
-                            web: {
-                              allowedDomains: splitList(allowedText),
-                              deniedDomains: splitList(event.target.value),
-                            },
-                          })
-                        }
-                      />
-                    </div>
-
-                    {/* 快照（配置可编辑） */}
-                    <div className="settings-field">
-                      <label className="settings-label">快照</label>
-                      <label className="settings-check">
-                        <input
-                          type="checkbox"
-                          checked={snap?.enabled ?? true}
-                          onChange={(event) =>
-                            patch({
-                              snapshot: {
-                                ...(snap ?? {}),
-                                enabled: event.target.checked,
-                              },
-                            })
-                          }
-                        />
-                        启用自动快照（可 /rewind 回滚）
-                      </label>
-                      <div className="rule-add">
-                        <input
-                          className="input input-num"
-                          type="number"
-                          min={0}
-                          placeholder="保留天数"
-                          value={snap?.maxAgeDays ?? ''}
-                          onChange={(event) =>
-                            patch({
-                              snapshot: {
-                                ...(snap ?? {}),
-                                maxAgeDays: Number(event.target.value),
-                              },
-                            })
-                          }
-                        />
-                        <input
-                          className="input input-num"
-                          type="number"
-                          min={1}
-                          placeholder="每会话条数"
-                          value={snap?.keepPerSession ?? ''}
-                          onChange={(event) =>
-                            patch({
-                              snapshot: {
-                                ...(snap ?? {}),
-                                keepPerSession: Number(event.target.value),
-                              },
-                            })
-                          }
-                        />
-                      </div>
                     </div>
                   </>
                 )}

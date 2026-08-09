@@ -31,6 +31,10 @@ export function Sidebar({
   onOpenModel,
   onOpenSettings,
   onCollapse,
+  onOpenMcp,
+  onOpenSkills,
+  onOpenHooks,
+  onOpenAgents,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
@@ -47,6 +51,10 @@ export function Sidebar({
   readonly onOpenModel: () => void;
   readonly onOpenSettings: () => void;
   readonly onCollapse: () => void;
+  readonly onOpenMcp: () => void;
+  readonly onOpenSkills: () => void;
+  readonly onOpenHooks: () => void;
+  readonly onOpenAgents: () => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
@@ -294,6 +302,44 @@ export function Sidebar({
             );
           })}
         </nav>
+      </div>
+
+      <div className="sidebar-extensions">
+        <div className="sidebar-ext-label">扩展</div>
+        <div className="sidebar-ext-grid">
+          <button
+            type="button"
+            className="ext-chip"
+            onClick={onOpenMcp}
+            title="MCP 服务器"
+          >
+            MCP
+          </button>
+          <button
+            type="button"
+            className="ext-chip"
+            onClick={onOpenSkills}
+            title="技能"
+          >
+            Skills
+          </button>
+          <button
+            type="button"
+            className="ext-chip"
+            onClick={onOpenHooks}
+            title="钩子"
+          >
+            Hooks
+          </button>
+          <button
+            type="button"
+            className="ext-chip"
+            onClick={onOpenAgents}
+            title="自定义 agents"
+          >
+            Agents
+          </button>
+        </div>
       </div>
 
       <div className="sidebar-footer">

@@ -24,6 +24,12 @@ import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread, type GuiCardEntry } from './components/ChatThread';
+import {
+  AgentsPanel,
+  HooksPanel,
+  McpPanel,
+  SkillsPanel,
+} from './components/ExtensionPanels';
 import { InputBox } from './components/InputBox';
 import { ModelPicker } from './components/ModelPicker';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -33,7 +39,8 @@ import { Welcome } from './components/Welcome';
 import type { GuiCard } from './components/CommandCards';
 import { applyTheme } from './lib/theme';
 
-type ModalKind = 'none' | 'settings' | 'model';
+type ModalKind =
+  'none' | 'settings' | 'model' | 'mcp' | 'skills' | 'hooks' | 'agents';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -340,6 +347,10 @@ export function App(): ReactNode {
           onOpenModel={() => setModal('model')}
           onOpenSettings={() => setModal('settings')}
           onCollapse={() => setSidebarOpen(false)}
+          onOpenMcp={() => setModal('mcp')}
+          onOpenSkills={() => setModal('skills')}
+          onOpenHooks={() => setModal('hooks')}
+          onOpenAgents={() => setModal('agents')}
         />
       )}
 
@@ -437,6 +448,10 @@ export function App(): ReactNode {
           onClose={() => setModal('none')}
         />
       )}
+      {modal === 'mcp' && <McpPanel onClose={() => setModal('none')} />}
+      {modal === 'skills' && <SkillsPanel onClose={() => setModal('none')} />}
+      {modal === 'hooks' && <HooksPanel onClose={() => setModal('none')} />}
+      {modal === 'agents' && <AgentsPanel onClose={() => setModal('none')} />}
     </div>
   );
 }
