@@ -21,7 +21,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Notification,
+  shell,
+} from 'electron';
 import { GuiBridge } from './bridge';
 import { IPC, type ReadyPayload } from './ipc';
 import type { Command, Envelope } from '@modou/core';
@@ -154,6 +161,25 @@ function sendEvent(envelope: Envelope): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.EVENT, envelope);
   }
+  maybeNotifyTurnEnd(envelope);
+}
+
+/** 长任务完成通知：turn 正常结束且窗口未聚焦时发系统通知（Claude 式）。 */
+function maybeNotifyTurnEnd(envelope: Envelope): void {
+  if (envelope.type !== 'turn_end') return;
+  if (envelope.data.termination !== 'end_turn') return;
+  if (
+    mainWindow !== null &&
+    !mainWindow.isDestroyed() &&
+    mainWindow.isFocused()
+  ) {
+    return;
+  }
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: 'modou 已完成',
+    body: '当前任务已完成，可以查看结果了。',
+  }).show();
 }
 
 /** 向渲染进程推配置摘要（READY）。 */
@@ -279,6 +305,9 @@ function registerIpc(): void {
     },
   );
   ipcMain.handle(IPC.REGENERATE, () => bridge?.regenerate() ?? false);
+  ipcMain.handle(IPC.OPEN_PATH, (_event, path: string) => {
+    void shell.openPath(path);
+  });
   ipcMain.handle(
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,

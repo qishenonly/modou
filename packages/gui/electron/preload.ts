@@ -105,6 +105,10 @@ const api = {
   regenerate(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.REGENERATE);
   },
+  /** 用系统文件管理器打开路径。 */
+  openPath(path: string): void {
+    void ipcRenderer.invoke(IPC.OPEN_PATH, path);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

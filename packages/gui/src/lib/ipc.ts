@@ -70,6 +70,8 @@ export interface ModouApi {
   getSessionTitles(): Promise<Record<string, string>>;
   /** 重新生成最后一条回复（重试）。 */
   regenerate(): Promise<boolean>;
+  /** 用系统文件管理器打开路径。 */
+  openPath(path: string): void;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

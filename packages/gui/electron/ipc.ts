@@ -49,6 +49,8 @@ export const IPC = {
   GET_SESSION_TITLES: 'modou:getSessionTitles',
   /** renderer → main（invoke）：重新生成最后一条回复（重试）。 */
   REGENERATE: 'modou:regenerate',
+  /** renderer → main（invoke）：用系统文件管理器打开路径。 */
+  OPEN_PATH: 'modou:openPath',
   /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
   SELECT_DIRECTORY: 'modou:selectDirectory',
   /** renderer → main（invoke）：快照点列表（/rewind 面板）。 */

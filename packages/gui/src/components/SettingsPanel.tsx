@@ -18,7 +18,13 @@ import { applyTheme } from '../lib/theme';
 import { formatTokens } from '../lib/format';
 
 type Section =
-  'model' | 'permissions' | 'context' | 'extensions' | 'appearance' | 'about';
+  | 'model'
+  | 'permissions'
+  | 'context'
+  | 'extensions'
+  | 'appearance'
+  | 'shortcuts'
+  | 'about';
 
 const SECTIONS: readonly { readonly id: Section; readonly label: string }[] = [
   { id: 'model', label: '模型' },
@@ -26,7 +32,19 @@ const SECTIONS: readonly { readonly id: Section; readonly label: string }[] = [
   { id: 'context', label: '上下文' },
   { id: 'extensions', label: '扩展' },
   { id: 'appearance', label: '外观' },
+  { id: 'shortcuts', label: '快捷键' },
   { id: 'about', label: '关于' },
+];
+
+/** 快捷键清单（对齐实际绑定）。 */
+const SHORTCUTS: readonly { readonly keys: string; readonly desc: string }[] = [
+  { keys: '⌘K', desc: '聚焦输入框' },
+  { keys: '⌘N', desc: '新建对话' },
+  { keys: '⌘,', desc: '打开设置' },
+  { keys: 'Esc', desc: '停止生成 / 关闭弹窗' },
+  { keys: 'Enter', desc: '发送消息' },
+  { keys: 'Shift+Enter', desc: '换行' },
+  { keys: '↑ / ↓', desc: '召回上一条输入' },
 ];
 
 const PROVIDERS: readonly { readonly value: string; readonly label: string }[] =
@@ -515,10 +533,34 @@ export function SettingsPanel({
                       <button
                         type="button"
                         className="btn btn-ghost settings-switch"
+                        onClick={() => window.modou.openPath(config.cwd)}
+                      >
+                        在文件管理器中打开项目
+                      </button>
+                    </div>
+                    <div className="settings-field">
+                      <button
+                        type="button"
+                        className="btn btn-ghost settings-switch"
                         onClick={onSelectDirectory}
                       >
                         切换项目目录…
                       </button>
+                    </div>
+                  </>
+                )}
+
+                {/* 快捷键 */}
+                {section === 'shortcuts' && (
+                  <>
+                    <h3 className="settings-section-title">快捷键</h3>
+                    <div className="shortcut-list">
+                      {SHORTCUTS.map((shortcut) => (
+                        <div key={shortcut.keys} className="shortcut-row">
+                          <kbd className="shortcut-keys">{shortcut.keys}</kbd>
+                          <span className="shortcut-desc">{shortcut.desc}</span>
+                        </div>
+                      ))}
                     </div>
                   </>
                 )}
