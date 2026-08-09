@@ -1,5 +1,6 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   listSkillFiles,
   parseSkillMarkdown,
@@ -134,7 +135,9 @@ export function findBuiltinSkillsDir(startDir: string): string {
  * 把 skills/ 随产物分发——这是打包面的事，发现逻辑不感知。
  */
 export function defaultBuiltinSkillsDir(): string {
-  return findBuiltinSkillsDir(import.meta.dir);
+  // 用 import.meta.url 而非 Bun 专属的 import.meta.dir：core 需在 Node/Electron
+  // （GUI 主进程 bundle 进 core）与 Bun 双运行时下可加载。
+  return findBuiltinSkillsDir(fileURLToPath(new URL('.', import.meta.url)));
 }
 
 /**
