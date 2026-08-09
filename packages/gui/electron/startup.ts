@@ -86,6 +86,10 @@ export interface GuiStartupConfig {
   readonly snapshot?: ConfigSnapshot;
   /** 钩子总线（0.14.0；未配置 = undefined = 管线直通）。 */
   readonly hooks?: HookBus;
+  /** 钩子配置原文（0.14.0；设置面板展示用）。 */
+  readonly hooksConfig?: ConfigHooks;
+  /** MCP 服务器配置原文（0.16.0；设置面板展示用）。 */
+  readonly mcpConfig?: ConfigMcp;
   /** 启动期提示（0.14.0：未接线的钩子点等，runTui 以 notice 展示）。 */
   readonly notices?: readonly string[];
   /** MCP 服务器配置表（0.16.0，T-163）。 */
@@ -176,7 +180,9 @@ export function assembleGuiStartup(
         }
       : {}),
     mcpServers: normalizeMcpServers(resolved.mcp),
+    ...(resolved.mcp !== undefined ? { mcpConfig: resolved.mcp } : {}),
     ...(resolved.web !== undefined ? { web: resolved.web } : {}),
+    ...(resolved.hooks !== undefined ? { hooksConfig: resolved.hooks } : {}),
     providerSpec: {
       type: (options.provider?.id as ProviderType) ?? resolved.provider,
       ...(providerBaseURL !== undefined ? { baseURL: providerBaseURL } : {}),

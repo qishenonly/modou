@@ -36,6 +36,33 @@
   --radius-lg: 16px;
 }
 
+/* 暗色主题（外观分类；data-theme="dark" 时覆盖变量） */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #141413;
+  --bg-panel: #1f1e1d;
+  --bg-subtle: #2b2a28;
+  --bg-hover: #262524;
+  --bg-active: #2f2e2c;
+  --border: #343331;
+  --border-strong: #464440;
+  --text: #f2f0eb;
+  --text-secondary: #b7b2a8;
+  --text-muted: #807b72;
+  --accent: #d97757;
+  --accent-strong: #e08d6d;
+  --accent-soft: #3b2a22;
+  --ok: #4caf50;
+  --ok-bg: #1d3320;
+  --fail: #e57368;
+  --fail-bg: #3a201e;
+  --warn: #d3a94e;
+  --warn-bg: #332a14;
+  --code-bg: #1a1918;
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -1138,8 +1165,179 @@ body {
 }
 
 /* 设置 */
-.settings-body {
+.settings-modal {
+  width: 720px;
+  max-width: 94vw;
+  height: 72vh;
+}
+
+.settings-layout {
+  flex: 1;
+  display: flex;
+  gap: 20px;
+  min-height: 0;
+}
+
+.settings-nav {
+  width: 148px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+}
+
+.settings-nav-item {
+  border: none;
+  background: none;
+  font-family: var(--font);
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.settings-nav-active {
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-content {
+  flex: 1;
   overflow-y: auto;
+  min-width: 0;
+  padding-right: 6px;
+}
+
+.settings-section-title {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 16px;
+}
+
+.settings-field {
+  margin-bottom: 18px;
+}
+
+.settings-field .settings-label {
+  display: block;
+  width: auto;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settings-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input-num {
+  width: 120px;
+}
+
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 规则表（权限分类） */
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.rule-effect {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.rule-allow .rule-effect {
+  color: var(--ok);
+}
+
+.rule-deny .rule-effect {
+  color: var(--fail);
+}
+
+.rule-match {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* 钩子列表 */
+.hook-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hook-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+}
+
+.hook-point {
+  font-family: var(--mono);
+}
+
+.hook-count {
+  color: var(--text-muted);
 }
 
 .settings-section {

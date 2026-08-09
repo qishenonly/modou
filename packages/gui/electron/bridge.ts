@@ -17,7 +17,7 @@
  * 本文件**不 import 'electron'**：主进程 / 单元测试共用（测试注入 stub provider
  * 与回调，离线覆盖），main.ts 只负责把桥接到 Electron IPC。
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import type {
   AgentToolDeps,
@@ -94,8 +94,11 @@ import { createApprovalBridge, type ApprovalBridge } from './approval';
 import { performCompact } from './compact';
 import type {
   GuiConfigSummary,
+  GuiSettings,
+  GuiSettingsPatch,
   PlanPayload,
   ReadyPayload,
+  SaveSettingsResult,
   ThreadMessage,
 } from './ipc';
 import {
@@ -202,6 +205,11 @@ export class GuiBridge {
     readonly name: string;
     readonly description: string;
   }[];
+  /** 已发现的角色（0.17.0 T-170：.modou/agents/*.md；设置面板展示）。 */
+  private readonly agents: readonly {
+    readonly name: string;
+    readonly description: string;
+  }[];
   /** 基准系统提示词（正常执行模式；Plan Mode 进入/退出时在 system 与 base 间切换）。 */
   private baseSystem: string;
   private system: string;
@@ -303,6 +311,10 @@ export class GuiBridge {
     this.skills = discoveredSkills.map((skill) => ({
       name: skill.name,
       description: skill.description,
+    }));
+    this.agents = discoveredAgents.agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
     }));
 
     // —— 基准系统提示词（技能/角色清单常驻；MCP 连接完成后重建）——
@@ -513,6 +525,116 @@ export class GuiBridge {
       this.sessionLog = null;
     }
     return deleted;
+  }
+
+  // —— 设置（设置面板表单初值 / 保存到项目 .modou/settings.json）——
+
+  /** 可编辑设置的当前值（设置面板表单初值）。 */
+  getSettings(): GuiSettings {
+    const permission = this.startup.permission;
+    const hooksConfig = this.startup.hooksConfig;
+    const web = this.startup.web;
+    const snapshot = this.startup.snapshot;
+    return {
+      provider: this.startup.providerSpec.type,
+      model: this.provider.modelId,
+      ...(this.startup.providerSpec.baseURL !== undefined
+        ? { baseURL: this.startup.providerSpec.baseURL }
+        : {}),
+      sandbox: permission.sandbox,
+      policy: permission.policy,
+      maxTurns: this.startup.maxTurns,
+      keepTurns: this.startup.keepTurns,
+      rules: (permission.rules ?? []).map((rule) => ({
+        effect: rule.effect,
+        match: rule.match,
+      })),
+      agents: this.agents,
+      hooks:
+        hooksConfig === undefined
+          ? []
+          : Object.entries(hooksConfig).map(([point, entries]) => ({
+              point,
+              count: entries?.length ?? 0,
+            })),
+      web:
+        web === undefined
+          ? null
+          : {
+              allowedDomains: web.allowedDomains?.length ?? 0,
+              deniedDomains: web.deniedDomains?.length ?? 0,
+            },
+      mcpServerCount: this.startup.mcpServers.length,
+      snapshot:
+        snapshot === undefined
+          ? null
+          : {
+              enabled: snapshot.enabled ?? true,
+              ...(snapshot.maxAgeDays !== undefined
+                ? { maxAgeDays: snapshot.maxAgeDays }
+                : {}),
+              ...(snapshot.keepPerSession !== undefined
+                ? { keepPerSession: snapshot.keepPerSession }
+                : {}),
+              ...(snapshot.maxPerProject !== undefined
+                ? { maxPerProject: snapshot.maxPerProject }
+                : {}),
+            },
+    };
+  }
+
+  /** 保存设置到项目 `.modou/settings.json`（合并既有，不覆盖其他键）。 */
+  async saveSettings(patch: GuiSettingsPatch): Promise<SaveSettingsResult> {
+    const dir = join(this.cwd, '.modou');
+    const file = join(dir, 'settings.json');
+    let existing: Record<string, unknown> = {};
+    try {
+      if (existsSync(file)) {
+        const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+        if (typeof parsed === 'object' && parsed !== null) {
+          existing = parsed as Record<string, unknown>;
+        }
+      }
+    } catch (caught) {
+      return {
+        ok: false,
+        needRestart: false,
+        message: `现有 settings.json 解析失败（${describeError(caught)}），未保存`,
+      };
+    }
+    const next: Record<string, unknown> = { ...existing };
+    if (patch.provider !== undefined) next.provider = patch.provider;
+    if (patch.model !== undefined) next.model = patch.model;
+    if (patch.baseURL !== undefined) next.baseURL = patch.baseURL;
+    if (patch.sandbox !== undefined || patch.policy !== undefined) {
+      const permission =
+        typeof existing.permission === 'object' && existing.permission !== null
+          ? { ...(existing.permission as Record<string, unknown>) }
+          : {};
+      if (patch.sandbox !== undefined) permission.sandbox = patch.sandbox;
+      if (patch.policy !== undefined) permission.policy = patch.policy;
+      next.permission = permission;
+    }
+    if (patch.maxTurns !== undefined) next.maxTurns = patch.maxTurns;
+    if (patch.keepTurns !== undefined) next.keepTurns = patch.keepTurns;
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+    } catch (caught) {
+      return {
+        ok: false,
+        needRestart: false,
+        message: `写入 ${file} 失败：${describeError(caught)}`,
+      };
+    }
+    const needRestart =
+      patch.sandbox !== undefined ||
+      patch.policy !== undefined ||
+      patch.provider !== undefined ||
+      patch.baseURL !== undefined ||
+      patch.maxTurns !== undefined ||
+      patch.keepTurns !== undefined;
+    return { ok: true, needRestart };
   }
 
   // —— 快照（0.10.0 /rewind /snapshots）——

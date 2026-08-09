@@ -33,6 +33,14 @@ export const IPC = {
   GET_CONTEXT: 'modou:getContext',
   /** renderer → main（invoke）：配置摘要（设置面板）。 */
   GET_CONFIG: 'modou:getConfig',
+  /** renderer → main（invoke）：可编辑设置（设置面板表单初值）。 */
+  GET_SETTINGS: 'modou:getSettings',
+  /** renderer → main（invoke）：保存设置到项目 .modou/settings.json。 */
+  SAVE_SETTINGS: 'modou:saveSettings',
+  /** renderer → main（invoke）：读取主题（gui-state 持久化）。 */
+  GET_THEME: 'modou:getTheme',
+  /** renderer → main（invoke）：设置主题。 */
+  SET_THEME: 'modou:setTheme',
   /** renderer → main（invoke）：删除一条会话（侧栏）。 */
   DELETE_SESSION: 'modou:deleteSession',
   /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
@@ -115,6 +123,64 @@ export interface PlanPayload {
   /** 计划模式是否处于激活（只读研究中）。 */
   readonly active: boolean;
 }
+
+/** 设置面板表单的可编辑项（GET_SETTINGS 返回的当前值）。 */
+export interface GuiSettings {
+  readonly provider: string;
+  readonly model: string;
+  readonly baseURL?: string;
+  readonly sandbox: string;
+  readonly policy: string;
+  readonly maxTurns: number;
+  readonly keepTurns: number;
+  readonly rules: readonly {
+    readonly effect: 'allow' | 'deny';
+    readonly match: string;
+  }[];
+  /** 已发现的角色（.modou/agents/*.md）。 */
+  readonly agents: readonly {
+    readonly name: string;
+    readonly description: string;
+  }[];
+  /** 钩子配置（各点条目数；未配置 = 空）。 */
+  readonly hooks: readonly { readonly point: string; readonly count: number }[];
+  /** 联网工具配置摘要（未配置 = null）。 */
+  readonly web: {
+    readonly allowedDomains: number;
+    readonly deniedDomains: number;
+  } | null;
+  /** MCP 服务器配置数。 */
+  readonly mcpServerCount: number;
+  /** 快照配置摘要（未配置 = null）。 */
+  readonly snapshot: {
+    readonly enabled: boolean;
+    readonly maxAgeDays?: number;
+    readonly keepPerSession?: number;
+    readonly maxPerProject?: number;
+  } | null;
+}
+
+/** 保存设置的可编辑补丁（SAVE_SETTINGS）。 */
+export interface GuiSettingsPatch {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly baseURL?: string;
+  readonly sandbox?: string;
+  readonly policy?: string;
+  readonly maxTurns?: number;
+  readonly keepTurns?: number;
+}
+
+/** 保存设置的结果。 */
+export interface SaveSettingsResult {
+  readonly ok: boolean;
+  /** 需要重启应用生效（权限/供应商/上下文类改动）。 */
+  readonly needRestart: boolean;
+  readonly message?: string;
+}
+
+/** 主题（外观分类；gui-state 持久化）。 */
+export type GuiTheme = 'light' | 'dark' | 'system';
 
 import type { StructuredPlan } from '@modou/core';
 export type {

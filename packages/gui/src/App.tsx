@@ -31,6 +31,7 @@ import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
 import { Welcome } from './components/Welcome';
 import type { GuiCard } from './components/CommandCards';
+import { applyTheme } from './lib/theme';
 
 type ModalKind = 'none' | 'settings' | 'model';
 
@@ -108,6 +109,11 @@ export function App(): ReactNode {
   useEffect(() => {
     refreshSessions();
   }, [refreshSessions, ready?.cwd, state.running]);
+
+  // 外观：启动时恢复主题
+  useEffect(() => {
+    void window.modou.getTheme().then((theme) => applyTheme(theme));
+  }, []);
 
   // ---- 项目目录 ----
   const handleSelectDirectory = (): void => {

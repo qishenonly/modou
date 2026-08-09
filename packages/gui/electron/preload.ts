@@ -73,6 +73,22 @@ const api = {
   getConfig(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_CONFIG);
   },
+  /** 可编辑设置（设置面板表单初值）。 */
+  getSettings(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_SETTINGS);
+  },
+  /** 保存设置到项目 .modou/settings.json。 */
+  saveSettings(patch: unknown): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SAVE_SETTINGS, patch);
+  },
+  /** 读取主题（gui-state 持久化）。 */
+  getTheme(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_THEME);
+  },
+  /** 设置主题。 */
+  setTheme(theme: 'light' | 'dark' | 'system'): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SET_THEME, theme);
+  },
   /** 删除一条会话（侧栏）。 */
   deleteSession(sessionId: string): Promise<unknown> {
     return ipcRenderer.invoke(IPC.DELETE_SESSION, sessionId);

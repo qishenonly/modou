@@ -20,8 +20,12 @@ import type {
 } from '@modou/core';
 import type {
   GuiConfigSummary,
+  GuiSettings,
+  GuiSettingsPatch,
+  GuiTheme,
   PlanPayload,
   ReadyPayload,
+  SaveSettingsResult,
   ThreadMessage,
 } from '../../electron/ipc';
 
@@ -47,6 +51,14 @@ export interface ModouApi {
   getContext(): Promise<ContextStateData | null>;
   /** 配置摘要（设置面板 / 顶栏）。 */
   getConfig(): Promise<GuiConfigSummary | null>;
+  /** 可编辑设置（设置面板表单初值）。 */
+  getSettings(): Promise<GuiSettings | null>;
+  /** 保存设置到项目 .modou/settings.json。 */
+  saveSettings(patch: GuiSettingsPatch): Promise<SaveSettingsResult>;
+  /** 读取主题（gui-state 持久化）。 */
+  getTheme(): Promise<GuiTheme>;
+  /** 设置主题。 */
+  setTheme(theme: GuiTheme): Promise<void>;
   /** 删除一条会话（侧栏）。 */
   deleteSession(sessionId: string): Promise<boolean>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */

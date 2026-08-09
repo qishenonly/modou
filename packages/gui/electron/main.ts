@@ -79,6 +79,7 @@ const guiStateFile = join(homedir(), '.modou', 'gui-state.json');
 
 interface GuiStateFile {
   readonly lastDirectory?: string;
+  readonly lastTheme?: 'light' | 'dark' | 'system';
 }
 
 function readGuiState(): GuiStateFile {
@@ -233,6 +234,19 @@ function registerIpc(): void {
   ipcMain.handle(IPC.GET_SKILLS, () => bridge?.listSkills() ?? []);
   ipcMain.handle(IPC.GET_CONTEXT, () => bridge?.getContext() ?? null);
   ipcMain.handle(IPC.GET_CONFIG, () => bridge?.getConfig() ?? null);
+  ipcMain.handle(IPC.GET_SETTINGS, () => bridge?.getSettings() ?? null);
+  ipcMain.handle(
+    IPC.SAVE_SETTINGS,
+    (_event, patch: Parameters<GuiBridge['saveSettings']>[0]) =>
+      bridge?.saveSettings(patch) ?? { ok: false, needRestart: false },
+  );
+  ipcMain.handle(IPC.GET_THEME, () => readGuiState().lastTheme ?? 'system');
+  ipcMain.handle(
+    IPC.SET_THEME,
+    (_event, theme: 'light' | 'dark' | 'system') => {
+      writeGuiState({ ...readGuiState(), lastTheme: theme });
+    },
+  );
   ipcMain.handle(
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,
