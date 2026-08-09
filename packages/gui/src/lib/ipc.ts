@@ -89,6 +89,10 @@ export interface ModouApi {
     readonly baseURL: string;
     readonly apiKey: string;
   }): Promise<RemoteModelsResult>;
+  /** 读取额外技能扫描目录。 */
+  getSkillDirs(): Promise<readonly string[]>;
+  /** 保存额外技能扫描目录（重建 bridge 生效）。 */
+  setSkillDirs(dirs: readonly string[]): void;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

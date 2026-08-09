@@ -8,8 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { TodoItemData } from '@modou/core';
-import type { ChatMessage, SubagentEntry } from '../lib/state';
-import type { ToolCallEntry } from '../lib/tools';
+import type { SubagentEntry, TimelineEntry } from '../lib/state';
 import { Markdown } from '../lib/markdown';
 import {
   ContextCard,
@@ -172,10 +171,9 @@ function ThinkingBlock({ text }: { readonly text: string }): ReactNode {
 }
 
 export function ChatThread({
-  history,
+  timeline,
   streamingText,
   thinking,
-  tools,
   todo,
   subagents,
   cards,
@@ -187,10 +185,9 @@ export function ChatThread({
   onRegenerate,
   onEditUser,
 }: {
-  readonly history: readonly ChatMessage[];
+  readonly timeline: readonly TimelineEntry[];
   readonly streamingText: string;
   readonly thinking: string;
-  readonly tools: readonly ToolCallEntry[];
   readonly todo: readonly TodoItemData[];
   readonly subagents: readonly SubagentEntry[];
   readonly cards: readonly GuiCardEntry[];
@@ -215,7 +212,7 @@ export function ChatThread({
     if (sticky) {
       bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
     }
-  }, [history, streamingText, tools, notices, running, cards, sticky]);
+  }, [timeline, streamingText, notices, running, cards, sticky]);
 
   const onScroll = (): void => {
     const el = chatRef.current;
@@ -227,8 +224,10 @@ export function ChatThread({
   const hasOutput =
     streamingText.length > 0 ||
     thinking.length > 0 ||
-    tools.some(
-      (entry) => entry.status === 'pending' || entry.status === 'running',
+    timeline.some(
+      (entry) =>
+        entry.kind === 'tool' &&
+        (entry.entry.status === 'pending' || entry.entry.status === 'running'),
     );
   const showThinking = running && !hasOutput;
 
@@ -237,17 +236,27 @@ export function ChatThread({
       <div className="chat-inner">
         <TodoList items={todo} />
 
-        {history.map((entry, index) =>
-          entry.role === 'user' ? (
-            <UserMessage key={index} text={entry.text} onEdit={onEditUser} />
-          ) : (
-            <AssistantMessage
-              key={index}
-              text={entry.text}
-              onRegenerate={onRegenerate}
-            />
-          ),
-        )}
+        {timeline.map((entry) => {
+          if (entry.kind === 'user') {
+            return (
+              <UserMessage
+                key={entry.id}
+                text={entry.text}
+                onEdit={onEditUser}
+              />
+            );
+          }
+          if (entry.kind === 'assistant') {
+            return (
+              <AssistantMessage
+                key={entry.id}
+                text={entry.text}
+                onRegenerate={onRegenerate}
+              />
+            );
+          }
+          return <ToolCard key={entry.id} entry={entry.entry} />;
+        })}
 
         {cards.map((entry) => (
           <CommandCardView
@@ -263,10 +272,6 @@ export function ChatThread({
         ))}
 
         {thinking.length > 0 && <ThinkingBlock text={thinking} />}
-
-        {tools.map((entry) => (
-          <ToolCard key={entry.id} entry={entry} />
-        ))}
 
         {streamingText.length > 0 && (
           <div className="msg msg-assistant">

@@ -31,14 +31,14 @@ import {
 // 类型
 // ---------------------------------------------------------------------------
 
-/** 技能的发现层级（优先级自低到高：builtin → global → project）。 */
-export type SkillLevel = 'builtin' | 'global' | 'project';
+/** 技能的发现层级（优先级自低到高：builtin → global → project → extra）。 */
+export type SkillLevel = 'builtin' | 'global' | 'project' | 'extra';
 
 /** 一个已发现技能：解析结果 + 来源目录 / 层级 + 附带文件清单。 */
 export interface DiscoveredSkill extends ParsedSkill {
   /** 技能目录（含 SKILL.md 的绝对路径；Skill 工具注入正文时给出出处）。 */
   readonly directory: string;
-  /** 发现层级（同名覆盖的裁决依据：project > global > builtin）。 */
+  /** 发现层级（同名覆盖的裁决依据：extra > project > global > builtin）。 */
   readonly level: SkillLevel;
   /** 附带文件清单（相对技能目录；不含 SKILL.md 本身）。 */
   readonly files: readonly string[];
@@ -55,6 +55,11 @@ export interface DiscoverSkillsOptions {
    * （packages/core/src/skills → 仓库根）下的 skills/。测试用临时目录注入隔离。
    */
   readonly builtinDir?: string;
+  /**
+   * 额外扫描目录（GUI 配置的自定义技能根，如团队共享的技能仓库）。
+   * 追加在 project 层之后（同名覆盖 project/global/builtin）；可选，缺省不扫。
+   */
+  readonly extraDirs?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +202,11 @@ export function discoverSkills(
       level: 'project',
       dir: join(options.projectRoot, '.modou', 'skills'),
     },
+    // extra：GUI 配置的额外技能根（追加在项目层之后，同名覆盖所有默认层级）
+    ...(options.extraDirs ?? []).map((dir) => ({
+      level: 'extra' as const,
+      dir,
+    })),
   ];
 
   const byName = new Map<string, DiscoveredSkill>();

@@ -97,6 +97,8 @@ interface GuiStateFile {
   readonly lastTheme?: 'light' | 'dark' | 'system';
   /** 会话标题映射（重命名；key = sessionId）。 */
   readonly sessionTitles?: Readonly<Record<string, string>>;
+  /** 额外技能扫描目录（Skills 面板配置的自定义技能根）。 */
+  readonly skillsDirs?: readonly string[];
 }
 
 function readGuiState(): GuiStateFile {
@@ -305,8 +307,14 @@ function createBridge(cwd?: string): void {
   currentCwd = cwd;
   if (cwd === undefined) return;
   try {
+    const skillsDirs = readGuiState().skillsDirs;
     bridge = new GuiBridge(
-      { cwd },
+      {
+        cwd,
+        ...(skillsDirs !== undefined && skillsDirs.length > 0
+          ? { skillsDirs }
+          : {}),
+      },
       {
         emitEvent: sendEvent,
         emitReady: sendReady,
@@ -456,6 +464,14 @@ function registerIpc(): void {
     (_event, input: { readonly baseURL: string; readonly apiKey: string }) =>
       listRemoteModels(input),
   );
+  ipcMain.handle(IPC.GET_SKILL_DIRS, () => readGuiState().skillsDirs ?? []);
+  ipcMain.handle(IPC.SET_SKILL_DIRS, (_event, dirs: readonly string[]) => {
+    const cleaned = dirs
+      .map((dir) => dir.trim())
+      .filter((dir) => dir.length > 0);
+    writeGuiState({ ...readGuiState(), skillsDirs: [...new Set(cleaned)] });
+    createBridge(currentCwd); // 重建使新技能目录生效
+  });
   ipcMain.handle(
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,

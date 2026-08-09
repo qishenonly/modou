@@ -414,10 +414,21 @@ export function SkillsPanel({
   const [skills, setSkills] = useState<
     readonly { readonly name: string; readonly description: string }[]
   >([]);
+  const [dirs, setDirs] = useState<readonly string[]>([]);
+  const [newDir, setNewDir] = useState('');
+  const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     void window.modou.listSkills().then((value) => setSkills(value));
+    void window.modou.getSkillDirs().then((value) => setDirs(value));
   }, []);
+
+  const commitDirs = (next: readonly string[]): void => {
+    setDirs(next);
+    window.modou.setSkillDirs(next);
+    setNote('已保存并应用（技能已重新发现）。');
+    void window.modou.listSkills().then((value) => setSkills(value));
+  };
 
   return (
     <ExtensionPanel title="Skills" onClose={onClose}>
@@ -426,11 +437,57 @@ export function SkillsPanel({
         skill 工具加载。 三级发现：内置 skills/ &lt; 全局 ~/.modou/skills/ &lt;
         项目 .modou/skills/（项目覆盖全局）。
       </p>
+
+      <div className="panel-section-title">额外技能目录（扫盘特定路径）</div>
+      <p className="settings-desc">
+        自定义技能根（如团队共享的技能仓库），追加在项目层之后，同名技能优先用这里的。
+        输入绝对路径即可添加。
+      </p>
+      {dirs.length === 0 ? (
+        <p className="settings-desc">还没有额外目录。</p>
+      ) : (
+        <div className="hook-list">
+          {dirs.map((dir) => (
+            <div key={dir} className="hook-item">
+              <span className="hook-point">{dir}</span>
+              <button
+                type="button"
+                className="rule-remove"
+                title="移除目录"
+                onClick={() => commitDirs(dirs.filter((d) => d !== dir))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="rule-add">
+        <input
+          className="input"
+          placeholder="绝对路径，如 /path/to/skills"
+          value={newDir}
+          onChange={(event) => setNewDir(event.target.value)}
+        />
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={newDir.trim().length === 0}
+          onClick={() => {
+            commitDirs([...dirs, newDir.trim()]);
+            setNewDir('');
+          }}
+        >
+          添加
+        </button>
+      </div>
+      {note !== null && <p className="settings-desc">{note}</p>}
+
       <div className="panel-section-title">已发现技能</div>
       {skills.length === 0 ? (
         <p className="settings-desc">
           未发现技能。在项目 <code>.modou/skills/&lt;name&gt;/SKILL.md</code>{' '}
-          添加（或全局 <code>~/.modou/skills/</code>）。
+          添加（或全局 <code>~/.modou/skills/</code>，或上方配置额外目录）。
         </p>
       ) : (
         <div className="skill-list">

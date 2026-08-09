@@ -125,6 +125,14 @@ const api = {
   listRemoteModels(input: unknown): Promise<unknown> {
     return ipcRenderer.invoke(IPC.LIST_REMOTE_MODELS, input);
   },
+  /** 读取额外技能扫描目录。 */
+  getSkillDirs(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_SKILL_DIRS);
+  },
+  /** 保存额外技能扫描目录（重建 bridge 生效）。 */
+  setSkillDirs(dirs: readonly string[]): void {
+    void ipcRenderer.invoke(IPC.SET_SKILL_DIRS, dirs);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

@@ -67,6 +67,8 @@ export interface GuiBridgeOptions {
   readonly snapshot?: ConfigSnapshot;
   /** 联网工具配置覆盖（缺省 = settings.json web 键）。 */
   readonly web?: ConfigWeb;
+  /** 额外技能扫描目录（GUI 配置的自定义技能根；可选）。 */
+  readonly skillsDirs?: readonly string[];
 }
 
 /** assembleGuiStartup 的产出：GuiBridge 启动所需的全部装配结果。 */

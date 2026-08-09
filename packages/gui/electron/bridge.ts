@@ -277,6 +277,9 @@ export class GuiBridge {
     const discoveredSkills = discoverSkills({
       homeDir: this.homeDir,
       projectRoot: this.cwd,
+      ...(options.skillsDirs !== undefined && options.skillsDirs.length > 0
+        ? { extraDirs: options.skillsDirs }
+        : {}),
     });
     const skillIndex = new Map(
       discoveredSkills.map((skill) => [skill.name, skill] as const),

@@ -334,4 +334,52 @@ describe('discoverSkills（三级发现与同名覆盖）', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('extraDirs：额外技能根被扫描（level=extra），同名覆盖 project', () => {
+    const home = mkdtempSync(join(tmpdir(), 'md-skills-home-'));
+    const project = mkdtempSync(join(tmpdir(), 'md-skills-proj-'));
+    const extra = mkdtempSync(join(tmpdir(), 'md-skills-extra-'));
+    try {
+      // 项目层建一个 skill（level project）
+      makeSkill(
+        join(project, '.modou', 'skills'),
+        'shared',
+        '---\nname: shared\ndescription: 项目版\n---\n',
+        'body',
+      );
+      // 额外目录建同名 skill（应覆盖 project）
+      makeSkill(
+        extra,
+        'shared',
+        '---\nname: shared\ndescription: 团队版\n---\n',
+        'body',
+      );
+      const discovered = discoverSkills({
+        homeDir: home,
+        projectRoot: project,
+        extraDirs: [extra],
+      });
+      const shared = discovered.find((s) => s.name === 'shared');
+      expect(shared).toBeDefined();
+      expect(shared?.level).toBe('extra');
+      expect(shared?.description).toBe('团队版');
+      // 额外目录里的独占技能也能被发现
+      makeSkill(
+        extra,
+        'only-extra',
+        '---\nname: only-extra\ndescription: 仅额外目录\n---\n',
+        'body',
+      );
+      const withOnly = discoverSkills({
+        homeDir: home,
+        projectRoot: project,
+        extraDirs: [extra],
+      });
+      expect(withOnly.some((s) => s.name === 'only-extra')).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+      rmSync(extra, { recursive: true, force: true });
+    }
+  });
 });

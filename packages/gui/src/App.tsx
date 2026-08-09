@@ -326,7 +326,7 @@ export function App(): ReactNode {
   const permissionMode = ready?.permissionMode;
   const projectName = ready?.projectName ?? '';
   const isEmpty =
-    state.history.length === 0 && !state.running && state.error === null;
+    state.timeline.length === 0 && !state.running && state.error === null;
 
   return (
     <div className="app">
@@ -381,10 +381,9 @@ export function App(): ReactNode {
               />
             ) : (
               <ChatThread
-                history={state.history}
+                timeline={state.timeline}
                 streamingText={state.streamingText}
                 thinking={state.thinking}
-                tools={state.tools}
                 todo={state.todo}
                 subagents={state.subagents}
                 cards={cards}

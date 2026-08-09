@@ -83,6 +83,10 @@ export const IPC = {
   SET_ACTIVE_MODEL: 'modou:setActiveModel',
   /** renderer → main（invoke）：从上游 /models 拉取模型列表。 */
   LIST_REMOTE_MODELS: 'modou:listRemoteModels',
+  /** renderer → main（invoke）：读取额外技能扫描目录。 */
+  GET_SKILL_DIRS: 'modou:getSkillDirs',
+  /** renderer → main（invoke）：保存额外技能扫描目录（重建 bridge 生效）。 */
+  SET_SKILL_DIRS: 'modou:setSkillDirs',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

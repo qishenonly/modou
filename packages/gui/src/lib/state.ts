@@ -3,7 +3,12 @@
  *
  * 与 TUI App 的 apply() 同一套事件消费逻辑，只是把「for-await 逐条 setState」
  * 换成「dispatch(action) → reduce」：协议信封是唯一输入（只读消费），用户提交
- * 是本地 action（发送 Command 前把消息展示进历史）。两个前端的状态推导必须一致。
+ * 是本地 action（发送 Command 前把消息展示进历史）。
+ *
+ * 时间线（timeline）：消息流是**时序追加**的——用户消息、assistant 回复、以及
+ * **工具调用**按发生顺序同队列渲染（Claude 式：ab 间调用的工具就显示在 ab
+ * 与 c 之间，而不是堆在回复末尾）。流式缓冲（streamingText）在 turn 收尾 /
+ * 工具调用 / 下次提交时封存为 assistant 条目。
  */
 import type {
   ApprovalRequestData,
@@ -25,6 +30,24 @@ export interface ChatMessage {
   readonly text: string;
 }
 
+/** 子代理活动摘要（0.12.0 T-122：前端按 agent 分组折叠，不污染主对话）。 */
+export interface SubagentEntry {
+  readonly id: string;
+  readonly status: 'running' | 'done' | 'error';
+  readonly toolCount: number;
+  readonly text: string;
+}
+
+/** 时间线条目：用户消息 / assistant 文本段 / 工具调用（按发生顺序）。 */
+export type TimelineEntry =
+  | { readonly id: number; readonly kind: 'user'; readonly text: string }
+  | { readonly id: number; readonly kind: 'assistant'; readonly text: string }
+  | {
+      readonly id: number;
+      readonly kind: 'tool';
+      readonly entry: ToolCallEntry;
+    };
+
 /** 一条提示（compaction / notice 事件）。 */
 export interface NoticeEntry {
   readonly id: number;
@@ -32,34 +55,20 @@ export interface NoticeEntry {
   readonly text: string;
 }
 
-/** 一条子代理活动（0.12.0：Envelope.agent ≠ 'main' 的信封按 agent 分组折叠）。 */
-export interface SubagentEntry {
-  /** 子代理 ID（Envelope.agent）。 */
-  readonly id: string;
-  readonly status: 'running' | 'done' | 'error';
-  /** 过程文本摘要（text_delta 累计，截断到展示上限）。 */
-  readonly text: string;
-  /** 已发生的工具调用数（tool_call 计数）。 */
-  readonly toolCount: number;
-  /** 子代理开始轮次。 */
-  readonly turn: number;
-}
-
 /** GUI 渲染进程的完整 UI 状态。 */
 export interface GuiState {
-  /** 已封存的对话历史（用户消息 + 完整 assistant 回复逐轮封存）。 */
-  readonly history: readonly ChatMessage[];
-  /** 当前轮的流式回复缓冲（turn_end / error / 下次提交时封存进历史）。 */
+  /** 消息时间线（用户 + assistant 文本 + 工具调用，按发生顺序）。 */
+  readonly timeline: readonly TimelineEntry[];
+  /** 当前轮的流式回复缓冲（turn_end / error / 工具调用 / 下次提交时封存）。 */
   readonly streamingText: string;
   /** 当前轮 thinking 缓冲（可折叠展示；turn_end 时清空）。 */
   readonly thinking: string;
   readonly running: boolean;
   readonly turn: number;
   readonly totals: TokenTotals;
-  readonly tools: readonly ToolCallEntry[];
-  /** 待办清单（todo_update 事件的全量快照；0.11.0）。 */
+  /** 待办清单（todo_update 事件负载；T-110）。 */
   readonly todo: readonly TodoItemData[];
-  /** 子代理活动（0.12.0；按 agent 分组，可折叠）。 */
+  /** 子代理活动摘要（agent ≠ main 的信封折叠展示；0.12.0）。 */
   readonly subagents: readonly SubagentEntry[];
   readonly notices: readonly NoticeEntry[];
   readonly error: string | null;
@@ -71,13 +80,12 @@ export interface GuiState {
 /** 初始状态（会话起始）。 */
 export function initialGuiState(): GuiState {
   return {
-    history: [],
+    timeline: [],
     streamingText: '',
     thinking: '',
     running: false,
     turn: 0,
     totals: ZERO_TOKEN_TOTALS,
-    tools: [],
     todo: [],
     subagents: [],
     notices: [],
@@ -100,15 +108,21 @@ export type GuiAction =
   | { readonly type: 'remove_last_assistant' };
 
 let noticeSeq = 0;
+let timelineSeq = 0;
 
-/** 把流式缓冲封存进历史（turn_end / error / 下次提交前调用；幂等）。 */
+/** 把流式缓冲封存进时间线（turn_end / error / 工具调用 / 下次提交前调用；幂等）。 */
 function sealAssistant(state: GuiState): GuiState {
   if (state.streamingText.length === 0) return state;
+  timelineSeq += 1;
   return {
     ...state,
-    history: [
-      ...state.history,
-      { role: 'assistant' as const, text: state.streamingText },
+    timeline: [
+      ...state.timeline,
+      {
+        id: timelineSeq,
+        kind: 'assistant' as const,
+        text: state.streamingText,
+      },
     ],
     streamingText: '',
   };
@@ -126,66 +140,54 @@ function appendNotice(
   };
 }
 
-/** 子代理过程文本的展示上限（超出截断，折叠块不膨胀）。 */
-const SUBAGENT_TEXT_MAX = 600;
+/** 按 callId 更新时间线里对应的工具条目（用单个条目的工具规约）。 */
+function patchTimelineTool(
+  state: GuiState,
+  id: string,
+  event: Parameters<typeof reduceToolEvent>[1],
+): GuiState {
+  return {
+    ...state,
+    timeline: state.timeline.map((entry) =>
+      entry.kind === 'tool' && entry.entry.id === id
+        ? { ...entry, entry: reduceToolEvent([entry.entry], event)[0] }
+        : entry,
+    ),
+  };
+}
 
-/** 处理一条子代理信封（0.12.0：Envelope.agent ≠ 'main' 时按 agent 分组折叠）。 */
+/** 子代理事件（0.12.0 T-122）：agent ≠ main 的信封折叠成活动摘要，不进主时间线。 */
 function applySubagent(state: GuiState, envelope: Envelope): GuiState {
   const id = envelope.agent;
-  const patch = (
-    updater: (entry: SubagentEntry) => SubagentEntry,
-  ): GuiState => {
-    const existing = state.subagents.find((entry) => entry.id === id);
-    const next =
-      existing === undefined
-        ? {
-            id,
-            status: 'running' as const,
-            text: '',
-            toolCount: 0,
-            turn: envelope.turn,
-          }
-        : existing;
-    return {
-      ...state,
-      subagents: state.subagents.map((entry) =>
-        entry.id === id ? updater(next) : entry,
-      ),
-    };
+  const current = state.subagents.find((entry) => entry.id === id);
+  const base = current ?? {
+    id,
+    status: 'running' as const,
+    toolCount: 0,
+    text: '',
   };
+  const upsert = (entry: SubagentEntry): GuiState => ({
+    ...state,
+    subagents: [...state.subagents.filter((other) => other.id !== id), entry],
+  });
   switch (envelope.type) {
     case 'turn_start':
-      return state.subagents.some((entry) => entry.id === id)
-        ? state
-        : {
-            ...state,
-            subagents: [
-              ...state.subagents,
-              {
-                id,
-                status: 'running',
-                text: '',
-                toolCount: 0,
-                turn: envelope.turn,
-              },
-            ],
-          };
-    case 'text_delta':
-      return patch((entry) =>
-        entry.text.length >= SUBAGENT_TEXT_MAX
-          ? entry
-          : { ...entry, text: entry.text + envelope.data.delta },
-      );
-    case 'tool_call':
-      return patch((entry) => ({ ...entry, toolCount: entry.toolCount + 1 }));
+      return upsert({ ...base, status: 'running' });
     case 'turn_end':
-      return patch((entry) => ({ ...entry, status: 'done' }));
+      return upsert({ ...base, status: 'done' });
     case 'error':
-      return patch((entry) => ({
-        ...entry,
+      return upsert({
+        ...base,
         status: 'error',
-        text: envelope.data.message,
-      }));
+        text: `${base.text}\n${envelope.data.message}`.slice(-2000),
+      });
+    case 'text_delta':
+      return upsert({
+        ...base,
+        text: `${base.text}${envelope.data.delta}`.slice(-2000),
+      });
+    case 'tool_call':
+      return upsert({ ...base, toolCount: base.toolCount + 1 });
     default:
       return state;
   }
@@ -193,9 +195,13 @@ function applySubagent(state: GuiState, envelope: Envelope): GuiState {
 
 /** 处理一条协议信封（只读消费；switch 穷尽联合，default 不处理新类型）。 */
 function applyEnvelope(state: GuiState, envelope: Envelope): GuiState {
-  // 子代理事件（agent ≠ 'main'）单独规约：不污染主对话的流式缓冲 / 轮次状态
-  if (envelope.agent !== 'main') return applySubagent(state, envelope);
+  // 子代理事件独立折叠（不进主时间线）
+  if (envelope.agent !== 'main') {
+    return applySubagent(state, envelope);
+  }
   switch (envelope.type) {
+    case 'todo_update':
+      return { ...state, todo: envelope.data.items };
     case 'turn_start':
       // 防御：前一轮若有残留缓冲立即封存（正常情况 turn_end 已封存）
       return {
@@ -229,15 +235,33 @@ function applyEnvelope(state: GuiState, envelope: Envelope): GuiState {
         `已压缩：折叠 ${envelope.data.coveredTurns[0]}..${envelope.data.coveredTurns[1]} 轮，` +
           `${envelope.data.beforeTokens} → ${envelope.data.afterTokens} tokens`,
       );
-    case 'todo_update':
-      // 0.11.0：TodoWrite 后全量清单快照（进度条 / 勾选渲染）
-      return { ...state, todo: envelope.data.items };
     case 'notice':
       return appendNotice(state, envelope.data.level, envelope.data.text);
-    case 'tool_call':
+    case 'tool_call': // 工具调用发生时：封存当前流式文本段，把工具条目追加进时间线（内联展示）
+    {
+      const sealed = sealAssistant(state);
+      timelineSeq += 1;
+      return {
+        ...sealed,
+        timeline: [
+          ...sealed.timeline,
+          {
+            id: timelineSeq,
+            kind: 'tool',
+            entry: {
+              id: envelope.data.id,
+              name: envelope.data.name,
+              input: envelope.data.input,
+              status: 'pending',
+            },
+          },
+        ],
+      };
+    }
     case 'tool_progress':
+      return patchTimelineTool(state, envelope.data.id, envelope);
     case 'tool_result':
-      return { ...state, tools: reduceToolEvent(state.tools, envelope) };
+      return patchTimelineTool(state, envelope.data.id, envelope);
     case 'approval_request':
       return { ...state, approval: envelope.data };
     case 'approval_resolved':
@@ -260,9 +284,13 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
     case 'user_slash': {
       // 上一轮残留的部分回复（如被打断）先封存，再展示用户消息
       const sealed = sealAssistant(state);
+      timelineSeq += 1;
       return {
         ...sealed,
-        history: [...sealed.history, { role: 'user', text: action.text }],
+        timeline: [
+          ...sealed.timeline,
+          { id: timelineSeq, kind: 'user', text: action.text },
+        ],
       };
     }
     case 'clear_thread':
@@ -270,13 +298,23 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
         ...initialGuiState(),
         notices: state.notices, // 保留提示（新会话提示等）
       };
-    case 'seed_thread':
-      // resume 后整体替换线程（T-061：显示是日志的投影）；清空运行状态与缓冲
+    case 'seed_thread': {
+      // resume 后整体替换时间线（T-061：显示是日志的投影）
+      const timeline: TimelineEntry[] = [];
+      for (const message of action.messages) {
+        timelineSeq += 1;
+        timeline.push({
+          id: timelineSeq,
+          kind: message.role,
+          text: message.text,
+        });
+      }
       return {
         ...initialGuiState(),
-        history: action.messages,
+        timeline,
         notices: state.notices,
       };
+    }
     case 'set_totals':
       // resume / clear 后校准累计 token（预算账本在 bridge 侧重建）
       return { ...state, totals: action.totals };
@@ -285,12 +323,15 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
       return initialGuiState();
     case 'remove_last_assistant': {
       // 重新生成前移除最后一条 assistant 回复（从后往前找；无则不动）
-      let index = state.history.length - 1;
-      while (index >= 0 && state.history[index].role !== 'assistant') {
+      let index = state.timeline.length - 1;
+      while (index >= 0 && state.timeline[index].kind !== 'assistant') {
         index -= 1;
       }
       if (index < 0) return state;
-      return { ...state, history: state.history.slice(0, index) };
+      return {
+        ...state,
+        timeline: state.timeline.slice(0, index),
+      };
     }
     default:
       return state;
