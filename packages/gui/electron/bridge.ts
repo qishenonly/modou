@@ -52,6 +52,7 @@ import {
   aggregateByDay,
   aggregateCost,
   attachImagesToUserMessage,
+  accumulateUsage,
   BudgetLedger,
   buildContextState,
   buildSystemPrompt,
@@ -499,6 +500,7 @@ export class GuiBridge {
   /** 配置摘要（设置面板）。 */
   getConfig(): GuiConfigSummary {
     const permission = this.startup.permission;
+    const maxContext = this.provider.capabilities.maxContext;
     return {
       version,
       modelName: this.provider.modelId,
@@ -512,6 +514,9 @@ export class GuiBridge {
       maxTurns: this.startup.maxTurns,
       keepTurns: this.startup.keepTurns,
       sessionId: this.sessionLog?.sessionId ?? null,
+      ...(typeof maxContext === 'number' && Number.isFinite(maxContext)
+        ? { contextWindow: maxContext }
+        : {}),
     };
   }
 
@@ -527,9 +532,55 @@ export class GuiBridge {
     return deleted;
   }
 
-  // —— 设置（设置面板表单初值 / 保存到项目 .modou/settings.json）——
+  /**
+   * 重新生成最后一条回复（Claude 式重试）：从会话日志重建到最后一条 user
+   * 消息之前的完整状态，重新提交该 user 消息。日志保持 append-only（旧记录
+   * 不物理删除，只作为投影依据截断）——显示层由渲染进程先移除旧回复。
+   */
+  async regenerate(): Promise<boolean> {
+    if (this.currentController !== null) {
+      this.pushNotice(
+        'warn',
+        '任务运行中，暂不能重新生成（等当前轮次结束后再试）',
+      );
+      return false;
+    }
+    if (this.sessionLog === null) return false;
+    await this.historyRefresh;
+    const read = await this.sessionStore.read(
+      projectHash(this.cwd),
+      this.sessionLog.sessionId,
+    );
+    if (read === null) return false;
+    const records = read.records;
+    let lastUserIndex = -1;
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      if (records[index].kind === 'user') {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    if (lastUserIndex < 0) return false;
+    const userRecord = records[lastUserIndex];
+    if (userRecord.kind !== 'user') return false;
+    const text = userRecord.data.text.trim();
+    if (text.length === 0) return false;
+    // 截断到最后一条 user 消息之前，重建投影状态（002 4.1：上下文是日志的投影）
+    const truncated = records.slice(0, lastUserIndex);
+    this.historyMessages = projectMessages(truncated);
+    this.loggedUserCount = countUserMessages(this.historyMessages);
+    this.readFiles.clear();
+    for (const path of await rebuildReadFiles(truncated, this.cwd)) {
+      this.readFiles.add(path);
+    }
+    this.summaryState = rebuildSummaryState(truncated);
+    this.budget = BudgetLedger.rebuild([accumulateUsage(truncated)]);
+    this.todoState = rebuiltTodoState(truncated);
+    this.startTurn(text);
+    return true;
+  }
 
-  /** 可编辑设置的当前值（设置面板表单初值）。 */
+  // —— 设置（设置面板表单初值 / 保存到项目 .modou/settings.json）——  /** 可编辑设置的当前值（设置面板表单初值）。 */
   getSettings(): GuiSettings {
     const permission = this.startup.permission;
     const hooksConfig = this.startup.hooksConfig;

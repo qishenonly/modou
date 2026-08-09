@@ -490,12 +490,23 @@ body {
   overflow-wrap: break-word;
 }
 
-/* 复制按钮（悬停 assistant 消息时出现） */
+/* 复制 / 重新生成按钮（悬停 assistant 消息时出现） */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.msg-assistant:hover .msg-actions {
+  opacity: 1;
+}
+
 .msg-copy {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 4px;
   padding: 3px 8px;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -504,15 +515,14 @@ body {
   font-size: 11.5px;
   cursor: pointer;
   font-family: var(--font);
-  opacity: 0;
   transition:
-    opacity 0.12s,
     background 0.12s,
     color 0.12s;
 }
 
-.msg-assistant:hover .msg-copy {
-  opacity: 1;
+.msg-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .msg-copy:hover {
@@ -1028,6 +1038,13 @@ body {
   border-radius: 999px;
   padding: 2px 9px;
   color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.slash-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--bg-panel);
 }
 
 /* -------------------------------------------------------------- 状态栏 */

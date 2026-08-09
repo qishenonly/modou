@@ -299,6 +299,12 @@ export function App(): ReactNode {
     setCards((prev) => prev.filter((entry) => entry.card.kind !== 'plan'));
   };
 
+  const handleRegenerate = (): void => {
+    if (state.running) return;
+    dispatch({ type: 'remove_last_assistant' });
+    void window.modou.regenerate();
+  };
+
   const hasProject = ready !== null;
   const modelName = ready?.modelName ?? '';
   const permissionMode = ready?.permissionMode;
@@ -354,6 +360,7 @@ export function App(): ReactNode {
                 running={state.running}
                 onCloseCard={closeCard}
                 onPlanAction={handlePlanAction}
+                onRegenerate={handleRegenerate}
               />
             )}
             <InputBox

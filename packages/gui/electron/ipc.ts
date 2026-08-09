@@ -47,6 +47,8 @@ export const IPC = {
   RENAME_SESSION: 'modou:renameSession',
   /** renderer → main（invoke）：读取会话标题映射。 */
   GET_SESSION_TITLES: 'modou:getSessionTitles',
+  /** renderer → main（invoke）：重新生成最后一条回复（重试）。 */
+  REGENERATE: 'modou:regenerate',
   /** renderer → main（invoke）：打开目录选择器选项目目录（重建 bridge）。 */
   SELECT_DIRECTORY: 'modou:selectDirectory',
   /** renderer → main（invoke）：快照点列表（/rewind 面板）。 */
@@ -118,6 +120,8 @@ export interface GuiConfigSummary {
   readonly maxTurns: number;
   readonly keepTurns: number;
   readonly sessionId: string | null;
+  /** 当前模型的上下文窗口（token；供应商能力描述）。 */
+  readonly contextWindow?: number;
 }
 
 /** 计划产出（PLAN 通道 / GET_PLAN 返回）：null = 计划模式关闭或暂无计划。 */

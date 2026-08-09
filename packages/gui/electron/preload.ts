@@ -101,6 +101,10 @@ const api = {
   getSessionTitles(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_SESSION_TITLES);
   },
+  /** 重新生成最后一条回复（重试）。 */
+  regenerate(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.REGENERATE);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

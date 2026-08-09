@@ -72,6 +72,9 @@ export function InputBox({
 }): ReactNode {
   const [value, setValue] = useState('');
   const [pendingImages, setPendingImages] = useState<readonly string[]>([]);
+  // 输入历史（↑ 召回上一条提交；Claude 式）
+  const [history, setHistory] = useState<readonly string[]>([]);
+  const [histPos, setHistPos] = useState(-1);
   const ref = inputRef ?? useRef<HTMLTextAreaElement>(null);
 
   const showSlash = !running && value.trim().startsWith('/');
@@ -80,6 +83,10 @@ export function InputBox({
   const submit = (): void => {
     const text = value.trim();
     if (text.length === 0 && pendingImages.length === 0) return;
+    if (text.length > 0) {
+      setHistory((prev) => [...prev, text].slice(-50));
+    }
+    setHistPos(-1);
     onSubmit(text, pendingImages);
     setValue('');
     setPendingImages([]);
@@ -100,6 +107,27 @@ export function InputBox({
       event.preventDefault();
       event.stopPropagation();
       onStop();
+      return;
+    }
+    // ↑ / ↓ 召回输入历史（仅空输入框时触发，避免干扰多行编辑）
+    if (event.key === 'ArrowUp' && value.length === 0 && history.length > 0) {
+      event.preventDefault();
+      const pos =
+        histPos === -1 ? history.length - 1 : Math.max(0, histPos - 1);
+      setHistPos(pos);
+      setValue(history[pos]);
+      return;
+    }
+    if (event.key === 'ArrowDown' && histPos !== -1) {
+      event.preventDefault();
+      if (histPos < history.length - 1) {
+        const pos = histPos + 1;
+        setHistPos(pos);
+        setValue(history[pos]);
+      } else {
+        setHistPos(-1);
+        setValue('');
+      }
     }
   };
 
@@ -146,9 +174,19 @@ export function InputBox({
       {showSlash && (
         <div className="slash-hint">
           {BUILTIN_SLASH_COMMANDS.map((command) => (
-            <span key={command.name} className="slash-chip">
+            <button
+              key={command.name}
+              type="button"
+              className="slash-chip"
+              title={command.description}
+              onClick={() => {
+                const name = command.usage.split(' ')[0];
+                setValue(name.length > 0 ? `${name} ` : command.usage);
+                ref.current?.focus();
+              }}
+            >
               {command.usage}
-            </span>
+            </button>
           ))}
         </div>
       )}

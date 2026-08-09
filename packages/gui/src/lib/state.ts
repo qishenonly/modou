@@ -95,7 +95,9 @@ export type GuiAction =
   | { readonly type: 'clear_thread' }
   | { readonly type: 'seed_thread'; readonly messages: readonly ChatMessage[] }
   | { readonly type: 'set_totals'; readonly totals: TokenTotals }
-  | { readonly type: 'app_reset' };
+  | { readonly type: 'app_reset' }
+  /** 重新生成：移除最后一条 assistant 回复（随后 sendCommand regenerate）。 */
+  | { readonly type: 'remove_last_assistant' };
 
 let noticeSeq = 0;
 
@@ -281,6 +283,15 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
     case 'app_reset':
       // 切换项目目录后整机重置（新 bridge 从零开始；不留旧会话/旧提示）
       return initialGuiState();
+    case 'remove_last_assistant': {
+      // 重新生成前移除最后一条 assistant 回复（从后往前找；无则不动）
+      let index = state.history.length - 1;
+      while (index >= 0 && state.history[index].role !== 'assistant') {
+        index -= 1;
+      }
+      if (index < 0) return state;
+      return { ...state, history: state.history.slice(0, index) };
+    }
     default:
       return state;
   }

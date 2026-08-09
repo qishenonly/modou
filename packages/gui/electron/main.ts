@@ -278,6 +278,7 @@ function registerIpc(): void {
       return titles;
     },
   );
+  ipcMain.handle(IPC.REGENERATE, () => bridge?.regenerate() ?? false);
   ipcMain.handle(
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,

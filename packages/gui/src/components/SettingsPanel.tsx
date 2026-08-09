@@ -15,6 +15,7 @@ import type {
 } from '../../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../../electron/status';
 import { applyTheme } from '../lib/theme';
+import { formatTokens } from '../lib/format';
 
 type Section =
   'model' | 'permissions' | 'context' | 'extensions' | 'appearance' | 'about';
@@ -252,6 +253,15 @@ export function SettingsPanel({
                         }
                       />
                     </div>
+                    {config.contextWindow !== undefined && (
+                      <div className="settings-field">
+                        <label className="settings-label">上下文窗口</label>
+                        <p className="settings-desc">
+                          {formatTokens(config.contextWindow)}{' '}
+                          tokens（当前模型能力；压缩阈值默认取 70%）
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
 

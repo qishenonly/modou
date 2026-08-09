@@ -93,7 +93,13 @@ function UserMessage({ text }: { readonly text: string }): ReactNode {
   );
 }
 
-function AssistantMessage({ text }: { readonly text: string }): ReactNode {
+function AssistantMessage({
+  text,
+  onRegenerate,
+}: {
+  readonly text: string;
+  readonly onRegenerate?: () => void;
+}): ReactNode {
   const [copied, setCopied] = useState(false);
 
   const copy = async (): Promise<void> => {
@@ -113,23 +119,26 @@ function AssistantMessage({ text }: { readonly text: string }): ReactNode {
         <div className="msg-bubble msg-assistant-bubble">
           <Markdown text={text} />
         </div>
-        <button
-          type="button"
-          className="msg-copy"
-          onClick={() => void copy()}
-          title="复制消息"
-        >
-          {copied ? (
-            '已复制'
-          ) : (
-            <svg viewBox="0 0 16 16" className="icon-copy" aria-hidden="true">
-              <path
-                d="M5.25 2.5h6.5A1.75 1.75 0 0 1 13.5 4.25v6.5a1.75 1.75 0 0 1-1.75 1.75H5.25A1.75 1.75 0 0 1 3.5 10.75v-6.5A1.75 1.75 0 0 1 5.25 2.5ZM5 5.25v5.5c0 .14.11.25.25.25h5.5c.14 0 .25-.11.25-.25v-5.5a.25.25 0 0 0-.25-.25h-5.5a.25.25 0 0 0-.25.25ZM2.5 5.5v5.75A2.25 2.25 0 0 0 4.75 13.5h5.75v-1.5H4.75a.75.75 0 0 1-.75-.75V5.5h-1.5Z"
-                fill="currentColor"
-              />
-            </svg>
+        <div className="msg-actions">
+          <button
+            type="button"
+            className="msg-copy"
+            onClick={() => void copy()}
+            title="复制消息"
+          >
+            {copied ? '已复制' : '复制'}
+          </button>
+          {onRegenerate !== undefined && (
+            <button
+              type="button"
+              className="msg-copy"
+              onClick={onRegenerate}
+              title="重新生成回复"
+            >
+              重新生成
+            </button>
           )}
-        </button>
+        </div>
       </div>
     </div>
   );
@@ -157,6 +166,7 @@ export function ChatThread({
   running,
   onCloseCard,
   onPlanAction,
+  onRegenerate,
 }: {
   readonly history: readonly ChatMessage[];
   readonly streamingText: string;
@@ -174,6 +184,7 @@ export function ChatThread({
   readonly running: boolean;
   readonly onCloseCard: (id: number) => void;
   readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
+  readonly onRegenerate: () => void;
 }): ReactNode {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -199,7 +210,11 @@ export function ChatThread({
           entry.role === 'user' ? (
             <UserMessage key={index} text={entry.text} />
           ) : (
-            <AssistantMessage key={index} text={entry.text} />
+            <AssistantMessage
+              key={index}
+              text={entry.text}
+              onRegenerate={onRegenerate}
+            />
           ),
         )}
 
