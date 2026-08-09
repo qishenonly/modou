@@ -41,6 +41,8 @@ export interface ModouApi {
   getThread(): Promise<readonly ThreadMessage[] | null>;
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): Promise<readonly string[]>;
+  /** 已发现技能清单（设置面板）。 */
+  listSkills(): Promise<readonly { name: string; description: string }[]>;
   /** 当前上下文分项核算（/context 面板）。 */
   getContext(): Promise<ContextStateData | null>;
   /** 配置摘要（设置面板 / 顶栏）。 */

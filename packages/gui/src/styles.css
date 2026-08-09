@@ -1201,6 +1201,33 @@ body {
   padding: 0 4px;
 }
 
+/* 技能清单（设置面板） */
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.skill-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  display: block;
+}
+
+.skill-desc {
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: block;
+  margin-top: 2px;
+}
+
 /* 选择器（模型） */
 .picker-list {
   display: flex;

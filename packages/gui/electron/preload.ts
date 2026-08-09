@@ -61,6 +61,10 @@ const api = {
   listModels(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.LIST_MODELS);
   },
+  /** 已发现技能清单（设置面板）。 */
+  listSkills(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_SKILLS);
+  },
   /** 当前上下文分项核算（/context 面板）。 */
   getContext(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_CONTEXT);

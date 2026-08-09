@@ -33,10 +33,14 @@ export function SettingsPanel({
 }): ReactNode {
   const [config, setConfig] = useState<GuiConfigSummary | null>(null);
   const [models, setModels] = useState<readonly string[]>([]);
+  const [skills, setSkills] = useState<
+    readonly { readonly name: string; readonly description: string }[]
+  >([]);
 
   useEffect(() => {
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
     void window.modou.listModels().then((value) => setModels(value));
+    void window.modou.listSkills().then((value) => setSkills(value));
   }, []);
 
   const switchModel = (modelId: string): void => {
@@ -94,6 +98,24 @@ export function SettingsPanel({
             <Row label="审批策略" value={config.policy} />
             <Row label="轮次上限" value={String(config.maxTurns)} />
             <Row label="压缩保留" value={`近 ${config.keepTurns} 轮原文`} />
+
+            <div className="settings-section">技能（Skills）</div>
+            {skills.length === 0 ? (
+              <p className="settings-note">
+                未发现技能。在项目{' '}
+                <code>.modou/skills/&lt;name&gt;/SKILL.md</code> 或全局{' '}
+                <code>~/.modou/skills/</code> 添加（SKILL.md 开放标准）。
+              </p>
+            ) : (
+              <div className="skill-list">
+                {skills.map((skill) => (
+                  <div key={skill.name} className="skill-item">
+                    <span className="skill-name">{skill.name}</span>
+                    <span className="skill-desc">{skill.description}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="settings-section">关于</div>
             <Row label="版本" value={config.version} />

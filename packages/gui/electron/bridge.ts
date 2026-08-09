@@ -197,6 +197,11 @@ export class GuiBridge {
   private readonly callbacks: GuiBridgeCallbacks;
   /** 完整工具注册表（GUI 面向写/执行场景：write/edit/bash/todo/task + 扩展工具）。 */
   private readonly tools: ToolRegistry;
+  /** 已发现的技能（0.15.0 渐进式披露：name + description 常驻系统提示词）。 */
+  private readonly skills: readonly {
+    readonly name: string;
+    readonly description: string;
+  }[];
   /** 基准系统提示词（正常执行模式；Plan Mode 进入/退出时在 system 与 base 间切换）。 */
   private baseSystem: string;
   private system: string;
@@ -295,6 +300,10 @@ export class GuiBridge {
       memoryLoaded.text.length > 0 ? memoryLoaded.text : undefined;
     tools = withMemoryTools(tools, { dir: memoryDir });
     this.tools = tools;
+    this.skills = discoveredSkills.map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+    }));
 
     // —— 基准系统提示词（技能/角色清单常驻；MCP 连接完成后重建）——
     const extraParts: string[] = [];
@@ -441,6 +450,14 @@ export class GuiBridge {
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): readonly string[] {
     return collectModelCandidates(this.provider, this.env);
+  }
+
+  /** 已发现的技能清单（设置面板展示；0.15.0 渐进式披露的清单部分）。 */
+  listSkills(): readonly {
+    readonly name: string;
+    readonly description: string;
+  }[] {
+    return this.skills;
   }
 
   /** 当前上下文分项核算（/context 面板；buildContextState 与 loop 同源）。 */

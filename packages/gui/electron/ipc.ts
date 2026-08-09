@@ -27,6 +27,8 @@ export const IPC = {
   GET_THREAD: 'modou:getThread',
   /** renderer → main（invoke）：/model 候选模型 ID 列表。 */
   LIST_MODELS: 'modou:listModels',
+  /** renderer → main（invoke）：已发现技能清单（设置面板）。 */
+  GET_SKILLS: 'modou:getSkills',
   /** renderer → main（invoke）：当前上下文分项核算（/context 面板）。 */
   GET_CONTEXT: 'modou:getContext',
   /** renderer → main（invoke）：配置摘要（设置面板）。 */

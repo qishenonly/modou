@@ -230,6 +230,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.LIST_SESSIONS, () => bridge?.listSessions() ?? []);
   ipcMain.handle(IPC.GET_THREAD, () => bridge?.getThread() ?? []);
   ipcMain.handle(IPC.LIST_MODELS, () => bridge?.listModels() ?? []);
+  ipcMain.handle(IPC.GET_SKILLS, () => bridge?.listSkills() ?? []);
   ipcMain.handle(IPC.GET_CONTEXT, () => bridge?.getContext() ?? null);
   ipcMain.handle(IPC.GET_CONFIG, () => bridge?.getConfig() ?? null);
   ipcMain.handle(
