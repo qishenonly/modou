@@ -24,7 +24,10 @@ import type {
   GuiSettingsPatch,
   GuiTheme,
   PlanPayload,
+  ProviderEntry,
+  ProviderState,
   ReadyPayload,
+  RemoteModelsResult,
   SaveSettingsResult,
   ThreadMessage,
 } from '../../electron/ipc';
@@ -72,6 +75,20 @@ export interface ModouApi {
   regenerate(): Promise<boolean>;
   /** 用系统文件管理器打开路径。 */
   openPath(path: string): void;
+  /** 读取供应商列表 + 当前模型（ccswitch 式模型管理）。 */
+  getProviders(): Promise<ProviderState>;
+  /** 保存供应商列表（不切换当前模型）。 */
+  saveProviders(providers: readonly ProviderEntry[]): Promise<void>;
+  /** 切换当前模型（写 active + 重建 bridge）。 */
+  setActiveModel(input: {
+    readonly providerId: string;
+    readonly model: string;
+  }): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** 从上游 /models 拉取模型列表。 */
+  listRemoteModels(input: {
+    readonly baseURL: string;
+    readonly apiKey: string;
+  }): Promise<RemoteModelsResult>;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

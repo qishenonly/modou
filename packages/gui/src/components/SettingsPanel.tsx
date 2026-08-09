@@ -116,10 +116,12 @@ export function SettingsPanel({
   onClose,
   onSelectDirectory,
   onSaved,
+  onOpenModels,
 }: {
   readonly onClose: () => void;
   readonly onSelectDirectory: () => void;
   readonly onSaved?: (needRestart: boolean) => void;
+  readonly onOpenModels?: () => void;
 }): ReactNode {
   const [section, setSection] = useState<Section>('model');
   const [config, setConfig] = useState<GuiConfigSummary | null>(null);
@@ -225,6 +227,17 @@ export function SettingsPanel({
                 {section === 'model' && (
                   <>
                     <h3 className="settings-section-title">模型</h3>
+                    {onOpenModels !== undefined && (
+                      <div className="settings-field">
+                        <button
+                          type="button"
+                          className="btn btn-ghost settings-switch"
+                          onClick={onOpenModels}
+                        >
+                          打开完整模型管理（多供应商 / 中转站 / 上游拉取）…
+                        </button>
+                      </div>
+                    )}
                     <div className="settings-field">
                       <label className="settings-label">供应商</label>
                       <select

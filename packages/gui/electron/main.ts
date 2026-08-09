@@ -31,6 +31,12 @@ import {
 } from 'electron';
 import { GuiBridge } from './bridge';
 import { IPC, type ReadyPayload } from './ipc';
+import type {
+  ActiveModel,
+  ProviderEntry,
+  ProviderState,
+  RemoteModelsResult,
+} from './ipc';
 import type { Command, Envelope } from '@modou/core';
 
 const isDev = process.env.MODOU_GUI_DEV === '1';
@@ -113,6 +119,105 @@ function writeGuiState(state: GuiStateFile): void {
       '[modou-gui] 无法写 gui-state：',
       caught instanceof Error ? caught.message : String(caught),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 模型管理（ccswitch 式：多供应商 / 中转站 / 源头；~/.modou/providers.json）
+// ---------------------------------------------------------------------------
+
+const providersFile = join(homedir(), '.modou', 'providers.json');
+
+interface ProvidersFileShape {
+  readonly providers?: readonly ProviderEntry[];
+  readonly active?: ActiveModel | null;
+}
+
+function readProviders(): ProviderState {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(providersFile, 'utf8'),
+    ) as ProvidersFileShape;
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { providers: [], active: null };
+    }
+    return {
+      providers: Array.isArray(parsed.providers) ? parsed.providers : [],
+      active: parsed.active ?? null,
+    };
+  } catch {
+    return { providers: [], active: null };
+  }
+}
+
+function writeProviders(state: ProviderState): void {
+  try {
+    mkdirSync(dirname(providersFile), { recursive: true });
+    writeFileSync(providersFile, JSON.stringify(state, null, 2));
+  } catch (caught) {
+    console.warn(
+      '[modou-gui] 无法写 providers.json：',
+      caught instanceof Error ? caught.message : String(caught),
+    );
+  }
+}
+
+/**
+ * 把当前生效模型注入 core 环境变量（装配 bridge 时调用）。
+ * core resolveConfig 顺序：settings.json → MODOU_* 环境变量 → 显式覆盖，
+ * 因此 MODOU_PROVIDER/MODOU_MODEL/MODOU_BASE_URL 覆盖配置文件；API Key 按
+ * 供应商类型写 OPENAI_API_KEY / ANTHROPIC_API_KEY。
+ */
+function applyActiveEnv(active: ActiveModel | null): void {
+  if (active === null) return;
+  process.env.MODOU_PROVIDER = active.type;
+  process.env.MODOU_MODEL = active.model;
+  if (active.baseURL.length > 0) process.env.MODOU_BASE_URL = active.baseURL;
+  if (active.type === 'anthropic') {
+    process.env.ANTHROPIC_API_KEY = active.apiKey;
+  } else {
+    process.env.OPENAI_API_KEY = active.apiKey;
+  }
+}
+
+/** 从上游 OpenAI 兼容 `/models` 端点拉取模型列表（主进程 fetch，无 CORS 限制）。 */
+async function listRemoteModels(input: {
+  readonly baseURL: string;
+  readonly apiKey: string;
+}): Promise<RemoteModelsResult> {
+  const base = input.baseURL.trim().replace(/\/+$/, '');
+  if (base.length === 0)
+    return { ok: false, models: [], message: 'baseURL 为空' };
+  try {
+    const res = await fetch(`${base}/models`, {
+      headers: {
+        Authorization: `Bearer ${input.apiKey.trim()}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return {
+        ok: false,
+        models: [],
+        message: `HTTP ${res.status}${body.length > 0 ? `：${body.slice(0, 200)}` : ''}`,
+      };
+    }
+    const data = (await res.json()) as unknown;
+    const list = (data as { data?: Array<{ id?: unknown }> }).data;
+    const models = Array.isArray(list)
+      ? list
+          .map((item) => (typeof item.id === 'string' ? item.id : ''))
+          .filter((id) => id.length > 0)
+      : [];
+    return { ok: true, models };
+  } catch (caught) {
+    return {
+      ok: false,
+      models: [],
+      message: caught instanceof Error ? caught.message : String(caught),
+    };
   }
 }
 
@@ -308,6 +413,49 @@ function registerIpc(): void {
   ipcMain.handle(IPC.OPEN_PATH, (_event, path: string) => {
     void shell.openPath(path);
   });
+  // —— 模型管理（ccswitch 式）——
+  ipcMain.handle(IPC.GET_PROVIDERS, () => readProviders());
+  ipcMain.handle(
+    IPC.SAVE_PROVIDERS,
+    (_event, providers: readonly ProviderEntry[]) => {
+      const state = readProviders();
+      const active =
+        state.active !== null &&
+        providers.some((provider) => provider.id === state.active?.providerId)
+          ? state.active
+          : null;
+      writeProviders({ providers, active });
+    },
+  );
+  ipcMain.handle(
+    IPC.SET_ACTIVE_MODEL,
+    (
+      _event,
+      input: { readonly providerId: string; readonly model: string },
+    ) => {
+      const state = readProviders();
+      const provider = state.providers.find((p) => p.id === input.providerId);
+      if (provider === undefined) {
+        return { ok: false, message: '供应商不存在' };
+      }
+      const active: ActiveModel = {
+        providerId: provider.id,
+        type: provider.type,
+        model: input.model,
+        baseURL: provider.baseURL,
+        apiKey: provider.apiKey,
+      };
+      writeProviders({ providers: state.providers, active });
+      applyActiveEnv(active);
+      createBridge(currentCwd); // 重建 bridge 使新模型/供应商生效
+      return { ok: true };
+    },
+  );
+  ipcMain.handle(
+    IPC.LIST_REMOTE_MODELS,
+    (_event, input: { readonly baseURL: string; readonly apiKey: string }) =>
+      listRemoteModels(input),
+  );
   ipcMain.handle(
     IPC.DELETE_SESSION,
     (_event, sessionId: string) => bridge?.deleteSession(sessionId) ?? false,
@@ -349,6 +497,7 @@ app.whenReady().then(() => {
   const saved = readGuiState();
   const lastDirectory = saved.lastDirectory;
   if (lastDirectory !== undefined && existsSync(lastDirectory)) {
+    applyActiveEnv(readProviders().active);
     createBridge(lastDirectory);
   }
 

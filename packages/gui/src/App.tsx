@@ -31,7 +31,7 @@ import {
   SkillsPanel,
 } from './components/ExtensionPanels';
 import { InputBox } from './components/InputBox';
-import { ModelPicker } from './components/ModelPicker';
+import { ModelManagerPanel } from './components/ModelManagerPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
@@ -40,7 +40,7 @@ import type { GuiCard } from './components/CommandCards';
 import { applyTheme } from './lib/theme';
 
 type ModalKind =
-  'none' | 'settings' | 'model' | 'mcp' | 'skills' | 'hooks' | 'agents';
+  'none' | 'settings' | 'models' | 'mcp' | 'skills' | 'hooks' | 'agents';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -226,7 +226,7 @@ export function App(): ReactNode {
         return;
       case 'model':
         if (args === undefined || args.trim().length === 0) {
-          setModal('model');
+          setModal('models');
           return;
         }
         window.modou.sendCommand({ type: 'slash', name, args: args.trim() });
@@ -344,7 +344,7 @@ export function App(): ReactNode {
           onDelete={handleDeleteSession}
           onRename={handleRename}
           onSelectDirectory={handleSelectDirectory}
-          onOpenModel={() => setModal('model')}
+          onOpenModel={() => setModal('models')}
           onOpenSettings={() => setModal('settings')}
           onCollapse={() => setSidebarOpen(false)}
           onOpenMcp={() => setModal('mcp')}
@@ -433,6 +433,7 @@ export function App(): ReactNode {
         <SettingsPanel
           onClose={() => setModal('none')}
           onSelectDirectory={handleSelectDirectory}
+          onOpenModels={() => setModal('models')}
           onSaved={(needRestart) => {
             if (needRestart) {
               dispatch({ type: 'app_reset' });
@@ -442,11 +443,8 @@ export function App(): ReactNode {
           }}
         />
       )}
-      {modal === 'model' && (
-        <ModelPicker
-          currentModel={modelName}
-          onClose={() => setModal('none')}
-        />
+      {modal === 'models' && (
+        <ModelManagerPanel onClose={() => setModal('none')} />
       )}
       {modal === 'mcp' && <McpPanel onClose={() => setModal('none')} />}
       {modal === 'skills' && <SkillsPanel onClose={() => setModal('none')} />}

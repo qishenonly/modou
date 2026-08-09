@@ -75,6 +75,14 @@ export const IPC = {
   GET_PLAN: 'modou:getPlan',
   /** renderer → main（invoke）：退出应用。 */
   QUIT: 'modou:quit',
+  /** renderer → main（invoke）：读取供应商列表 + 当前模型。 */
+  GET_PROVIDERS: 'modou:getProviders',
+  /** renderer → main（invoke）：保存供应商列表（不切换当前模型）。 */
+  SAVE_PROVIDERS: 'modou:saveProviders',
+  /** renderer → main（invoke）：切换当前模型（写 active + 重建 bridge）。 */
+  SET_ACTIVE_MODEL: 'modou:setActiveModel',
+  /** renderer → main（invoke）：从上游 /models 拉取模型列表。 */
+  LIST_REMOTE_MODELS: 'modou:listRemoteModels',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -239,6 +247,44 @@ export interface SaveSettingsResult {
 
 /** 主题（外观分类；gui-state 持久化）。 */
 export type GuiTheme = 'light' | 'dark' | 'system';
+
+// ---------------------------------------------------------------------------
+// 模型管理（ccswitch 式：多供应商 / 中转站 / 源头，key + baseURL + 模型）
+// ---------------------------------------------------------------------------
+
+/** 一个 API 供应商（Anthropic 官方 / OpenAI / 中转站 / Ollama 等）。 */
+export interface ProviderEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly type: 'openai-compat' | 'anthropic';
+  /** 端点根 URL（OpenAI 兼容含 /v1，如 https://api.deepseek.com/v1）。 */
+  readonly baseURL: string;
+  readonly apiKey: string;
+  /** 已保存的模型列表（上游拉取后缓存，可手动增删）。 */
+  readonly models: readonly string[];
+}
+
+/** 当前生效的模型（装配 bridge 时注入 core 环境变量）。 */
+export interface ActiveModel {
+  readonly providerId: string;
+  readonly type: ProviderEntry['type'];
+  readonly model: string;
+  readonly baseURL: string;
+  readonly apiKey: string;
+}
+
+/** 供应商状态（GET_PROVIDERS 返回）。 */
+export interface ProviderState {
+  readonly providers: readonly ProviderEntry[];
+  readonly active: ActiveModel | null;
+}
+
+/** 上游拉取模型的结果。 */
+export interface RemoteModelsResult {
+  readonly ok: boolean;
+  readonly models: readonly string[];
+  readonly message?: string;
+}
 
 import type { StructuredPlan } from '@modou/core';
 export type {

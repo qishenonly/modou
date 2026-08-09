@@ -1809,6 +1809,147 @@ body {
   margin-top: 2px;
 }
 
+/* 模型管理面板（ccswitch 式左右布局） */
+.model-active {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  font-size: 13px;
+}
+
+.model-manage {
+  display: flex;
+  gap: 20px;
+  min-height: 0;
+}
+
+.model-providers {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.model-providers-label {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.model-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.model-provider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+.model-provider:hover {
+  background: var(--bg-hover);
+}
+
+.model-provider-active {
+  background: var(--bg-subtle);
+  border-color: var(--border);
+}
+
+.model-provider-name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.model-provider-active-tag {
+  font-size: 10.5px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+.model-add {
+  margin-top: 10px;
+}
+
+.model-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.model-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: var(--bg-subtle);
+}
+
+.model-model-active {
+  outline: 1px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.model-model-id {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-set {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.model-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 /* 侧栏扩展区（MCP / Skills / Hooks / Agents 独立入口） */
 .sidebar-extensions {
   padding: 8px 12px 4px;

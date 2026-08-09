@@ -109,6 +109,22 @@ const api = {
   openPath(path: string): void {
     void ipcRenderer.invoke(IPC.OPEN_PATH, path);
   },
+  /** 读取供应商列表 + 当前模型。 */
+  getProviders(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_PROVIDERS);
+  },
+  /** 保存供应商列表（不切换当前模型）。 */
+  saveProviders(providers: unknown): Promise<void> {
+    return ipcRenderer.invoke(IPC.SAVE_PROVIDERS, providers);
+  },
+  /** 切换当前模型（写 active + 重建 bridge）。 */
+  setActiveModel(input: unknown): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SET_ACTIVE_MODEL, input);
+  },
+  /** 从上游 /models 拉取模型列表。 */
+  listRemoteModels(input: unknown): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.LIST_REMOTE_MODELS, input);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);
