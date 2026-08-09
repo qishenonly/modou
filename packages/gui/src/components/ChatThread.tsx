@@ -11,10 +11,68 @@ import type { TodoItemData } from '@modou/core';
 import type { ChatMessage, SubagentEntry } from '../lib/state';
 import type { ToolCallEntry } from '../lib/tools';
 import { Markdown } from '../lib/markdown';
+import {
+  ContextCard,
+  CostCard,
+  HelpCard,
+  InitCard,
+  McpCard,
+  PlanCard,
+  RewindCard,
+  SnapshotsCard,
+  type GuiCard,
+} from './CommandCards';
 import { LogoMark } from './LogoMark';
 import { SubagentBlock } from './SubagentBlock';
 import { TodoList } from './TodoList';
 import { ToolCard } from './ToolCard';
+
+/** 一张带唯一 id 的命令结果卡片（App 维护，ChatThread 渲染）。 */
+export interface GuiCardEntry {
+  readonly id: number;
+  readonly card: GuiCard;
+}
+
+/** 按 kind 渲染一张命令结果卡片。 */
+function CommandCardView({
+  entry,
+  onClose,
+  onPlanAction,
+}: {
+  readonly entry: GuiCardEntry;
+  readonly onClose: () => void;
+  readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
+}): ReactNode {
+  const card = entry.card;
+  switch (card.kind) {
+    case 'help':
+      return <HelpCard onClose={onClose} />;
+    case 'cost':
+      return <CostCard data={card.data} onClose={onClose} />;
+    case 'mcp':
+      return <McpCard data={card.data} onClose={onClose} />;
+    case 'context':
+      return <ContextCard data={card.data} onClose={onClose} />;
+    case 'init':
+      return <InitCard data={card.data} onClose={onClose} />;
+    case 'snapshots':
+      return <SnapshotsCard data={card.data} onClose={onClose} />;
+    case 'rewind':
+      return <RewindCard points={card.data} onClose={onClose} />;
+    case 'plan':
+      return (
+        <PlanCard
+          plan={card.data}
+          onApprove={() => onPlanAction('approve')}
+          onModify={() => onPlanAction('modify')}
+          onReject={() => onPlanAction('reject')}
+          onClose={onClose}
+        />
+      );
+    default:
+      return null;
+  }
+}
 
 /** 等待指示：三个脉冲圆点（Claude 式）。 */
 function ThinkingDots(): ReactNode {
@@ -93,9 +151,12 @@ export function ChatThread({
   tools,
   todo,
   subagents,
+  cards,
   notices,
   error,
   running,
+  onCloseCard,
+  onPlanAction,
 }: {
   readonly history: readonly ChatMessage[];
   readonly streamingText: string;
@@ -103,6 +164,7 @@ export function ChatThread({
   readonly tools: readonly ToolCallEntry[];
   readonly todo: readonly TodoItemData[];
   readonly subagents: readonly SubagentEntry[];
+  readonly cards: readonly GuiCardEntry[];
   readonly notices: readonly {
     readonly id: number;
     readonly level: string;
@@ -110,12 +172,14 @@ export function ChatThread({
   }[];
   readonly error: string | null;
   readonly running: boolean;
+  readonly onCloseCard: (id: number) => void;
+  readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
 }): ReactNode {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [history, streamingText, tools, notices, running]);
+  }, [history, streamingText, tools, notices, running, cards]);
 
   // 等待动画触发条件：running 且「没有文本、没有思考、没有进行中工具」
   const hasOutput =
@@ -138,6 +202,15 @@ export function ChatThread({
             <AssistantMessage key={index} text={entry.text} />
           ),
         )}
+
+        {cards.map((entry) => (
+          <CommandCardView
+            key={entry.id}
+            entry={entry}
+            onClose={() => onCloseCard(entry.id)}
+            onPlanAction={onPlanAction}
+          />
+        ))}
 
         {subagents.map((entry) => (
           <SubagentBlock key={entry.id} entry={entry} />

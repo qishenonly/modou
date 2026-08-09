@@ -3,18 +3,18 @@
  *
  * 消费模型与 TUI App 完全一致：事件流是唯一输入（dispatch → reducer），
  * 用户输入转成 Command 经 sendCommand 回传 core（002 3.3 反向通道）。
- * UI 模态（模型 / 设置 / 上下文 / 帮助 / 计划 / 快照 / 成本 / MCP / init）是
- * 渲染进程驱动的本地弹窗，拉取型数据走 invoke 查询。
  *
- * 0.10–0.17 功能接线：
- * - /rewind /snapshots /cost /mcp /init → 本地面板（invoke 拉取）；
- * - /plan → 发送 slash（进入/退出计划模式），计划产出经 PLAN 通道自动弹面板；
- * - todo_update / 子代理信封（agent ≠ main）由 reducer 规约，ChatThread 渲染。
+ * 命令结果内联化（Claude 式「像问答一样」）：斜杠命令（/help /context /cost
+ * /mcp /init /rewind /snapshots /plan）的结果以**对话内卡片**呈现——紧跟用户
+ * 命令消息之后，不弹窗。数据经 invoke 拉取（getContext / getCost / …），
+ * 计划产出经 PLAN 通道驱动。仅保留两类模态：模型选择器、设置面板
+ * （交互选择类，不是「命令结果」）。
  */
 import {
   useCallback,
   useEffect,
   useReducer,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -23,31 +23,16 @@ import type { PlanPayload, ReadyPayload } from '../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
-import { ChatThread } from './components/ChatThread';
-import { ContextPanel } from './components/ContextPanel';
-import { CostPanel } from './components/CostPanel';
-import { HelpPanel } from './components/HelpPanel';
-import { InitPanel } from './components/InitPanel';
+import { ChatThread, type GuiCardEntry } from './components/ChatThread';
 import { InputBox } from './components/InputBox';
-import { McpPanel } from './components/McpPanel';
 import { ModelPicker } from './components/ModelPicker';
-import { PlanPanel } from './components/PlanPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
-import { SnapshotPanel } from './components/SnapshotPanel';
 import { StatusBar } from './components/StatusBar';
 import { Welcome } from './components/Welcome';
+import type { GuiCard } from './components/CommandCards';
 
-type ModalKind =
-  | 'none'
-  | 'settings'
-  | 'model'
-  | 'context'
-  | 'help'
-  | 'rewind'
-  | 'cost'
-  | 'mcp'
-  | 'init';
+type ModalKind = 'none' | 'settings' | 'model';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
@@ -55,8 +40,17 @@ export function App(): ReactNode {
   const [ready, setReady] = useState<ReadyPayload | null>(null);
   const [sessions, setSessions] = useState<readonly ResumeCandidate[]>([]);
   const [modal, setModal] = useState<ModalKind>('none');
-  // 计划面板（PLAN 通道：计划产出后自动弹出；null = 面板关闭）
-  const [planPayload, setPlanPayload] = useState<PlanPayload | null>(null);
+  // 命令结果卡片（对话内展示；/help /context /cost /mcp /init /rewind /plan）
+  const [cards, setCards] = useState<readonly GuiCardEntry[]>([]);
+  const cardSeq = useRef(0);
+
+  const appendCard = useCallback((card: GuiCard): void => {
+    cardSeq.current += 1;
+    setCards((prev) => [...prev, { id: cardSeq.current, card }]);
+  }, []);
+  const closeCard = useCallback((id: number): void => {
+    setCards((prev) => prev.filter((entry) => entry.id !== id));
+  }, []);
 
   // 订阅事件流 + 配置摘要 + 计划产出；挂载时用 getConfig 兜底初始状态
   useEffect(() => {
@@ -70,6 +64,7 @@ export function App(): ReactNode {
         const sessionChanged = prev?.sessionId !== payload.sessionId;
         if (projectChanged) {
           dispatch({ type: 'app_reset' });
+          setCards([]);
         } else if (sessionChanged) {
           void window.modou.getThread().then((thread) => {
             if (thread !== null) {
@@ -83,9 +78,11 @@ export function App(): ReactNode {
         return payload;
       });
     });
-    const offPlan = window.modou.onPlan((payload) => {
-      setPlanPayload(payload);
-      if (payload.plan !== null) setModal('none'); // 计划面板单独渲染，盖住其他模态
+    const offPlan = window.modou.onPlan((payload: PlanPayload) => {
+      // 计划产出 → 对话内计划卡片（批准/修改/拒绝）
+      if (payload.plan !== null) {
+        appendCard({ kind: 'plan', data: payload.plan });
+      }
     });
     void window.modou.getConfig().then((config) => {
       if (config !== null) {
@@ -102,7 +99,7 @@ export function App(): ReactNode {
       offReady();
       offPlan();
     };
-  }, []);
+  }, [appendCard]);
 
   // 会话列表：挂载 + 项目/运行状态变化后刷新
   const refreshSessions = useCallback(() => {
@@ -117,14 +114,14 @@ export function App(): ReactNode {
     void window.modou.selectDirectory().then((result) => {
       if (result.ok) {
         setModal('none');
-        setPlanPayload(null);
+        setCards([]);
         dispatch({ type: 'app_reset' });
         refreshSessions(); // READY 会随后到达并更新 ready
       }
     });
   };
 
-  // ---- 输入提交（普通文本 → submit；/ 开头 → 斜杠命令 / 本地 UI 模态）----
+  // ---- 输入提交（普通文本 → submit；/ 开头 → 斜杠命令 / 对话内结果）----
   const handleSubmit = (raw: string): void => {
     if (state.running) return;
     const text = raw.trim();
@@ -144,7 +141,7 @@ export function App(): ReactNode {
     dispatch({ type: 'user_slash', text: raw }); // 命令可见（Claude 式）
     switch (name) {
       case 'help':
-        setModal('help');
+        appendCard({ kind: 'help' });
         return;
       case 'model':
         if (args === undefined || args.trim().length === 0) {
@@ -154,27 +151,40 @@ export function App(): ReactNode {
         window.modou.sendCommand({ type: 'slash', name, args: args.trim() });
         return;
       case 'context':
-        setModal('context');
+        void window.modou.getContext().then((data) => {
+          if (data !== null) appendCard({ kind: 'context', data });
+        });
         return;
       case 'rewind':
-        setModal('rewind');
+        void window.modou
+          .getSnapshots()
+          .then((points) => appendCard({ kind: 'rewind', data: points }));
         return;
       case 'snapshots':
-        // 快照占用报告并入 /rewind 面板（含 --cleanup 由主进程处理）
-        window.modou.sendCommand({ type: 'slash', name });
-        setModal('rewind');
+        if ((args ?? '').includes('cleanup')) {
+          void window.modou.snapshotCleanup();
+        }
+        void window.modou.snapshotReport().then((report) => {
+          if (report !== null) appendCard({ kind: 'snapshots', data: report });
+        });
         return;
       case 'cost':
-        setModal('cost');
+        void window.modou.getCost().then((data) => {
+          if (data !== null) appendCard({ kind: 'cost', data });
+        });
         return;
       case 'mcp':
-        setModal('mcp');
+        void window.modou
+          .getMcpStatus()
+          .then((data) => appendCard({ kind: 'mcp', data }));
         return;
       case 'init':
-        setModal('init');
+        void window.modou.planInit().then((data) => {
+          if (data !== null) appendCard({ kind: 'init', data });
+        });
         return;
       case 'plan':
-        // 进入/退出计划模式；计划产出经 PLAN 通道弹面板
+        // 进入/退出计划模式（状态机在 bridge）；计划产出经 PLAN 通道弹卡片
         window.modou.sendCommand(
           args === undefined
             ? { type: 'slash', name }
@@ -206,11 +216,22 @@ export function App(): ReactNode {
       name: 'resume',
       args: sessionId,
     });
-    setModal('none');
   };
 
   const handleDeleteSession = (sessionId: string): void => {
     void window.modou.deleteSession(sessionId).then(() => refreshSessions());
+  };
+
+  const handlePlanAction = (action: 'approve' | 'modify' | 'reject'): void => {
+    window.modou.sendCommand({
+      type:
+        action === 'approve'
+          ? 'plan_approve'
+          : action === 'modify'
+            ? 'plan_modify'
+            : 'plan_reject',
+    });
+    setCards((prev) => prev.filter((entry) => entry.card.kind !== 'plan'));
   };
 
   const hasProject = ready !== null;
@@ -246,7 +267,7 @@ export function App(): ReactNode {
           />
         ) : (
           <>
-            {isEmpty ? (
+            {isEmpty && cards.length === 0 ? (
               <Welcome
                 hasProject
                 onSelectDirectory={handleSelectDirectory}
@@ -260,9 +281,12 @@ export function App(): ReactNode {
                 tools={state.tools}
                 todo={state.todo}
                 subagents={state.subagents}
+                cards={cards}
                 notices={state.notices}
                 error={state.error}
                 running={state.running}
+                onCloseCard={closeCard}
+                onPlanAction={handlePlanAction}
               />
             )}
             <InputBox
@@ -295,26 +319,6 @@ export function App(): ReactNode {
         />
       )}
 
-      {/* 计划面板（PLAN 通道驱动；批准/修改/拒绝经 plan_* 命令回传） */}
-      {planPayload !== null && planPayload.plan !== null && (
-        <PlanPanel
-          plan={planPayload.plan}
-          onApprove={() => {
-            window.modou.sendCommand({ type: 'plan_approve' });
-            setPlanPayload(null);
-          }}
-          onModify={() => {
-            window.modou.sendCommand({ type: 'plan_modify' });
-            setPlanPayload(null);
-          }}
-          onReject={() => {
-            window.modou.sendCommand({ type: 'plan_reject' });
-            setPlanPayload(null);
-          }}
-          onClose={() => setPlanPayload(null)}
-        />
-      )}
-
       {modal === 'settings' && (
         <SettingsPanel
           onClose={() => setModal('none')}
@@ -327,12 +331,6 @@ export function App(): ReactNode {
           onClose={() => setModal('none')}
         />
       )}
-      {modal === 'context' && <ContextPanel onClose={() => setModal('none')} />}
-      {modal === 'help' && <HelpPanel onClose={() => setModal('none')} />}
-      {modal === 'rewind' && <SnapshotPanel onClose={() => setModal('none')} />}
-      {modal === 'cost' && <CostPanel onClose={() => setModal('none')} />}
-      {modal === 'mcp' && <McpPanel onClose={() => setModal('none')} />}
-      {modal === 'init' && <InitPanel onClose={() => setModal('none')} />}
     </div>
   );
 }

@@ -1778,6 +1778,51 @@ body {
   overflow-y: auto;
 }
 
+/* -------------------------------------------------------------- 命令卡片 */
+.inline-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  margin: 4px 0 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow-soft);
+}
+
+.inline-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.inline-card-title {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.inline-card-close {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.inline-card-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.inline-card-body {
+  padding: 12px 14px 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
 /* 滚动条 */
 ::-webkit-scrollbar {
   width: 10px;
