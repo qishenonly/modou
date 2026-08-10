@@ -161,6 +161,26 @@ export function App(): ReactNode {
           setModal('settings');
           return;
         }
+        if (key === 'o' && event.shiftKey) {
+          event.preventDefault();
+          setModal('settings'); // 默认「模型」分类即完整模型管理
+          return;
+        }
+        if (key === 't' && event.shiftKey) {
+          event.preventDefault();
+          setModal('tasks');
+          return;
+        }
+        if (key === 'u') {
+          event.preventDefault();
+          setModal('usage');
+          return;
+        }
+        if (key === '\\') {
+          event.preventDefault();
+          setSidebarOpen((prev) => !prev);
+          return;
+        }
         return;
       }
       if (event.key === 'Escape' && modal !== 'none') {
@@ -169,7 +189,7 @@ export function App(): ReactNode {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, handleNewChat]);
+  }, [modal, handleNewChat, setSidebarOpen]);
 
   // ---- 项目目录 ----
   const handleSelectDirectory = (): void => {

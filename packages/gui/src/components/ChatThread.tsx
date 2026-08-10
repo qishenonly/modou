@@ -113,9 +113,11 @@ function UserMessage({
 function AssistantMessage({
   text,
   onRegenerate,
+  showActions,
 }: {
   readonly text: string;
   readonly onRegenerate?: () => void;
+  readonly showActions?: boolean;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
 
@@ -136,26 +138,28 @@ function AssistantMessage({
         <div className="msg-bubble msg-assistant-bubble">
           <Markdown text={text} />
         </div>
-        <div className="msg-actions">
-          <button
-            type="button"
-            className="msg-copy"
-            onClick={() => void copy()}
-            title="复制消息"
-          >
-            {copied ? '已复制' : '复制'}
-          </button>
-          {onRegenerate !== undefined && (
+        {showActions !== false && (
+          <div className="msg-actions">
             <button
               type="button"
               className="msg-copy"
-              onClick={onRegenerate}
-              title="重新生成回复"
+              onClick={() => void copy()}
+              title="复制消息"
             >
-              重新生成
+              {copied ? '已复制' : '复制'}
             </button>
-          )}
-        </div>
+            {onRegenerate !== undefined && (
+              <button
+                type="button"
+                className="msg-copy"
+                onClick={onRegenerate}
+                title="重新生成回复"
+              >
+                重新生成
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -231,12 +235,21 @@ export function ChatThread({
     );
   const showThinking = running && !hasOutput;
 
+  // 操作按钮（复制 / 重新生成）只显示在最后一条 assistant 回复（非运行中）
+  let lastAssistantIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (timeline[index].kind === 'assistant') {
+      lastAssistantIndex = index;
+      break;
+    }
+  }
+
   return (
     <main className="chat" ref={chatRef} onScroll={onScroll}>
       <div className="chat-inner">
         <TodoList items={todo} />
 
-        {timeline.map((entry) => {
+        {timeline.map((entry, index) => {
           if (entry.kind === 'user') {
             return (
               <UserMessage
@@ -252,6 +265,7 @@ export function ChatThread({
                 key={entry.id}
                 text={entry.text}
                 onRegenerate={onRegenerate}
+                showActions={index === lastAssistantIndex && !running}
               />
             );
           }

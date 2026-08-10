@@ -54,7 +54,11 @@ const SHORTCUTS: readonly { readonly keys: string; readonly desc: string }[] = [
   { keys: '⌘K', desc: '聚焦输入框' },
   { keys: '⌘N', desc: '新建对话' },
   { keys: '⌘,', desc: '打开设置' },
-  { keys: 'Esc', desc: '停止生成 / 关闭弹窗' },
+  { keys: '⌘⇧O', desc: '打开模型管理' },
+  { keys: '⌘⇧T', desc: '打开定时任务' },
+  { keys: '⌘U', desc: '查看用量' },
+  { keys: '⌘\\', desc: '折叠 / 展开侧栏' },
+  { keys: 'Esc', desc: '停止生成 / 关闭弹窗 / 拒绝审批' },
   { keys: 'Enter', desc: '发送消息' },
   { keys: 'Shift+Enter', desc: '换行' },
   { keys: '↑ / ↓', desc: '召回上一条输入' },
@@ -497,6 +501,29 @@ export function SettingsPanel({
                 {section === 'about' && (
                   <>
                     <h3 className="settings-section-title">关于</h3>
+                    <div className="about-intro">
+                      <p className="settings-desc">
+                        <b>modou（墨斗）</b>——本地优先的终端编码
+                        Agent。在所选项目目录内
+                        读写文件、执行命令、自主完成任务：读代码、改代码、跑测试、提交
+                        commit、写文档。
+                      </p>
+                      <ul className="about-features">
+                        <li>会话可恢复 / 快照回滚 / 成本核算</li>
+                        <li>权限正交模型（沙箱范围 × 审批策略）+ 规则表</li>
+                        <li>
+                          计划模式 / 待办清单 / 子代理 / 长期记忆 / 联网工具
+                        </li>
+                        <li>
+                          扩展走开放标准：MCP / AGENTS.md / SKILL.md / 自定义
+                          agents / Hooks
+                        </li>
+                      </ul>
+                      <p className="settings-desc">
+                        GUI 基于 Electron + React；core 与 TUI
+                        共用同一套事件流协议（Event↑ / Command↓），界面可替换。
+                      </p>
+                    </div>
                     <Row label="版本" value={config.version} />
                     <Row label="项目目录" value={config.cwd} />
                     <Row label="主目录" value={config.homeDir} />
