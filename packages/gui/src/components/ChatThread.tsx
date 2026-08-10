@@ -192,7 +192,8 @@ export function ChatThread({
   readonly streamingText: string;
   readonly thinking: string;
   readonly todo: readonly TodoItemData[];
-  readonly cards: readonly GuiCardEntry[];  readonly notices: readonly {
+  readonly cards: readonly GuiCardEntry[];
+  readonly notices: readonly {
     readonly id: number;
     readonly level: string;
     readonly text: string;

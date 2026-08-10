@@ -3349,3 +3349,13 @@ body {
 .diff-panel-body .diff {
   border-radius: 8px;
 }
+
+/* 模型列表搜索 + 高度限制（模型多时可滚动） */
+.model-search {
+  margin-bottom: 8px;
+}
+
+.model-model-list {
+  max-height: 320px;
+  overflow-y: auto;
+}

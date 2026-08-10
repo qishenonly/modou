@@ -106,6 +106,8 @@ interface GuiStateFile {
   readonly sessionTitles?: Readonly<Record<string, string>>;
   /** 额外技能扫描目录（Skills 面板配置的自定义技能根）。 */
   readonly skillsDirs?: readonly string[];
+  /** bash 工具默认超时（毫秒；设置面板配置）。 */
+  readonly bashTimeoutMs?: number;
 }
 
 function readGuiState(): GuiStateFile {
@@ -326,12 +328,17 @@ function createBridge(cwd?: string): void {
   currentCwd = cwd;
   if (cwd === undefined) return;
   try {
-    const skillsDirs = readGuiState().skillsDirs;
+    const guiState = readGuiState();
+    const skillsDirs = guiState.skillsDirs;
+    const bashTimeoutMs = guiState.bashTimeoutMs;
     bridge = new GuiBridge(
       {
         cwd,
         ...(skillsDirs !== undefined && skillsDirs.length > 0
           ? { skillsDirs }
+          : {}),
+        ...(bashTimeoutMs !== undefined && bashTimeoutMs > 0
+          ? { bashTimeoutMs }
           : {}),
       },
       {
@@ -490,6 +497,19 @@ function registerIpc(): void {
       .filter((dir) => dir.length > 0);
     writeGuiState({ ...readGuiState(), skillsDirs: [...new Set(cleaned)] });
     createBridge(currentCwd); // 重建使新技能目录生效
+  });
+  ipcMain.handle(
+    IPC.GET_BASH_TIMEOUT,
+    () => readGuiState().bashTimeoutMs ?? 30_000,
+  );
+  ipcMain.handle(IPC.SET_BASH_TIMEOUT, (_event, ms: number) => {
+    const value = Number.isFinite(ms) && ms > 0 ? Math.round(ms) : undefined;
+    const state = readGuiState();
+    writeGuiState({
+      ...state,
+      ...(value !== undefined ? { bashTimeoutMs: value } : {}),
+    });
+    createBridge(currentCwd); // 重建使新超时生效
   });
   // —— 自定义 agents（.modou/agents/<name>.md 文件读写；重建 bridge 生效）——
   const agentDir = (): string =>

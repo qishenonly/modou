@@ -22,6 +22,7 @@ export function ModelManagerContent(): ReactNode {
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [remoteMsg, setRemoteMsg] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
 
   useEffect(() => {
     void window.modou.getProviders().then((value) => {
@@ -235,51 +236,69 @@ export function ModelManagerContent(): ReactNode {
                     </p>
                   </div>
 
-                  <div className="panel-section-title">模型</div>
+                  <div className="panel-section-title">
+                    模型（{selected.models.length}）
+                  </div>
+                  {selected.models.length > 6 && (
+                    <input
+                      className="input model-search"
+                      placeholder="搜索模型…"
+                      value={modelQuery}
+                      onChange={(event) => setModelQuery(event.target.value)}
+                    />
+                  )}
                   <div className="model-model-list">
                     {selected.models.length === 0 ? (
                       <p className="settings-desc">
                         还没有模型。点「从上游拉取」自动获取该供应商全部模型，或手动添加。
                       </p>
                     ) : (
-                      selected.models.map((model) => {
-                        const isActive =
-                          state.active?.providerId === selected.id &&
-                          state.active.model === model;
-                        return (
-                          <div
-                            key={model}
-                            className={`model-model-item${isActive ? ' model-model-active' : ''}`}
-                          >
-                            <span className="model-model-id">{model}</span>
-                            {isActive && (
-                              <span className="picker-tag">当前</span>
-                            )}
-                            <button
-                              type="button"
-                              className="btn btn-ghost model-set"
-                              disabled={isActive}
-                              onClick={() => setActive(model)}
+                      selected.models
+                        .filter(
+                          (model) =>
+                            modelQuery.trim().length === 0 ||
+                            model
+                              .toLowerCase()
+                              .includes(modelQuery.trim().toLowerCase()),
+                        )
+                        .map((model) => {
+                          const isActive =
+                            state.active?.providerId === selected.id &&
+                            state.active.model === model;
+                          return (
+                            <div
+                              key={model}
+                              className={`model-model-item${isActive ? ' model-model-active' : ''}`}
                             >
-                              设为当前
-                            </button>
-                            <button
-                              type="button"
-                              className="rule-remove"
-                              title="删除模型"
-                              onClick={() =>
-                                updateSelected({
-                                  models: selected.models.filter(
-                                    (m) => m !== model,
-                                  ),
-                                })
-                              }
-                            >
-                              ×
-                            </button>
-                          </div>
-                        );
-                      })
+                              <span className="model-model-id">{model}</span>
+                              {isActive && (
+                                <span className="picker-tag">当前</span>
+                              )}
+                              <button
+                                type="button"
+                                className="btn btn-ghost model-set"
+                                disabled={isActive}
+                                onClick={() => setActive(model)}
+                              >
+                                设为当前
+                              </button>
+                              <button
+                                type="button"
+                                className="rule-remove"
+                                title="删除模型"
+                                onClick={() =>
+                                  updateSelected({
+                                    models: selected.models.filter(
+                                      (m) => m !== model,
+                                    ),
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })
                     )}
                   </div>
                   <div className="rule-add">

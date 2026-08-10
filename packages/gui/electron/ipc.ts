@@ -99,6 +99,10 @@ export const IPC = {
   SAVE_TASKS: 'modou:saveTasks',
   /** renderer → main（invoke）：选择图片附件（系统对话框，返回 data URI）。 */
   SELECT_IMAGES: 'modou:selectImages',
+  /** renderer → main（invoke）：读取 bash 默认超时（ms）。 */
+  GET_BASH_TIMEOUT: 'modou:getBashTimeout',
+  /** renderer → main（invoke）：设置 bash 默认超时（重建 bridge 生效）。 */
+  SET_BASH_TIMEOUT: 'modou:setBashTimeout',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

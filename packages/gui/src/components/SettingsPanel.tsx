@@ -150,6 +150,8 @@ export function SettingsPanel({
   const [saveNote, setSaveNote] = useState<string | null>(null);
   // 当前上下文用量（上下文分类实时核算）
   const [context, setContext] = useState<ContextStateData | null>(null);
+  // bash 默认超时（秒）
+  const [bashTimeoutSec, setBashTimeoutSec] = useState(30);
   // 规则编辑的临时输入
   const [ruleEffect, setRuleEffect] = useState<'allow' | 'deny'>('allow');
   const [ruleMatch, setRuleMatch] = useState('');
@@ -158,6 +160,9 @@ export function SettingsPanel({
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
     void window.modou.getSettings().then((value) => setSettings(value ?? null));
     void window.modou.getContext().then((value) => setContext(value));
+    void window.modou
+      .getBashTimeout()
+      .then((value) => setBashTimeoutSec(Math.round(value / 1000)));
     void window.modou.getTheme().then((value) => {
       setTheme(value);
       applyTheme(value);
@@ -407,6 +412,30 @@ export function SettingsPanel({
                           })
                         }
                       />
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-label">命令默认超时</label>
+                      <div className="rule-add">
+                        <input
+                          className="input input-num"
+                          type="number"
+                          min={5}
+                          value={bashTimeoutSec}
+                          onChange={(event) => {
+                            const seconds = Math.max(
+                              5,
+                              Number(event.target.value) || 30,
+                            );
+                            setBashTimeoutSec(seconds);
+                            window.modou.setBashTimeout(seconds * 1000);
+                          }}
+                        />
+                        <span className="settings-desc">秒</span>
+                      </div>
+                      <p className="settings-desc">
+                        bash 执行默认超时（模型未显式指定时），防长命令被 30s
+                        默认杀掉； 保存即重建生效。
+                      </p>
                     </div>
                     <p className="settings-desc">
                       当前生效：{PERMISSION_MODE_LABEL[config.permissionMode]}

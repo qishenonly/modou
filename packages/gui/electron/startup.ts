@@ -69,6 +69,8 @@ export interface GuiBridgeOptions {
   readonly web?: ConfigWeb;
   /** 额外技能扫描目录（GUI 配置的自定义技能根；可选）。 */
   readonly skillsDirs?: readonly string[];
+  /** bash 工具默认超时（毫秒；GUI 配置，覆盖 core 默认 30s）。 */
+  readonly bashTimeoutMs?: number;
 }
 
 /** assembleGuiStartup 的产出：GuiBridge 启动所需的全部装配结果。 */

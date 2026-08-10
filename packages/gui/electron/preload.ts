@@ -157,6 +157,14 @@ const api = {
   selectImages(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.SELECT_IMAGES);
   },
+  /** 读取 bash 默认超时（ms）。 */
+  getBashTimeout(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_BASH_TIMEOUT);
+  },
+  /** 设置 bash 默认超时（ms；重建 bridge 生效）。 */
+  setBashTimeout(ms: number): void {
+    void ipcRenderer.invoke(IPC.SET_BASH_TIMEOUT, ms);
+  },
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }> {
     return ipcRenderer.invoke(IPC.SELECT_DIRECTORY);

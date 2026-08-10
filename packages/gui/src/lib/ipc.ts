@@ -106,6 +106,10 @@ export interface ModouApi {
   saveTasks(tasks: readonly ScheduledTask[]): Promise<boolean>;
   /** 选择图片附件（系统对话框，返回 data URI 数组）。 */
   selectImages(): Promise<readonly string[]>;
+  /** 读取 bash 默认超时（ms）。 */
+  getBashTimeout(): Promise<number>;
+  /** 设置 bash 默认超时（ms；重建 bridge 生效）。 */
+  setBashTimeout(ms: number): void;
   /** 打开目录选择器选项目目录（选定后主进程重建 bridge，READY 会随后到达）。 */
   selectDirectory(): Promise<{ ok: boolean; cwd: string | null }>;
   /** 快照点列表（/rewind 面板）。 */

@@ -59,6 +59,7 @@ import {
   collectTouchedPaths,
   countUserMessages,
   createAgentTool,
+  createBashTool,
   createModelDeltaGenerator,
   createProviderFromConfig,
   createSkillTool,
@@ -184,6 +185,22 @@ function copyTools(source: ToolRegistry): ToolRegistry {
   return copy;
 }
 
+/** 复制注册表并替换 bash 工具的默认超时（GUI 配置，不动调用方资产）。 */
+function withBashTimeout(
+  registry: ToolRegistry,
+  defaultTimeoutMs: number,
+): ToolRegistry {
+  const copy = new ToolRegistry();
+  for (const tool of registry.list()) {
+    if (tool.name === 'bash') {
+      copy.register(createBashTool({ defaultTimeoutMs }));
+    } else {
+      copy.register(tool);
+    }
+  }
+  return copy;
+}
+
 /**
  * GuiBridge：Electron 主进程里的 core 编排桥（见文件头注释）。
  *
@@ -274,6 +291,10 @@ export class GuiBridge {
 
     // —— 工具集装配（写/执行默认 + 0.15 技能 + 0.17 角色 + 联网 + 记忆）——
     let tools = options.tools ?? defaultWriteTools();
+    // bash 默认超时覆盖（GUI 配置，防 30s 默认把长命令杀掉）
+    if (options.bashTimeoutMs !== undefined && options.bashTimeoutMs > 0) {
+      tools = withBashTimeout(tools, options.bashTimeoutMs);
+    }
     // 技能默认扫描：内置 → 全局 ~/.modou/skills → ~/.claude/skills（Claude
     // 生态，像 codex/claude 的全局固定技能目录）→ 项目 .modou/skills →
     // GUI 配置的额外目录（extraDirs，同名覆盖所有默认层级）。
