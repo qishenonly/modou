@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { TodoItemData } from '@modou/core';
-import type { SubagentEntry, TimelineEntry } from '../lib/state';
+import type { TimelineEntry } from '../lib/state';
 import { Markdown } from '../lib/markdown';
 import {
   ContextCard,
@@ -179,7 +179,6 @@ export function ChatThread({
   streamingText,
   thinking,
   todo,
-  subagents,
   cards,
   notices,
   error,
@@ -193,9 +192,7 @@ export function ChatThread({
   readonly streamingText: string;
   readonly thinking: string;
   readonly todo: readonly TodoItemData[];
-  readonly subagents: readonly SubagentEntry[];
-  readonly cards: readonly GuiCardEntry[];
-  readonly notices: readonly {
+  readonly cards: readonly GuiCardEntry[];  readonly notices: readonly {
     readonly id: number;
     readonly level: string;
     readonly text: string;
@@ -269,6 +266,9 @@ export function ChatThread({
               />
             );
           }
+          if (entry.kind === 'subagent') {
+            return <SubagentBlock key={entry.id} entry={entry.entry} />;
+          }
           return <ToolCard key={entry.id} entry={entry.entry} />;
         })}
 
@@ -279,10 +279,6 @@ export function ChatThread({
             onClose={() => onCloseCard(entry.id)}
             onPlanAction={onPlanAction}
           />
-        ))}
-
-        {subagents.map((entry) => (
-          <SubagentBlock key={entry.id} entry={entry} />
         ))}
 
         {thinking.length > 0 && <ThinkingBlock text={thinking} />}

@@ -1,12 +1,15 @@
 /**
- * 流式 markdown 渲染（react-markdown + remark-gfm）。
+ * 流式 markdown 渲染（react-markdown + remark-gfm + highlight.js）。
  *
- * 只做展示，绝不注入原始 HTML（react-markdown 默认不渲染 raw HTML，规避模型
- * 输出里混入脚本的风险）。代码块带语言标签与复制按钮；链接新窗口打开。
+ * 安全：react-markdown 默认不渲染 raw HTML（模型输出里的标签按文本显示）；
+ * 代码块用 highlight.js 高亮——hljs 先转义代码内容再生成带 class 的 span，
+ * 不会把模型输出里的脚本当 HTML 注入。代码块带语言标签与复制按钮；链接新窗口打开。
  */
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useState, useMemo, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/github.css';
 
 function CodeBlock({
   language,
@@ -27,16 +30,28 @@ function CodeBlock({
     }
   };
 
+  // 语言自动高亮：有语言标签用对应语法，否则自动检测
+  const html = useMemo(() => {
+    try {
+      if (language.length > 0 && hljs.getLanguage(language)) {
+        return hljs.highlight(text, { language }).value;
+      }
+      return hljs.highlightAuto(text).value;
+    } catch {
+      return text;
+    }
+  }, [language, text]);
+
   return (
     <div className="code-block">
       <div className="code-block-head">
-        <span className="code-lang">{language}</span>
+        <span className="code-lang">{language || 'code'}</span>
         <button type="button" className="code-copy" onClick={() => void copy()}>
           {copied ? '已复制' : '复制'}
         </button>
       </div>
       <pre className="code-body">
-        <code>{text}</code>
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
       </pre>
     </div>
   );

@@ -3282,3 +3282,70 @@ body {
 .task-toggle-on .task-toggle-dot {
   left: 15px;
 }
+
+/* 右侧文件变更面板（Codex 式） */
+.diff-panel {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+}
+
+.diff-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-panel-title {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.diff-panel-files {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 4px 9px;
+  cursor: pointer;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-file:hover {
+  background: var(--bg-hover);
+}
+
+.diff-file-active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.diff-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.diff-panel-body .diff {
+  border-radius: 8px;
+}

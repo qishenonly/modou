@@ -46,6 +46,11 @@ export type TimelineEntry =
       readonly id: number;
       readonly kind: 'tool';
       readonly entry: ToolCallEntry;
+    }
+  | {
+      readonly id: number;
+      readonly kind: 'subagent';
+      readonly entry: SubagentEntry;
     };
 
 /** 一条提示（compaction / notice 事件）。 */
@@ -68,8 +73,6 @@ export interface GuiState {
   readonly totals: TokenTotals;
   /** 待办清单（todo_update 事件负载；T-110）。 */
   readonly todo: readonly TodoItemData[];
-  /** 子代理活动摘要（agent ≠ main 的信封折叠展示；0.12.0）。 */
-  readonly subagents: readonly SubagentEntry[];
   readonly notices: readonly NoticeEntry[];
   readonly error: string | null;
   readonly approval: ApprovalRequestData | null;
@@ -87,7 +90,6 @@ export function initialGuiState(): GuiState {
     turn: 0,
     totals: ZERO_TOKEN_TOTALS,
     todo: [],
-    subagents: [],
     notices: [],
     error: null,
     approval: null,
@@ -159,35 +161,56 @@ function patchTimelineTool(
 /** 子代理事件（0.12.0 T-122）：agent ≠ main 的信封折叠成活动摘要，不进主时间线。 */
 function applySubagent(state: GuiState, envelope: Envelope): GuiState {
   const id = envelope.agent;
-  const current = state.subagents.find((entry) => entry.id === id);
-  const base = current ?? {
-    id,
-    status: 'running' as const,
-    toolCount: 0,
-    text: '',
-  };
-  const upsert = (entry: SubagentEntry): GuiState => ({
+  // 更新时间线里对应子代理条目（内联在调用位置；tool 事件先到则忽略）
+  const patch = (entry: SubagentEntry): GuiState => ({
     ...state,
-    subagents: [...state.subagents.filter((other) => other.id !== id), entry],
+    timeline: state.timeline.map((item) =>
+      item.kind === 'subagent' && item.entry.id === id
+        ? { ...item, entry }
+        : item,
+    ),
   });
+  const existing = state.timeline.find(
+    (item): item is Extract<TimelineEntry, { kind: 'subagent' }> =>
+      item.kind === 'subagent' && item.entry.id === id,
+  );
+  if (existing === undefined) {
+    // 子代理启动（turn_start）：在时间线追加一条内联块
+    if (envelope.type === 'turn_start') {
+      timelineSeq += 1;
+      return {
+        ...state,
+        timeline: [
+          ...state.timeline,
+          {
+            id: timelineSeq,
+            kind: 'subagent' as const,
+            entry: { id, status: 'running' as const, toolCount: 0, text: '' },
+          },
+        ],
+      };
+    }
+    return state;
+  }
+  const base = existing.entry;
   switch (envelope.type) {
     case 'turn_start':
-      return upsert({ ...base, status: 'running' });
+      return patch({ ...base, status: 'running' });
     case 'turn_end':
-      return upsert({ ...base, status: 'done' });
+      return patch({ ...base, status: 'done' });
     case 'error':
-      return upsert({
+      return patch({
         ...base,
         status: 'error',
         text: `${base.text}\n${envelope.data.message}`.slice(-2000),
       });
     case 'text_delta':
-      return upsert({
+      return patch({
         ...base,
         text: `${base.text}${envelope.data.delta}`.slice(-2000),
       });
     case 'tool_call':
-      return upsert({ ...base, toolCount: base.toolCount + 1 });
+      return patch({ ...base, toolCount: base.toolCount + 1 });
     default:
       return state;
   }

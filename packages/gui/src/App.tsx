@@ -24,6 +24,7 @@ import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread, type GuiCardEntry } from './components/ChatThread';
+import { DiffPanel, type DiffEntry } from './components/DiffPanel';
 import { InputBox } from './components/InputBox';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
@@ -50,6 +51,33 @@ export function App(): ReactNode {
   const [editText, setEditText] = useState<string | null>(null);
   // 侧栏折叠（Claude 式）
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 右侧文件变更 diff（从 Edit tool_result 收集）
+  const [diffs, setDiffs] = useState<readonly DiffEntry[]>([]);
+
+  // 收集 Edit/Write 的 diff 供右侧面板展示（Codex 式文件变更）
+  useEffect(() => {
+    const off = window.modou.onEvent((envelope) => {
+      if (envelope.type !== 'tool_result' || envelope.agent !== 'main') return;
+      const payload = envelope.data.payload as
+        Record<string, unknown> | undefined;
+      if (
+        payload !== undefined &&
+        typeof payload.old_string === 'string' &&
+        typeof payload.new_string === 'string'
+      ) {
+        setDiffs((prev) => [
+          ...prev.slice(-19),
+          {
+            id: envelope.data.id,
+            ...(typeof payload.path === 'string' ? { path: payload.path } : {}),
+            oldText: payload.old_string as string,
+            newText: payload.new_string as string,
+          },
+        ]);
+      }
+    });
+    return off;
+  }, []);
 
   const appendCard = useCallback((card: GuiCard): void => {
     cardSeq.current += 1;
@@ -394,7 +422,6 @@ export function App(): ReactNode {
                 streamingText={state.streamingText}
                 thinking={state.thinking}
                 todo={state.todo}
-                subagents={state.subagents}
                 cards={cards}
                 notices={state.notices}
                 error={state.error}
@@ -438,6 +465,10 @@ export function App(): ReactNode {
           </>
         )}
       </div>
+
+      {diffs.length > 0 && (
+        <DiffPanel diffs={diffs} onClose={() => setDiffs([])} />
+      )}
 
       {modal === 'settings' && (
         <SettingsPanel
