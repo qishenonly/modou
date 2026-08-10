@@ -9,6 +9,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ProviderEntry, ProviderState } from '../../electron/ipc';
+import { Select } from './Select';
 
 const TYPE_LABEL: Readonly<Record<string, string>> = {
   'openai-compat': 'OpenAI 兼容（含中转站 / Ollama / 国产模型）',
@@ -190,20 +191,19 @@ export function ModelManagerContent(): ReactNode {
                   </div>
                   <div className="settings-field">
                     <label className="settings-label">类型</label>
-                    <select
-                      className="select"
+                    <Select
                       value={selected.type}
-                      onChange={(event) =>
-                        updateSelected({
-                          type: event.target.value as ProviderEntry['type'],
-                        })
+                      options={[
+                        {
+                          value: 'openai-compat',
+                          label: 'OpenAI 兼容（含中转站 / Ollama / 国产模型）',
+                        },
+                        { value: 'anthropic', label: 'Anthropic' },
+                      ]}
+                      onChange={(value) =>
+                        updateSelected({ type: value as ProviderEntry['type'] })
                       }
-                    >
-                      <option value="openai-compat">
-                        OpenAI 兼容（含中转站 / Ollama / 国产模型）
-                      </option>
-                      <option value="anthropic">Anthropic</option>
-                    </select>
+                    />
                   </div>
                   <div className="settings-field">
                     <label className="settings-label">Base URL</label>

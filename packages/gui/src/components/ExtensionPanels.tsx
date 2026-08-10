@@ -7,6 +7,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { McpServerStatus } from '@modou/core';
 import type { GuiSettings, GuiSettingsPatch } from '../../electron/ipc';
+import { Select } from './Select';
 
 /** 一个「保存」动作条（有改动时显示保存按钮 + 提示）。 */
 export function SaveBar({
@@ -205,17 +206,11 @@ export function McpContent(): ReactNode {
           value={cmd}
           onChange={(event) => setCmd(event.target.value)}
         />
-        <select
-          className="select"
+        <Select
           value={risk}
-          onChange={(event) => setRisk(event.target.value)}
-        >
-          {MCP_RISKS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={MCP_RISKS}
+          onChange={(value) => setRisk(value)}
+        />
         <input
           className="input"
           placeholder="参数（空格分隔，可选）"
@@ -354,17 +349,11 @@ export function HooksContent(): ReactNode {
         </div>
       )}
       <div className="rule-add">
-        <select
-          className="select"
+        <Select
           value={point}
-          onChange={(event) => setPoint(event.target.value)}
-        >
-          {HOOK_POINTS.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
+          options={HOOK_POINTS.map((p) => ({ value: p, label: p }))}
+          onChange={(value) => setPoint(value)}
+        />
         <input
           className="input"
           placeholder="命令，如 ./scripts/check.sh"

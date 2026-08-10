@@ -22,6 +22,7 @@ import {
   SkillsContent,
 } from './ExtensionPanels';
 import { ModelManagerContent } from './ModelManagerPanel';
+import { Select } from './Select';
 
 type Section =
   | 'model'
@@ -248,35 +249,19 @@ export function SettingsPanel({
                     </p>
                     <div className="settings-field">
                       <label className="settings-label">沙箱范围</label>
-                      <select
-                        className="select"
+                      <Select
                         value={sandbox}
-                        onChange={(event) =>
-                          patch({ sandbox: event.target.value })
-                        }
-                      >
-                        {SANDBOXES.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label} — {option.desc}
-                          </option>
-                        ))}
-                      </select>
+                        options={SANDBOXES}
+                        onChange={(v) => patch({ sandbox: v })}
+                      />
                     </div>
                     <div className="settings-field">
                       <label className="settings-label">审批策略</label>
-                      <select
-                        className="select"
+                      <Select
                         value={policy}
-                        onChange={(event) =>
-                          patch({ policy: event.target.value })
-                        }
-                      >
-                        {POLICIES.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label} — {option.desc}
-                          </option>
-                        ))}
-                      </select>
+                        options={POLICIES}
+                        onChange={(v) => patch({ policy: v })}
+                      />
                     </div>
                     <div className="settings-field">
                       <label className="settings-label">规则表</label>
@@ -314,18 +299,14 @@ export function SettingsPanel({
                         </div>
                       )}
                       <div className="rule-add">
-                        <select
-                          className="select"
+                        <Select
                           value={ruleEffect}
-                          onChange={(event) =>
-                            setRuleEffect(
-                              event.target.value as 'allow' | 'deny',
-                            )
-                          }
-                        >
-                          <option value="allow">允许</option>
-                          <option value="deny">拒绝</option>
-                        </select>
+                          options={[
+                            { value: 'allow', label: '允许' },
+                            { value: 'deny', label: '拒绝' },
+                          ]}
+                          onChange={(v) => setRuleEffect(v as 'allow' | 'deny')}
+                        />
                         <input
                           className="input"
                           value={ruleMatch}
@@ -496,17 +477,15 @@ export function SettingsPanel({
                     <h3 className="settings-section-title">外观</h3>
                     <div className="settings-field">
                       <label className="settings-label">主题</label>
-                      <select
-                        className="select"
+                      <Select
                         value={theme}
-                        onChange={(event) =>
-                          changeTheme(event.target.value as GuiTheme)
-                        }
-                      >
-                        <option value="light">浅色</option>
-                        <option value="dark">深色</option>
-                        <option value="system">跟随系统</option>
-                      </select>
+                        options={[
+                          { value: 'light', label: '浅色' },
+                          { value: 'dark', label: '深色' },
+                          { value: 'system', label: '跟随系统' },
+                        ]}
+                        onChange={(value) => changeTheme(value as GuiTheme)}
+                      />
                       <p className="settings-desc">
                         即时生效并记住（下次启动沿用）。
                       </p>
