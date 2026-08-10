@@ -73,24 +73,46 @@ export function TasksPanel({
     setPrompt('');
   };
 
+  const toggle = (id: string): void => {
+    save(
+      tasks.map((task) =>
+        task.id === id ? { ...task, enabled: !task.enabled } : task,
+      ),
+    );
+  };
+
+  const presets: readonly { readonly value: string; readonly label: string }[] =
+    [
+      { value: '0 9 * * *', label: '每天 9:00' },
+      { value: '0 9 * * 1', label: '每周一 9:00' },
+      { value: '0 9 * * 1-5', label: '工作日 9:00' },
+      { value: 'custom', label: '自定义…' },
+    ];
+
   return (
     <UtilityPanel title="定时任务" onClose={onClose}>
       <p className="settings-desc">
-        定时任务：按 cron 表达式在指定时间自动向 agent 提交提示词执行。cron 为 5
-        段（分 时 日 月 周，本地时区），如 <code>0 9 * * *</code> = 每天 9:00。
-        任务在应用运行期间调度执行（退出应用则暂停）。
+        按 cron 表达式在指定时间自动向 agent 提交提示词执行（cron 5
+        段，本地时区； 如 <code>0 9 * * *</code> = 每天
+        9:00）。任务在应用运行期间调度执行。
       </p>
       <div className="panel-section-title">任务列表</div>
       {tasks.length === 0 ? (
-        <p className="settings-desc">还没有定时任务。</p>
+        <p className="settings-desc">还没有定时任务；下方新建一个。</p>
       ) : (
         <div className="hook-list">
           {tasks.map((task) => (
             <div key={task.id} className="hook-item">
               <span className="hook-point">{task.name}</span>
-              <span className="hook-count">
-                {task.cron} · {task.enabled ? '启用' : '停用'}
-              </span>
+              <span className="hook-count">{task.cron}</span>
+              <button
+                type="button"
+                className={`task-toggle${task.enabled ? ' task-toggle-on' : ''}`}
+                title={task.enabled ? '点击停用' : '点击启用'}
+                onClick={() => toggle(task.id)}
+              >
+                <span className="task-toggle-dot" />
+              </button>
               <button
                 type="button"
                 className="rule-remove"
@@ -123,13 +145,35 @@ export function TasksPanel({
           onChange={(event) => setPrompt(event.target.value)}
         />
       </div>
-      <div className="rule-add">
-        <input
-          className="input"
-          placeholder="cron，如 0 9 * * *"
-          value={cron}
-          onChange={(event) => setCron(event.target.value)}
-        />
+      <div className="settings-field">
+        <label className="settings-label">调度</label>
+        <div className="rule-add">
+          <select
+            className="select"
+            value={presets.some((p) => p.value === cron) ? cron : 'custom'}
+            onChange={(event) => {
+              if (event.target.value !== 'custom') setCron(event.target.value);
+            }}
+          >
+            {presets.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <input
+            className="input"
+            placeholder="cron（分 时 日 月 周）"
+            value={cron}
+            onChange={(event) => setCron(event.target.value)}
+          />
+        </div>
+        <p className="settings-desc">
+          cron 5 段：分钟 小时 日 月 周（本地时区）。
+        </p>
+      </div>
+      <div className="panel-savebar">
+        {note !== null && <span className="settings-note">{note}</span>}
         <button
           type="button"
           className="btn btn-primary"
@@ -139,7 +183,6 @@ export function TasksPanel({
           添加任务
         </button>
       </div>
-      {note !== null && <p className="settings-desc">{note}</p>}
     </UtilityPanel>
   );
 }
@@ -164,6 +207,7 @@ export function UsagePanel({
     readonly days: readonly DayCostTotals[];
   } | null>(null);
   const [modelName, setModelName] = useState('');
+  const [chartMode, setChartMode] = useState<'token' | 'cost'>('token');
 
   useEffect(() => {
     void window.modou.getCost().then((value) => setCost(value));
@@ -171,6 +215,17 @@ export function UsagePanel({
       if (value !== null) setModelName(value.modelName);
     });
   }, []);
+
+  const days = cost?.days ?? [];
+  const recent = days.slice(-14);
+  const maxVal = Math.max(
+    1,
+    ...recent.map((day) =>
+      chartMode === 'token'
+        ? day.inputTokens + day.outputTokens
+        : (day.totalCost ?? 0),
+    ),
+  );
 
   return (
     <UtilityPanel title="用量" onClose={onClose}>
@@ -205,11 +260,55 @@ export function UsagePanel({
           </div>
 
           <div className="panel-section-title">按天（本项目全部会话）</div>
-          {cost.days.length === 0 ? (
+          <div className="usage-chart-head">
+            <div className="usage-chart-toggle">
+              {(['token', 'cost'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`usage-chart-btn${chartMode === mode ? ' usage-chart-btn-active' : ''}`}
+                  onClick={() => setChartMode(mode)}
+                >
+                  {mode === 'token' ? 'Token' : '费用'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {recent.length === 0 ? (
+            <p className="settings-desc">暂无按天记录。</p>
+          ) : (
+            <div className="usage-chart">
+              {recent.map((day) => {
+                const value =
+                  chartMode === 'token'
+                    ? day.inputTokens + day.outputTokens
+                    : (day.totalCost ?? 0);
+                const pct = Math.max(2, Math.round((value / maxVal) * 100));
+                return (
+                  <div
+                    key={day.day}
+                    className="usage-bar-col"
+                    title={`${day.day}：${formatTokens(day.inputTokens + day.outputTokens)} tokens · ${money(day)}`}
+                  >
+                    <div className="usage-bar">
+                      <div
+                        className="usage-bar-fill"
+                        style={{ height: `${pct}%` }}
+                      />
+                    </div>
+                    <span className="usage-bar-label">{day.day.slice(5)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="panel-section-title">按天明细</div>
+          {days.length === 0 ? (
             <p className="settings-desc">暂无按天记录。</p>
           ) : (
             <div className="cost-list">
-              {cost.days.map((day) => (
+              {days.map((day) => (
                 <div key={day.day} className="cost-day">
                   <span className="cost-day-key">{day.day}</span>
                   <span className="cost-day-meta">

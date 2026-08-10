@@ -3173,3 +3173,112 @@ body {
   font-size: 12.5px;
   line-height: 1.7;
 }
+
+/* 用量柱状图 */
+.usage-chart-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.usage-chart-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-subtle);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.usage-chart-btn {
+  border: none;
+  background: none;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 3px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.usage-chart-btn-active {
+  background: var(--bg-panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-soft);
+}
+
+.usage-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 120px;
+  padding: 6px 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  height: 100%;
+  min-width: 0;
+}
+
+.usage-bar {
+  flex: 1;
+  width: 100%;
+  max-width: 26px;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+  transition: height 0.3s;
+}
+
+.usage-bar-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* 定时任务开关 */
+.task-toggle {
+  flex-shrink: 0;
+  width: 30px;
+  height: 17px;
+  border: none;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.task-toggle-on {
+  background: var(--accent);
+}
+
+.task-toggle-dot {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+}
+
+.task-toggle-on .task-toggle-dot {
+  left: 15px;
+}

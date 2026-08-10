@@ -7,6 +7,7 @@
  * 在左侧栏「扩展」区各自独立页面管理。
  */
 import { useEffect, useState, type ReactNode } from 'react';
+import type { ContextStateData } from '@modou/core';
 import type {
   GuiConfigSummary,
   GuiSettings,
@@ -15,6 +16,7 @@ import type {
 } from '../../electron/ipc';
 import { PERMISSION_MODE_LABEL } from '../../electron/status';
 import { applyTheme } from '../lib/theme';
+import { formatTokens } from '../lib/format';
 import {
   AgentsContent,
   HooksContent,
@@ -146,6 +148,8 @@ export function SettingsPanel({
   const [draft, setDraft] = useState<Draft>({});
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  // 当前上下文用量（上下文分类实时核算）
+  const [context, setContext] = useState<ContextStateData | null>(null);
   // 规则编辑的临时输入
   const [ruleEffect, setRuleEffect] = useState<'allow' | 'deny'>('allow');
   const [ruleMatch, setRuleMatch] = useState('');
@@ -153,6 +157,7 @@ export function SettingsPanel({
   useEffect(() => {
     void window.modou.getConfig().then((value) => setConfig(value ?? null));
     void window.modou.getSettings().then((value) => setSettings(value ?? null));
+    void window.modou.getContext().then((value) => setContext(value));
     void window.modou.getTheme().then((value) => {
       setTheme(value);
       applyTheme(value);
@@ -414,6 +419,56 @@ export function SettingsPanel({
                 {section === 'context' && (
                   <>
                     <h3 className="settings-section-title">上下文</h3>
+                    <div className="panel-section-title">当前上下文用量</div>
+                    {context === null ? (
+                      <p className="settings-desc">加载中…</p>
+                    ) : (
+                      <div className="context-body">
+                        {context.sections.map((section) => {
+                          const ratio =
+                            context.total > 0
+                              ? section.tokens / context.total
+                              : 0;
+                          return (
+                            <div key={section.name} className="context-row">
+                              <div className="context-head">
+                                <span className="context-name">
+                                  {section.name}
+                                </span>
+                                <span className="context-tokens">
+                                  {formatTokens(section.tokens)}（
+                                  {Math.round(ratio * 100)}%）
+                                </span>
+                              </div>
+                              <div className="context-bar">
+                                <div
+                                  className="context-fill"
+                                  style={{
+                                    width: `${Math.min(100, ratio * 100)}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div className="context-total">
+                          合计：{formatTokens(context.total)} tokens
+                          {context.nearCompaction === true && (
+                            <span className="context-warn">
+                              {' '}
+                              · 接近压缩阈值
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <p className="settings-desc">
+                      上下文是会话日志的投影：稳定前缀（系统 + 工具 + 指令）→
+                      摘要状态 → 近 N 轮原文。超过约 70%
+                      上下文窗口会自动增量压缩（折叠早期轮次进摘要，
+                      原文仍在日志里，可 /context 查看分项）。
+                    </p>
+                    <div className="panel-section-title">配置</div>
                     <div className="settings-field">
                       <label className="settings-label">轮次上限</label>
                       <input
