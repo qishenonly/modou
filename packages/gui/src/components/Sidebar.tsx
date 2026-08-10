@@ -31,6 +31,7 @@ export function Sidebar({
   onCollapse,
   onOpenTasks,
   onOpenUsage,
+  onOpenFiles,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
@@ -47,6 +48,7 @@ export function Sidebar({
   readonly onCollapse: () => void;
   readonly onOpenTasks: () => void;
   readonly onOpenUsage: () => void;
+  readonly onOpenFiles: () => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
@@ -461,6 +463,22 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={onOpenFiles}
+          title="文件系统面板"
+        >
+          <svg viewBox="0 0 16 16" className="icon-folder" aria-hidden="true">
+            <path
+              d="M1.75 4.25A1.75 1.75 0 0 1 3.5 2.5h2.586c.464 0 .91.184 1.238.513L8.56 4.25h3.94a1.75 1.75 0 0 1 1.75 1.75v6.5a1.75 1.75 0 0 1-1.75 1.75H3.5a1.75 1.75 0 0 1-1.75-1.75v-8Z"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              fill="none"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
         <button
           type="button"
           className="icon-btn"

@@ -141,7 +141,7 @@ export function summarizeEntry(entry: ToolCallEntry): string {
 // diff 计算（Edit 单处替换 → 前缀/后缀上下文 + 中间删除/添加）
 // ---------------------------------------------------------------------------
 
-export type DiffLineKind = 'context' | 'remove' | 'add';
+export type DiffLineKind = 'context' | 'remove' | 'add' | 'header';
 
 export interface DiffLine {
   readonly kind: DiffLineKind;
@@ -198,6 +198,31 @@ export function buildDiffLines(oldText: string, newText: string): DiffLine[] {
     lines.push({ kind: 'context', text });
   }
   return lines;
+}
+
+/**
+ * 解析 git 输出的 unified diff 文本为 DiffLine[]：`@@` 头与 `diff`/`index`/`---`/
+ * `+++`/`\`（No newline 标记）开头的元信息行标 header，`+`/`-` 行标 add/remove，
+ * 其余（` ` 前缀或空行）标 context。空文本返回 []。
+ */
+export function parseUnifiedDiff(text: string): DiffLine[] {
+  return splitLines(text).map((line): DiffLine => {
+    if (line.startsWith('@@')) {
+      return { kind: 'header', text: line };
+    }
+    if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('\\')
+    ) {
+      return { kind: 'header', text: line };
+    }
+    if (line.startsWith('+')) return { kind: 'add', text: line };
+    if (line.startsWith('-')) return { kind: 'remove', text: line };
+    return { kind: 'context', text: line };
+  });
 }
 
 /** 从 tool_result 的 payload 中探测 diff 结构，有则返回 diff 行，没有返回 null。 */

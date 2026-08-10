@@ -1,12 +1,28 @@
 /**
  * 右侧文件系统面板（Codex 式）：
  * - 「文件」页签：递归文件树浏览（目录可折叠）+ 点击文件在下方预览内容；
- * - 「变更」页签：占位（git 变更在 T-3 接入）。
- * 数据走 Electron IPC（window.modou.getFileTree / readFile），渲染进程不持有 Node 能力。
+ * - 「变更」页签：git 工作区未提交改动列表 + 逐文件 unified diff；会话内工具编辑
+ *   事件（diffs）作为「本轮编辑」折叠区补充标注（git 为主、会话事件为辅）。
+ * 数据走 Electron IPC（getFileTree / readFile / getGitStatus / getGitDiff），
+ * 渲染进程不持有 Node 能力。
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { formatBytes, formatTime } from '../lib/format';
-import type { FileTreeNode, ReadFileResult } from '../../electron/ipc';
+import { buildDiffLines, parseUnifiedDiff, type DiffLine } from '../lib/tools';
+import type {
+  FileTreeNode,
+  GitChangeEntry,
+  GitDiffResult,
+  ReadFileResult,
+} from '../../electron/ipc';
+
+/** 一次会话内文件变更（从 tool_result 的 Edit payload 收集；「本轮编辑」标注用）。 */
+export interface DiffEntry {
+  readonly id: string;
+  readonly path?: string;
+  readonly oldText: string;
+  readonly newText: string;
+}
 
 /** 已选中文件（path 相对 cwd；size/mtime 来自树节点，供预览头部展示）。 */
 interface SelectedFile {
@@ -30,6 +46,55 @@ type PreviewState =
   | { readonly status: 'idle' }
   | { readonly status: 'loading' }
   | { readonly status: 'done'; readonly result: ReadFileResult };
+
+/** git 工作区状态（getGitStatus 返回；git:false = 非仓库，仅会话编辑）。 */
+type GitState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'error'; readonly message: string }
+  | {
+      readonly status: 'ready';
+      readonly git: boolean;
+      readonly changes: readonly GitChangeEntry[];
+    };
+
+/** 选中变更的逐文件 diff 加载态。 */
+type DiffState =
+  | { readonly status: 'idle' }
+  | { readonly status: 'loading' }
+  | { readonly status: 'done'; readonly result: GitDiffResult };
+
+/** diff 行前缀列：add `+`、remove `−`、header/context 空格。 */
+function diffPrefix(kind: DiffLine['kind']): string {
+  return kind === 'add' ? '+' : kind === 'remove' ? '−' : ' ';
+}
+
+/** 未跟踪文件全文按行切分（全标新增；空行保留，仅去尾部换行产生的空串）。 */
+function splitUntracked(text: string): readonly string[] {
+  if (text.length === 0) return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/** porcelain 状态码 → 中文标签与徽标配色（?? → 未跟踪、A 系 → 新增、D 系 → 删除、R 系 → 重命名、其余含 M → 修改）。 */
+function changeLabel(status: string): {
+  readonly label: string;
+  readonly tone: 'warn' | 'ok' | 'fail' | 'muted';
+} {
+  if (status === '??') return { label: '未跟踪', tone: 'warn' };
+  if (status.includes('A')) return { label: '新增', tone: 'ok' };
+  if (status.includes('D')) return { label: '删除', tone: 'fail' };
+  if (status.includes('R')) return { label: '重命名', tone: 'muted' };
+  return { label: '修改', tone: 'muted' };
+}
+
+/** 状态徽标配色的追加类名（warn 用默认 .fs-badge）。 */
+function badgeClass(tone: 'warn' | 'ok' | 'fail' | 'muted'): string {
+  if (tone === 'ok') return ' fs-badge-ok';
+  if (tone === 'fail') return ' fs-badge-fail';
+  if (tone === 'muted') return ' fs-badge-muted';
+  return '';
+}
 
 /** 内联 SVG：目录折叠/展开的 chevron（右向，展开时旋转 90°）。 */
 function ChevronIcon(): ReactNode {
@@ -202,9 +267,256 @@ function FilePreview({
   );
 }
 
+/** 变更页签的一行：状态徽标 + 已暂存/本轮小标 + 路径 + 行数。 */
+function ChangeRow({
+  change,
+  active,
+  inSession,
+  onSelect,
+}: {
+  readonly change: GitChangeEntry;
+  readonly active: boolean;
+  readonly inSession: boolean;
+  readonly onSelect: (path: string) => void;
+}): ReactNode {
+  const { label, tone } = changeLabel(change.status);
+  return (
+    <button
+      type="button"
+      className={`fs-change-row${active ? ' fs-change-active' : ''}`}
+      onClick={() => onSelect(change.path)}
+      title={change.path}
+    >
+      <span className={`fs-badge${badgeClass(tone)}`}>{label}</span>
+      {change.staged && <span className="fs-change-staged">已暂存</span>}
+      {inSession && <span className="fs-badge fs-badge-session">本轮</span>}
+      <span className="fs-change-path">{change.path}</span>
+      <span className="fs-change-stat">
+        {change.added > 0 && (
+          <span className="fs-change-stat-add">+{change.added}</span>
+        )}
+        {change.deleted > 0 && (
+          <span className="fs-change-stat-del">−{change.deleted}</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+/** 「本轮编辑」折叠区：会话内 Edit/Write 事件的逐文件 diff（复用 .diff 系列）。 */
+function SessionEdits({
+  diffs,
+}: {
+  readonly diffs: readonly DiffEntry[];
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="fs-session">
+      <button
+        type="button"
+        className="fs-session-head"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+      >
+        <span
+          className={`fs-session-chevron${open ? ' fs-session-chevron-open' : ''}`}
+        >
+          ▸
+        </span>
+        本轮编辑（{diffs.length}）
+      </button>
+      {open && (
+        <div className="fs-session-body">
+          {diffs.map((diff, index) => (
+            <div key={diff.id} className="fs-session-item">
+              <div className="fs-session-path" title={diff.path}>
+                {diff.path ?? `变更 ${index + 1}`}
+              </div>
+              <div className="diff">
+                {buildDiffLines(diff.oldText, diff.newText).map(
+                  (line, lineIndex) => (
+                    <div
+                      key={lineIndex}
+                      className={`diff-line diff-${line.kind}`}
+                    >
+                      <span className="diff-prefix">
+                        {diffPrefix(line.kind)}
+                      </span>
+                      <span className="diff-text">{line.text}</span>
+                    </div>
+                  ),
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 变更页签主体：工作区变更列表（上，约 42%）→ 选中 diff（中，flex:1）→ 本轮编辑（下）。 */
+function ChangesView({
+  diffs,
+}: {
+  readonly diffs: readonly DiffEntry[];
+}): ReactNode {
+  const [gitState, setGitState] = useState<GitState>({ status: 'loading' });
+  const [gitReload, setGitReload] = useState(0);
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const [diffState, setDiffState] = useState<DiffState>({ status: 'idle' });
+
+  // 进入变更页签（挂载）时拉取 git 状态；刷新按钮递增 gitReload 重新拉取。
+  useEffect(() => {
+    let cancelled = false;
+    setGitState({ status: 'loading' });
+    void window.modou
+      .getGitStatus()
+      .then((result) => {
+        if (cancelled) return;
+        if (result.ok) {
+          setGitState({
+            status: 'ready',
+            git: result.git,
+            changes: result.changes,
+          });
+        } else {
+          setGitState({
+            status: 'error',
+            message: result.message ?? '获取 git 状态失败',
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGitState({ status: 'error', message: '获取 git 状态失败' });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [gitReload]);
+
+  // 选中变更后拉取逐文件 unified diff；切换文件时取消旧请求。
+  useEffect(() => {
+    if (activePath === null) {
+      setDiffState({ status: 'idle' });
+      return;
+    }
+    let cancelled = false;
+    setDiffState({ status: 'loading' });
+    void window.modou
+      .getGitDiff(activePath)
+      .then((result) => {
+        if (!cancelled) setDiffState({ status: 'done', result });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDiffState({
+            status: 'done',
+            result: {
+              ok: false,
+              path: activePath,
+              diff: '',
+              untracked: false,
+              message: '获取 diff 失败',
+            },
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePath]);
+
+  // 未跟踪文件全文全标新增；否则解析 unified diff。
+  let diffLines: readonly DiffLine[] = [];
+  if (diffState.status === 'done' && diffState.result.ok) {
+    diffLines = diffState.result.untracked
+      ? splitUntracked(diffState.result.diff).map((text) => ({
+          kind: 'add' as const,
+          text,
+        }))
+      : parseUnifiedDiff(diffState.result.diff);
+  }
+
+  return (
+    <div className="fs-body">
+      <div className="fs-changes">
+        <div className="fs-changes-head">
+          <span className="fs-changes-title">工作区变更</span>
+          <button
+            type="button"
+            className="fs-refresh"
+            onClick={() => setGitReload((prev) => prev + 1)}
+            title="刷新"
+          >
+            ↻
+          </button>
+        </div>
+        {gitState.status === 'loading' && (
+          <div className="fs-hint">加载中…</div>
+        )}
+        {gitState.status === 'error' && (
+          <div className="fs-hint fs-hint-error">{gitState.message}</div>
+        )}
+        {gitState.status === 'ready' && !gitState.git && (
+          <div className="fs-hint">非 git 仓库，仅显示会话内编辑</div>
+        )}
+        {gitState.status === 'ready' &&
+          gitState.git &&
+          gitState.changes.length === 0 && (
+            <div className="fs-hint">工作区干净，暂无未提交变更</div>
+          )}
+        {gitState.status === 'ready' && gitState.git && (
+          <div className="fs-change-list">
+            {gitState.changes.map((change) => (
+              <ChangeRow
+                key={change.path}
+                change={change}
+                active={activePath === change.path}
+                inSession={diffs.some((diff) => diff.path === change.path)}
+                onSelect={setActivePath}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="fs-change-diff">
+        {diffState.status === 'idle' && (
+          <div className="fs-hint">选择变更查看 diff</div>
+        )}
+        {diffState.status === 'loading' && (
+          <div className="fs-hint">加载中…</div>
+        )}
+        {diffState.status === 'done' && diffState.result.ok && (
+          <div className="diff">
+            {diffLines.map((line, index) => (
+              <div key={index} className={`diff-line diff-${line.kind}`}>
+                <span className="diff-prefix">{diffPrefix(line.kind)}</span>
+                <span className="diff-text">{line.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {diffState.status === 'done' && !diffState.result.ok && (
+          <div className="fs-hint fs-hint-error">
+            {diffState.result.message ?? '获取 diff 失败'}
+          </div>
+        )}
+      </div>
+
+      {diffs.length > 0 && <SessionEdits diffs={diffs} />}
+    </div>
+  );
+}
+
 export function FileSystemPanel({
+  diffs,
   onClose,
 }: {
+  readonly diffs: readonly DiffEntry[];
   readonly onClose: () => void;
 }): ReactNode {
   const [tab, setTab] = useState<'files' | 'changes'>('files');
@@ -326,7 +638,7 @@ export function FileSystemPanel({
         </button>
       </div>
       {tab === 'changes' ? (
-        <div className="fs-placeholder">git 变更即将接入</div>
+        <ChangesView diffs={diffs} />
       ) : (
         <div className="fs-body">
           <div className="fs-tree">

@@ -579,6 +579,11 @@ body {
   height: 16px;
 }
 
+.icon-folder {
+  width: 16px;
+  height: 16px;
+}
+
 /* ---------------------------------------------------------------- 主区 */
 .main {
   flex: 1;
@@ -1018,6 +1023,12 @@ body {
 .diff-context {
   color: var(--text-secondary);
   background: var(--bg-panel);
+}
+
+.diff-header {
+  color: var(--text-muted);
+  font-style: italic;
+  background: var(--bg-subtle);
 }
 
 /* 提示 / 错误 */
@@ -3283,73 +3294,6 @@ body {
   left: 15px;
 }
 
-/* 右侧文件变更面板（Codex 式） */
-.diff-panel {
-  width: 340px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border);
-}
-
-.diff-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-.diff-panel-title {
-  font-weight: 650;
-  font-size: 13px;
-}
-
-.diff-panel-files {
-  display: flex;
-  gap: 4px;
-  padding: 8px 10px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--border);
-}
-
-.diff-file {
-  flex-shrink: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  padding: 4px 9px;
-  cursor: pointer;
-  max-width: 180px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.diff-file:hover {
-  background: var(--bg-hover);
-}
-
-.diff-file-active {
-  border-color: var(--accent);
-  color: var(--text);
-  background: var(--accent-soft);
-}
-
-.diff-panel-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px;
-}
-
-.diff-panel-body .diff {
-  border-radius: 8px;
-}
-
 /* 模型列表搜索 + 高度限制（模型多时可滚动） */
 .model-search {
   margin-bottom: 8px;
@@ -3565,4 +3509,211 @@ body {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 变更页签：git 工作区 + 逐文件 diff + 本轮编辑折叠区 */
+.fs-changes {
+  flex: 0 0 42%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 6px;
+  flex-shrink: 0;
+}
+
+.fs-changes-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.fs-refresh {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.fs-refresh:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.fs-change-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 8px 8px;
+}
+
+.fs-change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  font-family: var(--font);
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+
+.fs-change-row:hover {
+  background: var(--bg-hover);
+}
+
+.fs-change-active,
+.fs-change-active:hover {
+  background: var(--bg-active);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.fs-change-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.fs-change-stat {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.fs-change-stat-add {
+  color: var(--ok);
+}
+
+.fs-change-stat-del {
+  color: var(--fail);
+}
+
+.fs-badge-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.fs-badge-fail {
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.fs-badge-muted {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.fs-badge-session {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.fs-change-staged {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* 选中变更的逐文件 diff 区 */
+.fs-change-diff {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+/* 本轮编辑折叠区 */
+.fs-session {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.fs-session-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-align: left;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.fs-session-head:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.fs-session-chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.12s;
+}
+
+.fs-session-chevron-open {
+  transform: rotate(90deg);
+}
+
+.fs-session-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 0 12px 10px;
+}
+
+.fs-session-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.fs-session-path {
+  padding: 5px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-session-item .diff {
+  border: none;
+  border-radius: 0;
 }

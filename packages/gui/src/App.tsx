@@ -24,7 +24,7 @@ import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread, type GuiCardEntry } from './components/ChatThread';
-import { DiffPanel, type DiffEntry } from './components/DiffPanel';
+import { FileSystemPanel, type DiffEntry } from './components/FileSystemPanel';
 import { InputBox } from './components/InputBox';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
@@ -51,7 +51,9 @@ export function App(): ReactNode {
   const [editText, setEditText] = useState<string | null>(null);
   // 侧栏折叠（Claude 式）
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // 右侧文件变更 diff（从 Edit tool_result 收集）
+  // 右侧文件系统面板开合（Codex 式；Cmd+Shift+F 切换）
+  const [filePanelOpen, setFilePanelOpen] = useState(false);
+  // 右侧文件变更 diff（从 Edit tool_result 收集，供「变更」页签「本轮编辑」标注）
   const [diffs, setDiffs] = useState<readonly DiffEntry[]>([]);
 
   // 收集 Edit/Write 的 diff 供右侧面板展示（Codex 式文件变更）
@@ -209,6 +211,11 @@ export function App(): ReactNode {
           setSidebarOpen((prev) => !prev);
           return;
         }
+        if (key === 'f' && event.shiftKey) {
+          event.preventDefault();
+          setFilePanelOpen((prev) => !prev);
+          return;
+        }
         return;
       }
       if (event.key === 'Escape' && modal !== 'none') {
@@ -217,7 +224,7 @@ export function App(): ReactNode {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, handleNewChat, setSidebarOpen]);
+  }, [modal, handleNewChat, setSidebarOpen, setFilePanelOpen]);
 
   // ---- 项目目录 ----
   const handleSelectDirectory = (): void => {
@@ -388,6 +395,7 @@ export function App(): ReactNode {
           onCollapse={() => setSidebarOpen(false)}
           onOpenTasks={() => setModal('tasks')}
           onOpenUsage={() => setModal('usage')}
+          onOpenFiles={() => setFilePanelOpen(true)}
         />
       )}
 
@@ -466,8 +474,12 @@ export function App(): ReactNode {
         )}
       </div>
 
-      {diffs.length > 0 && (
-        <DiffPanel diffs={diffs} onClose={() => setDiffs([])} />
+      {filePanelOpen && (
+        <FileSystemPanel
+          key={ready?.cwd ?? 'none'}
+          diffs={diffs}
+          onClose={() => setFilePanelOpen(false)}
+        />
       )}
 
       {modal === 'settings' && (
