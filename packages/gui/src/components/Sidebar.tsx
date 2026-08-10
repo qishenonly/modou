@@ -407,9 +407,6 @@ export function Sidebar({
                     </div>
                     <div className="session-meta">
                       <span>{formatTime(session.lastTs)}</span>
-                      <span className="session-count">
-                        {session.entryCount} 条消息
-                      </span>
                       {!active && !batch && (
                         <>
                           <button
