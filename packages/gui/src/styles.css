@@ -3359,3 +3359,210 @@ body {
   max-height: 320px;
   overflow-y: auto;
 }
+
+/* -------------------------------------------------------------- 文件系统面板 */
+.fs-panel {
+  width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+}
+
+.fs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+}
+
+.fs-title {
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.fs-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-tab {
+  border: none;
+  background: none;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 5px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.fs-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.fs-tab-active {
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fs-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 文件树区：约占面板 45%，可滚动 */
+.fs-tree {
+  flex: 0 0 45%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-tree-row {
+  --fs-depth: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  padding: 4px 8px 4px calc(10px + var(--fs-depth) * 14px);
+  border-radius: 6px;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+
+.fs-tree-row:hover {
+  background: var(--bg-hover);
+}
+
+.fs-tree-dir-open .fs-chevron {
+  transform: rotate(90deg);
+}
+
+.fs-tree-file-active,
+.fs-tree-file-active:hover {
+  background: var(--bg-active);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.fs-chevron {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.12s;
+}
+
+.fs-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.fs-tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-hint {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  padding: 14px 10px;
+  text-align: center;
+}
+
+.fs-hint-error {
+  color: var(--fail);
+}
+
+.fs-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  padding: 20px;
+}
+
+/* 预览区：树下方，flex:1 可滚动 */
+.fs-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-preview-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.fs-preview-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.fs-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.fs-preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.fs-preview-pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
