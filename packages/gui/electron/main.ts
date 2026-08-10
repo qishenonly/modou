@@ -17,15 +17,18 @@
  * 装配失败（如缺 API Key）时窗口照常打开、推一条 error notice 给渲染进程，
  * IPC handler 仍注册（空桥兜底），避免「No handler registered」刷屏。
  */
+import { execFile } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   app,
@@ -36,11 +39,17 @@ import {
   shell,
 } from 'electron';
 import { GuiBridge } from './bridge';
+import { parseGitStatus } from './gitparse';
 import { IPC, type ReadyPayload } from './ipc';
 import type {
   ActiveModel,
+  FileTreeNode,
+  FileTreeResult,
+  GitDiffResult,
+  GitStatusResult,
   ProviderEntry,
   ProviderState,
+  ReadFileResult,
   RemoteModelsResult,
   ScheduledTask,
 } from './ipc';
@@ -242,6 +251,245 @@ async function listRemoteModels(input: {
     }
   }
   return { ok: false, models: [], message: `拉取失败：${lastMessage}` };
+}
+
+// ---------------------------------------------------------------------------
+// 文件系统面板（T-1：文件树 / 预览 / git 状态）
+// ---------------------------------------------------------------------------
+
+/** 文件树遍历时跳过的目录 / 文件名（忽略规则）。 */
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.modou',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.next',
+  '.turbo',
+  '.cache',
+  '.DS_Store',
+]);
+const FILE_TREE_MAX_DEPTH = 8;
+const FILE_TREE_MAX_NODES = 3000;
+const PREVIEW_LIMIT = 512 * 1024;
+const GIT_DIFF_LIMIT = 2 * 1024 * 1024;
+
+/** 执行 git 子命令，返回退出码与输出（超时 10s；命令不存在返回 127）。 */
+function runGit(
+  cwd: string,
+  args: readonly string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      'git',
+      [...args],
+      { cwd, timeout: 10_000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resolvePromise({ code: 0, stdout, stderr });
+          return;
+        }
+        if (typeof error.code === 'number') {
+          // git 正常执行但非零退出（如非 git 仓库），保留真实退出码与输出
+          resolvePromise({ code: error.code, stdout, stderr });
+          return;
+        }
+        // 命令不存在 / 无法启动：归为 127
+        resolvePromise({ code: 127, stdout: '', stderr: error.message });
+      },
+    );
+  });
+}
+
+/** 递归构建文件树（目录在前、文件在后，各自按名字典序；忽略规则见 SKIP_DIRS）。 */
+function buildFileTree(cwd: string): FileTreeResult {
+  try {
+    let nodeCount = 0;
+    const walk = (dir: string, rel: string, depth: number): FileTreeNode[] => {
+      // 深度或节点数超限就停止向下
+      if (depth > FILE_TREE_MAX_DEPTH || nodeCount >= FILE_TREE_MAX_NODES) {
+        return [];
+      }
+      const dirs: FileTreeNode[] = [];
+      const files: FileTreeNode[] = [];
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isSymbolicLink()) continue; // 符号链接跳过，防环
+          const name = entry.name;
+          if (SKIP_DIRS.has(name)) continue;
+          if (nodeCount >= FILE_TREE_MAX_NODES) break;
+          const childRel = rel.length === 0 ? name : `${rel}/${name}`;
+          if (entry.isDirectory()) {
+            nodeCount += 1;
+            dirs.push({
+              name,
+              path: childRel,
+              type: 'dir',
+              children: walk(join(dir, name), childRel, depth + 1),
+            });
+          } else if (entry.isFile()) {
+            nodeCount += 1;
+            let size = 0;
+            let mtime = 0;
+            try {
+              const st = statSync(join(dir, name));
+              size = st.size;
+              mtime = st.mtimeMs;
+            } catch {
+              // statSync 失败给 0
+            }
+            files.push({ name, path: childRel, type: 'file', size, mtime });
+          }
+          // 其余类型（socket/fifo 等）忽略
+        }
+      } catch {
+        return [];
+      }
+      dirs.sort((a, b) => a.name.localeCompare(b.name));
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      return [...dirs, ...files];
+    };
+    const tree = walk(cwd, '', 0);
+    return { ok: true, root: cwd, tree };
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    return { ok: false, root: cwd, tree: null, message };
+  }
+}
+
+/** 把相对路径限定在 cwd 内（防路径穿越）；越界返回 null。 */
+function resolveWithin(cwd: string, relPath: string): string | null {
+  if (relPath.length === 0 || relPath.startsWith('/')) return null;
+  const resolved = resolve(cwd, relPath);
+  if (resolved === cwd) return cwd;
+  return resolved.startsWith(cwd + sep) ? resolved : null;
+}
+
+/** 读取文件预览（超 PREVIEW_LIMIT 截断；前 8192 字节含 NUL 判二进制）。 */
+function readFilePreview(cwd: string, relPath: string): ReadFileResult {
+  const resolved = resolveWithin(cwd, relPath);
+  if (resolved === null || !existsSync(resolved)) {
+    return {
+      ok: false,
+      path: relPath,
+      content: null,
+      binary: false,
+      truncated: false,
+      message: '路径无效或文件不存在',
+    };
+  }
+  try {
+    const stat = statSync(resolved);
+    if (!stat.isFile()) {
+      return {
+        ok: false,
+        path: relPath,
+        content: null,
+        binary: false,
+        truncated: false,
+        message: '不是文件',
+      };
+    }
+    const full = readFileSync(resolved);
+    const truncated = full.length > PREVIEW_LIMIT;
+    const buffer = truncated ? full.subarray(0, PREVIEW_LIMIT) : full;
+    if (buffer.subarray(0, 8192).includes(0)) {
+      return {
+        ok: true,
+        path: relPath,
+        content: null,
+        binary: true,
+        truncated,
+      };
+    }
+    return {
+      ok: true,
+      path: relPath,
+      content: buffer.toString('utf8'),
+      binary: false,
+      truncated,
+    };
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    return {
+      ok: false,
+      path: relPath,
+      content: null,
+      binary: false,
+      truncated: false,
+      message,
+    };
+  }
+}
+
+/** git 工作区状态（非 git 仓库降级为 git:false）。 */
+async function getGitStatus(cwd: string): Promise<GitStatusResult> {
+  const status = await runGit(cwd, ['status', '--porcelain']);
+  if (status.code !== 0) {
+    return { ok: true, git: false, changes: [] };
+  }
+  const unstaged = await runGit(cwd, ['diff', '--numstat']);
+  const staged = await runGit(cwd, ['diff', '--cached', '--numstat']);
+  const changes = parseGitStatus(status.stdout, unstaged.stdout, staged.stdout);
+  return { ok: true, git: true, changes };
+}
+
+/** 逐文件 unified diff（unstaged + staged 拼接；untracked 用全文）。 */
+async function getGitDiff(
+  cwd: string,
+  relPath: string,
+): Promise<GitDiffResult> {
+  if (resolveWithin(cwd, relPath) === null) {
+    return {
+      ok: false,
+      path: relPath,
+      diff: '',
+      untracked: false,
+      message: '路径无效',
+    };
+  }
+  const unstaged = await runGit(cwd, ['diff', '--', relPath]);
+  const staged = await runGit(cwd, ['diff', '--cached', '--', relPath]);
+  const parts: string[] = [];
+  if (unstaged.stdout.length > 0) parts.push(unstaged.stdout);
+  if (staged.stdout.length > 0) parts.push(staged.stdout);
+  let diff = parts.join('\n');
+  if (diff.length > 0) {
+    if (diff.length > GIT_DIFF_LIMIT) {
+      diff = diff.slice(0, GIT_DIFF_LIMIT);
+      return {
+        ok: true,
+        path: relPath,
+        diff,
+        untracked: false,
+        message: 'diff 过大，已截断',
+      };
+    }
+    return { ok: true, path: relPath, diff, untracked: false };
+  }
+  // 两段都为空：用 porcelain 判断是否未跟踪文件，是则读全文作为 diff
+  const status = await runGit(cwd, ['status', '--porcelain', '--', relPath]);
+  if (status.code === 0 && status.stdout.startsWith('??')) {
+    const preview = readFilePreview(cwd, relPath);
+    if (preview.ok && preview.content !== null) {
+      return {
+        ok: true,
+        path: relPath,
+        diff: preview.content,
+        untracked: true,
+      };
+    }
+    return {
+      ok: false,
+      path: relPath,
+      diff: '',
+      untracked: true,
+      message: preview.message ?? '无法读取未跟踪文件',
+    };
+  }
+  return { ok: true, path: relPath, diff: '', untracked: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +870,50 @@ function registerIpc(): void {
   ipcMain.handle(
     IPC.GET_PLAN,
     () => bridge?.getPlan() ?? { plan: null, active: false },
+  );
+  // —— 文件系统面板（T-1：文件树 / 预览 / git 状态）——
+  ipcMain.handle(IPC.GET_FILE_TREE, () =>
+    currentCwd === undefined
+      ? {
+          ok: false,
+          root: '',
+          tree: null,
+          message: '未选择项目目录',
+        }
+      : buildFileTree(currentCwd),
+  );
+  ipcMain.handle(IPC.READ_FILE, (_event, path: string) =>
+    currentCwd === undefined
+      ? {
+          ok: false,
+          path,
+          content: null,
+          binary: false,
+          truncated: false,
+          message: '未选择项目目录',
+        }
+      : readFilePreview(currentCwd, path),
+  );
+  ipcMain.handle(IPC.GET_GIT_STATUS, () =>
+    currentCwd === undefined
+      ? {
+          ok: false,
+          git: false,
+          changes: [],
+          message: '未选择项目目录',
+        }
+      : getGitStatus(currentCwd),
+  );
+  ipcMain.handle(IPC.GET_GIT_DIFF, (_event, path: string) =>
+    currentCwd === undefined
+      ? {
+          ok: false,
+          path,
+          diff: '',
+          untracked: false,
+          message: '未选择项目目录',
+        }
+      : getGitDiff(currentCwd, path),
   );
   ipcMain.handle(IPC.QUIT, () => {
     bridge?.dispose();

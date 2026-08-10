@@ -103,6 +103,14 @@ export const IPC = {
   GET_BASH_TIMEOUT: 'modou:getBashTimeout',
   /** renderer → main（invoke）：设置 bash 默认超时（重建 bridge 生效）。 */
   SET_BASH_TIMEOUT: 'modou:setBashTimeout',
+  /** renderer → main（invoke）：项目文件树（文件系统面板）。 */
+  GET_FILE_TREE: 'modou:getFileTree',
+  /** renderer → main（invoke）：读取文件预览（相对 cwd）。 */
+  READ_FILE: 'modou:readFile',
+  /** renderer → main（invoke）：git 工作区未提交改动状态。 */
+  GET_GIT_STATUS: 'modou:getGitStatus',
+  /** renderer → main（invoke）：逐文件 unified diff（相对 cwd）。 */
+  GET_GIT_DIFF: 'modou:getGitDiff',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -316,6 +324,67 @@ export interface ScheduledTask {
   readonly cron: string;
   /** 是否启用。 */
   readonly enabled: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// 文件系统面板（文件树 / 预览 / git 状态）
+// ---------------------------------------------------------------------------
+
+/** 文件树节点（path 相对 cwd，/ 分隔）。 */
+export interface FileTreeNode {
+  readonly name: string;
+  readonly path: string;
+  readonly type: 'dir' | 'file';
+  /** 文件大小（字节；仅 file）。 */
+  readonly size?: number;
+  /** 修改时间（ms 时间戳；仅 file）。 */
+  readonly mtime?: number;
+  /** 子节点（仅 dir）。 */
+  readonly children?: readonly FileTreeNode[];
+}
+
+/** 文件树查询结果（GET_FILE_TREE）。 */
+export interface FileTreeResult {
+  readonly ok: boolean;
+  readonly root: string;
+  readonly tree: readonly FileTreeNode[] | null;
+  readonly message?: string;
+}
+
+/** 文件预览结果（READ_FILE）。 */
+export interface ReadFileResult {
+  readonly ok: boolean;
+  readonly path: string;
+  readonly content: string | null; // 二进制/失败时为 null
+  readonly binary: boolean;
+  readonly truncated: boolean;
+  readonly message?: string;
+}
+
+/** git 变更条目（porcelain + numstat 合并）。 */
+export interface GitChangeEntry {
+  readonly path: string; // 相对 cwd
+  readonly status: string; // porcelain XY（如 ' M'、'A '、'??'）
+  readonly staged: boolean;
+  readonly added: number; // 新增行数（numstat）
+  readonly deleted: number;
+}
+
+/** git 工作区状态结果（GET_GIT_STATUS）。 */
+export interface GitStatusResult {
+  readonly ok: boolean;
+  readonly git: boolean; // 是否 git 仓库
+  readonly changes: readonly GitChangeEntry[];
+  readonly message?: string;
+}
+
+/** 逐文件 unified diff 结果（GET_GIT_DIFF）。 */
+export interface GitDiffResult {
+  readonly ok: boolean;
+  readonly path: string;
+  readonly diff: string; // unified diff 文本；untracked 时 = 文件全文
+  readonly untracked: boolean;
+  readonly message?: string;
 }
 
 import type { StructuredPlan } from '@modou/core';

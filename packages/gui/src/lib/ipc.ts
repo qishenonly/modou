@@ -19,6 +19,9 @@ import type {
   SnapshotUsageReport,
 } from '@modou/core';
 import type {
+  FileTreeResult,
+  GitDiffResult,
+  GitStatusResult,
   GuiConfigSummary,
   GuiSettings,
   GuiSettingsPatch,
@@ -26,6 +29,7 @@ import type {
   PlanPayload,
   ProviderEntry,
   ProviderState,
+  ReadFileResult,
   ReadyPayload,
   RemoteModelsResult,
   SaveSettingsResult,
@@ -135,6 +139,14 @@ export interface ModouApi {
   writeInit(): Promise<boolean>;
   /** 当前计划模式状态（/plan 面板拉取）。 */
   getPlan(): Promise<PlanPayload>;
+  /** 项目文件树（根 = cwd 下的直接子项）。 */
+  getFileTree(): Promise<FileTreeResult>;
+  /** 读取文件预览（相对 cwd；二进制/超限兜底）。 */
+  readFile(path: string): Promise<ReadFileResult>;
+  /** git 工作区未提交改动状态。 */
+  getGitStatus(): Promise<GitStatusResult>;
+  /** 逐文件 unified diff（相对 cwd；untracked 返回全文）。 */
+  getGitDiff(path: string): Promise<GitDiffResult>;
   /** 退出应用。 */
   quit(): void;
 }

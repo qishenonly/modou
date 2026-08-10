@@ -209,6 +209,23 @@ const api = {
   getPlan(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_PLAN);
   },
+  // —— 文件系统面板（文件树 / 预览 / git 状态）——
+  /** 项目文件树（根 = cwd 下的直接子项）。 */
+  getFileTree(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_FILE_TREE);
+  },
+  /** 读取文件预览（相对 cwd；二进制/超限兜底）。 */
+  readFile(path: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.READ_FILE, path);
+  },
+  /** git 工作区未提交改动状态。 */
+  getGitStatus(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_GIT_STATUS);
+  },
+  /** 逐文件 unified diff（相对 cwd；untracked 返回全文）。 */
+  getGitDiff(path: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_GIT_DIFF, path);
+  },
   /** 退出应用。 */
   quit(): void {
     void ipcRenderer.invoke(IPC.QUIT);
