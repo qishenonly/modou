@@ -62,6 +62,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let bridge: GuiBridge | null = null;
+/** 本轮 turn_start 的时间戳（长任务完成通知的「用时」来源）。 */
+let turnStartedAt: number | null = null;
 /** 当前装配的桥的工作目录（saveSettings 重建用）。 */
 let currentCwd: string | undefined = undefined;
 
@@ -117,6 +119,8 @@ interface GuiStateFile {
   readonly skillsDirs?: readonly string[];
   /** bash 工具默认超时（毫秒；设置面板配置）。 */
   readonly bashTimeoutMs?: number;
+  /** 已归档会话 ID（归档后从侧栏主列表隐藏，可移出恢复）。 */
+  readonly archivedSessions?: readonly string[];
 }
 
 function readGuiState(): GuiStateFile {
@@ -534,6 +538,9 @@ function createWindow(): void {
 
 /** 向渲染进程推一条协议信封（窗口存活时）。 */
 function sendEvent(envelope: Envelope): void {
+  if (envelope.agent === 'main' && envelope.type === 'turn_start') {
+    turnStartedAt = Date.now();
+  }
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.EVENT, envelope);
   }
@@ -552,9 +559,14 @@ function maybeNotifyTurnEnd(envelope: Envelope): void {
     return;
   }
   if (!Notification.isSupported()) return;
+  const elapsed =
+    turnStartedAt !== null
+      ? `（用时 ${Math.max(1, Math.round((Date.now() - turnStartedAt) / 1000))} 秒）`
+      : '';
+  turnStartedAt = null;
   new Notification({
     title: 'modou 已完成',
-    body: '当前任务已完成，可以查看结果了。',
+    body: `当前任务已完成，可以查看结果了。${elapsed}`,
   }).show();
 }
 
@@ -650,9 +662,34 @@ function registerIpc(): void {
   ipcMain.handle(IPC.GET_THREAD, () => bridge?.getThread() ?? []);
   ipcMain.handle(
     IPC.SEARCH_SESSIONS,
-    async (_event, query: string) =>
-      (await bridge?.searchSessions(query)) ?? [],
+    async (_event, query: string, allProjects?: boolean) =>
+      (await bridge?.searchSessions(query, allProjects === true)) ?? [],
   );
+  ipcMain.handle(
+    IPC.GET_THREAD_DETAILED,
+    () => bridge?.getThreadDetailed() ?? [],
+  );
+  ipcMain.handle(IPC.EXPORT_SESSION, async (_event, sessionId: string) => {
+    if (bridge === null) return { ok: false, message: '未选择项目目录' };
+    const markdown = await bridge.renderSessionMarkdown(sessionId);
+    if (markdown === null) return { ok: false, message: '会话不存在' };
+    if (mainWindow === null) return { ok: false, message: '窗口不可用' };
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出会话',
+      defaultPath: `modou-${sessionId.slice(0, 8)}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    });
+    if (result.canceled || result.filePath === undefined) {
+      return { ok: false, message: '已取消' };
+    }
+    try {
+      writeFileSync(result.filePath, markdown, 'utf8');
+      return { ok: true, path: result.filePath };
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      return { ok: false, message: `写入失败：${message}` };
+    }
+  });
   ipcMain.handle(IPC.LIST_MODELS, () => bridge?.listModels() ?? []);
   ipcMain.handle(IPC.GET_SKILLS, () => bridge?.listSkills() ?? []);
   ipcMain.handle(IPC.GET_CONTEXT, () => bridge?.getContext() ?? null);
@@ -744,6 +781,30 @@ function registerIpc(): void {
       listRemoteModels(input),
   );
   ipcMain.handle(IPC.GET_SKILL_DIRS, () => readGuiState().skillsDirs ?? []);
+  ipcMain.handle(IPC.SELECT_SKILL_DIR, async () => {
+    if (mainWindow === null) return { ok: false, path: null };
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择技能目录（含 SKILL.md 的目录即可作为技能）',
+      buttonLabel: '选择',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, path: null };
+    }
+    return { ok: true, path: result.filePaths[0] };
+  });
+  ipcMain.handle(IPC.GET_ARCHIVED, () => readGuiState().archivedSessions ?? []);
+  ipcMain.handle(
+    IPC.SET_ARCHIVED,
+    (_event, sessionId: string, archived: boolean) => {
+      const current = readGuiState().archivedSessions ?? [];
+      const next = archived
+        ? [...new Set([...current, sessionId])]
+        : current.filter((id) => id !== sessionId);
+      writeGuiState({ ...readGuiState(), archivedSessions: next });
+      return next;
+    },
+  );
   ipcMain.handle(IPC.SET_SKILL_DIRS, (_event, dirs: readonly string[]) => {
     const cleaned = dirs
       .map((dir) => dir.trim())
@@ -848,6 +909,16 @@ function registerIpc(): void {
       }
     }
     return uris;
+  });
+  ipcMain.handle(IPC.SELECT_FILES, async () => {
+    if (mainWindow === null) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择文件附件（文本类会被读入消息，图片作为图片附件）',
+      buttonLabel: '添加',
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return [];
+    return result.filePaths;
   });
   ipcMain.handle(
     IPC.DELETE_SESSION,

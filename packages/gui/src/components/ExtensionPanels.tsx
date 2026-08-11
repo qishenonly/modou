@@ -178,6 +178,23 @@ export function McpContent(): ReactNode {
               </span>
               <button
                 type="button"
+                className="mcp-toggle"
+                title={server.enabled !== false ? '停用服务器' : '启用服务器'}
+                onClick={() =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    mcpServers: list.map((item) =>
+                      item.name === server.name
+                        ? { ...item, enabled: item.enabled === false }
+                        : item,
+                    ),
+                  }))
+                }
+              >
+                {server.enabled !== false ? '停用' : '启用'}
+              </button>
+              <button
+                type="button"
                 className="rule-remove"
                 title="删除服务器"
                 onClick={() =>
@@ -474,6 +491,19 @@ export function SkillsContent(): ReactNode {
           }}
         >
           添加
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => {
+            void window.modou.selectSkillDir().then((result) => {
+              if (result.ok && result.path !== null) {
+                commitDirs([...dirs, result.path]);
+              }
+            });
+          }}
+        >
+          浏览…（一键导入）
         </button>
       </div>
       {note !== null && <p className="settings-desc">{note}</p>}

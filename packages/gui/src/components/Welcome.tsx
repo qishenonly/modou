@@ -13,6 +13,15 @@ const SUGGESTIONS: readonly string[] = [
   '写一个 README 说明如何运行',
 ];
 
+/** 欢迎页快捷命令（点击即以斜杠命令提交，走 App 的命令分发）。 */
+const COMMANDS: readonly { readonly cmd: string; readonly label: string }[] = [
+  { cmd: '/plan 规划一个重构方案', label: '计划模式' },
+  { cmd: '/rewind', label: '撤销改动' },
+  { cmd: '/context', label: '查看上下文' },
+  { cmd: '/cost', label: '成本统计' },
+  { cmd: '/mcp', label: 'MCP 状态' },
+];
+
 export function Welcome({
   hasProject,
   onSelectDirectory,
@@ -55,6 +64,22 @@ export function Welcome({
                 onClick={() => onSubmit(suggestion)}
               >
                 {suggestion}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {hasProject && (
+          <div className="welcome-commands">
+            {COMMANDS.map((command) => (
+              <button
+                key={command.cmd}
+                type="button"
+                className="welcome-command-chip"
+                onClick={() => onSubmit(command.cmd)}
+              >
+                <code>{command.cmd}</code>
+                <span>{command.label}</span>
               </button>
             ))}
           </div>

@@ -107,12 +107,20 @@ export interface ApprovalOption {
 /**
  * approval_request：弹窗请求，前端回以 `approve` 命令。
  * 0.3.0 才真正发出；此处先定类型，作为 0.1.0 协议面的完整契约。
+ * `editPreview` 为 0.17.x 新字段（可选）：Edit 工具审批时把「改前 / 改后」带进
+ * 事件，GUI 据此渲染逐编辑 diff review（Codex auto-edit 式）；旧前端忽略即可。
  */
 export interface ApprovalRequestData {
   readonly id: string;
   readonly description: string;
   readonly risk: RiskLevel;
   readonly options: readonly ApprovalOption[];
+  /** Edit 类工具审批的 diff 预览（可选；Codex 式逐编辑 review 用）。 */
+  readonly editPreview?: {
+    readonly path: string;
+    readonly oldText: string;
+    readonly newText: string;
+  };
 }
 
 /** approval_resolved：裁决与来源。0.1.0 不产生。 */

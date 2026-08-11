@@ -34,6 +34,10 @@ export function Sidebar({
   onOpenTasks,
   onOpenUsage,
   onOpenFiles,
+  onOpenSearchResult,
+  onExportSession,
+  archived,
+  onToggleArchive,
 }: {
   readonly projectName: string;
   readonly hasProject: boolean;
@@ -41,6 +45,10 @@ export function Sidebar({
   readonly sessions: readonly ResumeCandidate[];
   readonly running: boolean;
   readonly titles: Readonly<Record<string, string>>;
+  /** 已归档会话 ID（归档后从主列表隐藏）。 */
+  readonly archived: ReadonlySet<string>;
+  /** 归档 / 移出归档一条会话。 */
+  readonly onToggleArchive: (sessionId: string) => void;
   readonly onNewChat: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onDelete: (sessionId: string) => void;
@@ -51,6 +59,10 @@ export function Sidebar({
   readonly onOpenTasks: () => void;
   readonly onOpenUsage: () => void;
   readonly onOpenFiles: () => void;
+  /** 搜索命中跳转：恢复对应会话并定位到命中消息。 */
+  readonly onOpenSearchResult: (sessionId: string, seq: number) => void;
+  /** 导出会话为 markdown（主进程弹保存对话框）。 */
+  readonly onExportSession?: (sessionId: string) => void;
 }): ReactNode {
   const [query, setQuery] = useState('');
   // 正在重命名的会话 ID（非空 = 该会话项处于编辑态）
@@ -70,6 +82,12 @@ export function Sidebar({
   const [results, setResults] = useState<readonly SessionSearchResult[] | null>(
     null,
   );
+  // 搜索范围：当前项目（默认）/ 全部项目
+  const [allProjects, setAllProjects] = useState(false);
+  // 会话列表键盘导航焦点（ArrowUp / ArrowDown / Enter）
+  const [navIndex, setNavIndex] = useState(0);
+  // 归档视图开合（true = 只显示已归档会话）
+  const [showArchived, setShowArchived] = useState(false);
 
   const toggleSelected = (sessionId: string): void => {
     setSelected((prev) => {
@@ -91,15 +109,24 @@ export function Sidebar({
   };
 
   const visible = sessions.filter((session) => {
+    const isArchived = archived.has(session.sessionId);
+    if (isArchived && !showArchived) return false;
+    if (!isArchived && showArchived) return false;
     if (query.trim().length === 0) return true;
     const haystack =
       `${titles[session.sessionId] ?? ''} ${session.preview}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
   });
 
-  // 内容级全文搜索命中（Claude Desktop 式）；标题命中之外的结果去重合并
+  // 内容级全文搜索命中（Claude Desktop 式）；标题命中之外的结果去重合并；
+  // 归档会话只在归档视图中显示
   const needle = query.trim();
-  const contentResults = needle.length > 0 ? results : null;
+  const contentResults =
+    needle.length > 0
+      ? (results ?? []).filter(
+          (result) => archived.has(result.sessionId) === showArchived,
+        )
+      : null;
   const contentIds = new Set(
     contentResults?.map((result) => result.sessionId) ?? [],
   );
@@ -107,7 +134,7 @@ export function Sidebar({
     (session) => !contentIds.has(session.sessionId),
   );
 
-  // 内容级全文搜索（防抖 200ms；只对当前项目会话日志做检索）
+  // 内容级全文搜索（防抖 200ms；默认当前项目，可切全部项目）
   useEffect(() => {
     const needle = query.trim();
     if (needle.length === 0) {
@@ -115,10 +142,10 @@ export function Sidebar({
       return;
     }
     const timer = setTimeout(() => {
-      void window.modou.searchSessions(needle).then(setResults);
+      void window.modou.searchSessions(needle, allProjects).then(setResults);
     }, 200);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [query, allProjects]);
 
   const startEdit = (session: ResumeCandidate): void => {
     setEditingId(session.sessionId);
@@ -143,14 +170,17 @@ export function Sidebar({
   };
 
   /** 渲染一条会话列表项（标题/预览 + 重命名/删除/右键菜单）。 */
-  const renderSessionItem = (session: ResumeCandidate): ReactNode => {
+  const renderSessionItem = (
+    session: ResumeCandidate,
+    nav = false,
+  ): ReactNode => {
     const active = session.sessionId === currentSessionId;
     const editing = editingId === session.sessionId;
     const title = titles[session.sessionId] ?? session.preview ?? '（空会话）';
     return (
       <div
         key={session.sessionId}
-        className={`session-item${active ? ' session-active' : ''}`}
+        className={`session-item${active ? ' session-active' : ''}${nav ? ' session-nav-active' : ''}`}
         role="button"
         tabIndex={0}
         onClick={() => {
@@ -253,22 +283,26 @@ export function Sidebar({
   };
 
   /** 渲染一条内容搜索命中项（Claude Desktop 式：标题 + 命中片段 + 命中数）。 */
-  const renderSearchHit = (result: SessionSearchResult): ReactNode => {
+  const renderSearchHit = (
+    result: SessionSearchResult,
+    nav = false,
+  ): ReactNode => {
     const session = sessions.find((s) => s.sessionId === result.sessionId);
     const title = titles[result.sessionId] ?? session?.preview ?? '（空会话）';
     const active = result.sessionId === currentSessionId;
+    const open = (): void => onOpenSearchResult(result.sessionId, result.seq);
     return (
       <div
         key={result.sessionId}
-        className={`session-item${active ? ' session-active' : ''}`}
+        className={`session-item${active ? ' session-active' : ''}${nav ? ' session-nav-active' : ''}`}
         role="button"
         tabIndex={0}
         title={title}
-        onClick={() => onResume(result.sessionId)}
+        onClick={open}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            onResume(result.sessionId);
+            open();
           }
         }}
       >
@@ -277,6 +311,9 @@ export function Sidebar({
         </div>
         <div className="session-meta">
           <span>{formatTime(result.lastTs)}</span>
+          {!result.current && (
+            <span className="session-project-tag">其他项目</span>
+          )}
           <span className="session-hit-count">{result.count} 条命中</span>
         </div>
         <div className="session-snippet" title={result.snippet}>
@@ -284,6 +321,63 @@ export function Sidebar({
         </div>
       </div>
     );
+  };
+
+  /** 当前渲染的会话项数组（搜索时 = 内容命中 + 标题命中；否则 = 全部可见）。 */
+  const displayItems: readonly (
+    | {
+        readonly kind: 'hit';
+        readonly sessionId: string;
+        readonly result: SessionSearchResult;
+      }
+    | {
+        readonly kind: 'session';
+        readonly sessionId: string;
+        readonly session: ResumeCandidate;
+      }
+  )[] =
+    needle.length > 0
+      ? [
+          ...(contentResults ?? []).map((result) => ({
+            kind: 'hit' as const,
+            sessionId: result.sessionId,
+            result,
+          })),
+          ...titleOnly.map((session) => ({
+            kind: 'session' as const,
+            sessionId: session.sessionId,
+            session,
+          })),
+        ]
+      : visible.map((session) => ({
+          kind: 'session' as const,
+          sessionId: session.sessionId,
+          session,
+        }));
+
+  /** 会话列表键盘导航（↑ / ↓ 移动焦点，Enter 激活；在列表容器上监听）。 */
+  const onNavKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (displayItems.length === 0) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setNavIndex((prev) => Math.min(prev + 1, displayItems.length - 1));
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setNavIndex((prev) => Math.max(prev - 1, 0));
+      return;
+    }
+    if (event.key === 'Enter') {
+      const item = displayItems[navIndex];
+      if (item === undefined) return;
+      event.preventDefault();
+      if (item.kind === 'hit') {
+        onOpenSearchResult(item.sessionId, item.result.seq);
+      } else {
+        onResume(item.sessionId);
+      }
+    }
   };
 
   return (
@@ -428,6 +522,44 @@ export function Sidebar({
               </button>
               <button
                 type="button"
+                className={`history-icon${showArchived ? ' history-icon-active' : ''}`}
+                title={
+                  showArchived
+                    ? '退出归档视图'
+                    : archived.size > 0
+                      ? `查看归档（${archived.size}）`
+                      : '归档（无）'
+                }
+                onClick={() => {
+                  setShowArchived((prev) => !prev);
+                  if (!showArchived) {
+                    setSearchOpen(false);
+                    setBatch(false);
+                  }
+                }}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  className="history-icon-svg"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2.5 3.5h11l-4.4 5.2v3.3l-2.2 1.2V8.7L2.5 3.5Z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M2.5 5h11"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
                 className={`history-icon${batch ? ' history-icon-active' : ''}`}
                 title={batch ? '退出批量选择' : '批量选择'}
                 onClick={() => {
@@ -488,6 +620,14 @@ export function Sidebar({
               onChange={onQueryChange}
               placeholder="搜索会话…"
             />
+            <button
+              type="button"
+              className={`search-scope${allProjects ? ' search-scope-on' : ''}`}
+              title={allProjects ? '正在搜索全部项目' : '正在搜索当前项目'}
+              onClick={() => setAllProjects((prev) => !prev)}
+            >
+              {allProjects ? '全部' : '本项目'}
+            </button>
           </div>
         )}
 
@@ -511,25 +651,35 @@ export function Sidebar({
           </div>
         )}
 
-        <nav className="session-list">
+        <nav
+          className="session-list"
+          tabIndex={0}
+          onKeyDown={onNavKeyDown}
+          onFocus={() => setNavIndex(0)}
+        >
           {needle.length > 0 ? (
             <>
-              {(contentResults === null || contentResults.length === 0) &&
-                titleOnly.length === 0 && (
-                  <div className="session-empty">没有匹配的会话</div>
-                )}
-              {contentResults !== null &&
-                contentResults.map((result) => renderSearchHit(result))}
-              {titleOnly.map(renderSessionItem)}
+              {displayItems.length === 0 && (
+                <div className="session-empty">
+                  {contentResults === null ? '搜索中…' : '没有匹配的会话'}
+                </div>
+              )}
+              {displayItems.map((item, index) =>
+                item.kind === 'hit'
+                  ? renderSearchHit(item.result, index === navIndex)
+                  : renderSessionItem(item.session, index === navIndex),
+              )}
             </>
           ) : (
             <>
-              {visible.length === 0 && (
+              {displayItems.length === 0 && (
                 <div className="session-empty">
                   {hasProject ? '还没有历史对话' : '先选择项目目录'}
                 </div>
               )}
-              {visible.map(renderSessionItem)}
+              {visible.map((session, index) =>
+                renderSessionItem(session, index === navIndex),
+              )}
             </>
           )}
         </nav>
@@ -603,6 +753,16 @@ export function Sidebar({
             </button>
             <button
               type="button"
+              className="ctx-item"
+              onClick={() => {
+                onToggleArchive(ctx.sessionId);
+                setCtx(null);
+              }}
+            >
+              {archived.has(ctx.sessionId) ? '移出归档' : '归档会话'}
+            </button>
+            <button
+              type="button"
               className="ctx-item ctx-danger"
               onClick={() => {
                 onDelete(ctx.sessionId);
@@ -610,6 +770,17 @@ export function Sidebar({
               }}
             >
               删除会话
+            </button>
+            <button
+              type="button"
+              className="ctx-item"
+              onClick={() => {
+                if (onExportSession !== undefined)
+                  onExportSession(ctx.sessionId);
+                setCtx(null);
+              }}
+            >
+              导出会话…
             </button>
             <button
               type="button"

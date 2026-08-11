@@ -87,13 +87,15 @@ function ThinkingDots(): ReactNode {
 
 function UserMessage({
   text,
+  seq,
   onEdit,
 }: {
   readonly text: string;
+  readonly seq?: number;
   readonly onEdit?: (text: string) => void;
 }): ReactNode {
   return (
-    <div className="msg msg-user">
+    <div className="msg msg-user" data-seq={seq}>
       <div className="msg-user-col">
         <div className="msg-bubble msg-user-bubble">{text}</div>
         {onEdit !== undefined && (
@@ -113,12 +115,14 @@ function UserMessage({
 
 function AssistantMessage({
   text,
+  seq,
   onRegenerate,
-  showActions,
+  isLast,
 }: {
   readonly text: string;
+  readonly seq?: number;
   readonly onRegenerate?: () => void;
-  readonly showActions?: boolean;
+  readonly isLast?: boolean;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
 
@@ -133,34 +137,32 @@ function AssistantMessage({
   };
 
   return (
-    <div className="msg msg-assistant">
+    <div className="msg msg-assistant" data-seq={seq}>
       <LogoMark size={26} className="msg-avatar" />
       <div className="msg-content">
         <div className="msg-bubble msg-assistant-bubble">
           <Markdown text={text} />
         </div>
-        {showActions !== false && (
-          <div className="msg-actions">
+        <div className="msg-actions">
+          <button
+            type="button"
+            className="msg-copy"
+            onClick={() => void copy()}
+            title="复制消息"
+          >
+            {copied ? '已复制' : '复制'}
+          </button>
+          {isLast === true && onRegenerate !== undefined && (
             <button
               type="button"
               className="msg-copy"
-              onClick={() => void copy()}
-              title="复制消息"
+              onClick={onRegenerate}
+              title="重新生成回复"
             >
-              {copied ? '已复制' : '复制'}
+              重新生成
             </button>
-            {onRegenerate !== undefined && (
-              <button
-                type="button"
-                className="msg-copy"
-                onClick={onRegenerate}
-                title="重新生成回复"
-              >
-                重新生成
-              </button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
@@ -238,6 +240,8 @@ export function ChatThread({
   running,
   context,
   contextWindow,
+  targetSeq,
+  onTargetSeen,
   onCloseCard,
   onPlanAction,
   onRegenerate,
@@ -257,6 +261,10 @@ export function ChatThread({
   readonly running: boolean;
   readonly context: ContextStateData | null;
   readonly contextWindow: number | undefined;
+  /** 搜索命中跳转目标消息 seq（resume 后滚动定位并高亮）。 */
+  readonly targetSeq: number | null;
+  /** 定位完成回调（App 清除 targetSeq，避免重复滚动）。 */
+  readonly onTargetSeen?: () => void;
   readonly onCloseCard: (id: number) => void;
   readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
   readonly onRegenerate: () => void;
@@ -272,6 +280,19 @@ export function ChatThread({
       bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
     }
   }, [timeline, streamingText, notices, running, cards, sticky]);
+
+  // 搜索命中跳转：targetSeq 非空时找到对应消息，滚动到视野中央并短暂高亮
+  useEffect(() => {
+    if (targetSeq === null) return;
+    const el = chatRef.current?.querySelector(`[data-seq="${targetSeq}"]`);
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('msg-target');
+      const timer = setTimeout(() => el.classList.remove('msg-target'), 2000);
+      onTargetSeen?.();
+      return () => clearTimeout(timer);
+    }
+  }, [targetSeq, timeline, onTargetSeen]);
 
   const onScroll = (): void => {
     const el = chatRef.current;
@@ -311,6 +332,7 @@ export function ChatThread({
               <UserMessage
                 key={entry.id}
                 text={entry.text}
+                seq={entry.seq}
                 onEdit={onEditUser}
               />
             );
@@ -320,8 +342,9 @@ export function ChatThread({
               <AssistantMessage
                 key={entry.id}
                 text={entry.text}
+                seq={entry.seq}
                 onRegenerate={onRegenerate}
-                showActions={index === lastAssistantIndex && !running}
+                isLast={index === lastAssistantIndex && !running}
               />
             );
           }

@@ -22,11 +22,13 @@ import type {
   FileTreeResult,
   GitDiffResult,
   GitStatusResult,
+  ExportResult,
   GuiConfigSummary,
   GuiSettings,
   GuiSettingsPatch,
   GuiTheme,
   PlanPayload,
+  PickDirResult,
   ProviderEntry,
   ProviderState,
   ReadFileResult,
@@ -52,8 +54,23 @@ export interface ModouApi {
   listSessions(): Promise<readonly ResumeCandidate[]>;
   /** 当前线程的展示消息（resume/clear 后播种历史）。 */
   getThread(): Promise<readonly ThreadMessage[] | null>;
-  /** 会话内容级搜索（侧栏全文检索；Claude Desktop 式历史搜索）。 */
-  searchSessions(query: string): Promise<readonly SessionSearchResult[]>;
+  /** 会话内容级搜索（侧栏全文检索；allProjects = 跨项目）。 */
+  searchSessions(
+    query: string,
+    allProjects?: boolean,
+  ): Promise<readonly SessionSearchResult[]>;
+  /** 当前会话线程消息（带日志 seq，搜索命中跳转定位用）。 */
+  getThreadDetailed(): Promise<readonly ThreadMessage[]>;
+  /** 导出会话为 markdown（主进程弹保存对话框）。 */
+  exportSession(sessionId: string): Promise<ExportResult>;
+  /** 选择技能目录（弹目录选择器，不切换项目）。 */
+  selectSkillDir(): Promise<PickDirResult>;
+  /** 已归档会话 ID 列表。 */
+  getArchived(): Promise<readonly string[]>;
+  /** 归档 / 移出归档一条会话；返回新列表。 */
+  setArchived(sessionId: string, archived: boolean): Promise<readonly string[]>;
+  /** 选择任意文件附件（多选，返回本地路径数组）。 */
+  selectFiles(): Promise<readonly string[]>;
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): Promise<readonly string[]>;
   /** 已发现技能清单（设置面板）。 */

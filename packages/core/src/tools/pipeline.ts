@@ -200,6 +200,13 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
   let command: string | undefined;
   let prefix: string | undefined;
   let description: string;
+  let editPreview:
+    | {
+        path: string;
+        oldText: string;
+        newText: string;
+      }
+    | undefined;
   const originPrefix = tool.origin !== undefined ? `[MCP ${tool.origin}] ` : '';
 
   if (typeof args === 'object' && args !== null) {
@@ -214,6 +221,19 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
         tool.risk === 'read'
           ? `${originPrefix}读取文件：${redactSecrets(record.path)}`
           : `${originPrefix}写入/编辑文件：${redactSecrets(record.path)}`;
+      // Edit 工具审批带 diff 预览（Codex auto-edit 式逐编辑 review）；
+      // old/new 片段过脱敏再进事件流（002 5.4）。
+      if (
+        tool.name === 'edit' &&
+        typeof record.old_string === 'string' &&
+        typeof record.new_string === 'string'
+      ) {
+        editPreview = {
+          path: record.path,
+          oldText: redactSecrets(record.old_string),
+          newText: redactSecrets(record.new_string),
+        };
+      }
     } else {
       description = `调用工具 ${tool.name}（risk: ${tool.risk}）`;
     }
@@ -227,6 +247,7 @@ function buildApprovalInput(tool: Tool, args: unknown): ApprovalRequestInput {
     description,
     ...(command !== undefined ? { command } : {}),
     ...(prefix !== undefined ? { prefix } : {}),
+    ...(editPreview !== undefined ? { editPreview } : {}),
     // T-050/T-051：已校验参数透传给权限裁决（危险命令 / 目录边界 realpath 归一）
     ...(typeof args === 'object' && args !== null
       ? { args: args as Record<string, unknown> }

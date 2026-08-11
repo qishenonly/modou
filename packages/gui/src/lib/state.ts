@@ -24,10 +24,11 @@ import {
 } from '../../electron/status';
 import { reduceToolEvent, type ToolCallEntry } from './tools';
 
-/** 一条对话消息（用户 / 已封存的 assistant 回复）。 */
+/** 一条对话消息（用户 / 已封存的 assistant 回复）。seq = 会话日志记录号（可选）。 */
 export interface ChatMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
+  readonly seq?: number;
 }
 
 /** 子代理活动摘要（0.12.0 T-122：前端按 agent 分组折叠，不污染主对话）。 */
@@ -35,13 +36,25 @@ export interface SubagentEntry {
   readonly id: string;
   readonly status: 'running' | 'done' | 'error';
   readonly toolCount: number;
+  /** 最近调用的工具名（最多 6 个；并行子代理可视化的过程线索）。 */
+  readonly toolNames: readonly string[];
   readonly text: string;
 }
 
 /** 时间线条目：用户消息 / assistant 文本段 / 工具调用（按发生顺序）。 */
 export type TimelineEntry =
-  | { readonly id: number; readonly kind: 'user'; readonly text: string }
-  | { readonly id: number; readonly kind: 'assistant'; readonly text: string }
+  | {
+      readonly id: number;
+      readonly kind: 'user';
+      readonly text: string;
+      readonly seq?: number;
+    }
+  | {
+      readonly id: number;
+      readonly kind: 'assistant';
+      readonly text: string;
+      readonly seq?: number;
+    }
   | {
       readonly id: number;
       readonly kind: 'tool';
@@ -185,7 +198,13 @@ function applySubagent(state: GuiState, envelope: Envelope): GuiState {
           {
             id: timelineSeq,
             kind: 'subagent' as const,
-            entry: { id, status: 'running' as const, toolCount: 0, text: '' },
+            entry: {
+              id,
+              status: 'running' as const,
+              toolCount: 0,
+              toolNames: [],
+              text: '',
+            },
           },
         ],
       };
@@ -210,7 +229,11 @@ function applySubagent(state: GuiState, envelope: Envelope): GuiState {
         text: `${base.text}${envelope.data.delta}`.slice(-2000),
       });
     case 'tool_call':
-      return patch({ ...base, toolCount: base.toolCount + 1 });
+      return patch({
+        ...base,
+        toolCount: base.toolCount + 1,
+        toolNames: [...base.toolNames, envelope.data.name].slice(-6),
+      });
     default:
       return state;
   }
@@ -322,7 +345,7 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
         notices: state.notices, // 保留提示（新会话提示等）
       };
     case 'seed_thread': {
-      // resume 后整体替换时间线（T-061：显示是日志的投影）
+      // resume 后整体替换时间线（T-061：显示是日志的投影；消息带 seq 供定位）
       const timeline: TimelineEntry[] = [];
       for (const message of action.messages) {
         timelineSeq += 1;
@@ -330,6 +353,7 @@ export function guiReducer(state: GuiState, action: GuiAction): GuiState {
           id: timelineSeq,
           kind: message.role,
           text: message.text,
+          ...(message.seq !== undefined ? { seq: message.seq } : {}),
         });
       }
       return {

@@ -24,6 +24,7 @@ import { PERMISSION_MODE_LABEL } from '../electron/status';
 import { guiReducer, initialGuiState } from './lib/state';
 import { ApprovalDialog } from './components/ApprovalDialog';
 import { ChatThread, type GuiCardEntry } from './components/ChatThread';
+import { CommandPalette } from './components/CommandPalette';
 import { FileSystemPanel, type DiffEntry } from './components/FileSystemPanel';
 import { InputBox } from './components/InputBox';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -38,6 +39,8 @@ type ModalKind = 'none' | 'settings' | 'tasks' | 'usage';
 
 export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
+  // 统一命令面板（Cmd+K）开合
+  const [paletteOpen, setPaletteOpen] = useState(false);
   // 配置摘要（READY 通道 + 挂载时 getConfig 兜底；null = 尚无项目目录）
   const [ready, setReady] = useState<ReadyPayload | null>(null);
   // 当前模型的上下文窗口（token；getConfig 兜底填充，供上下文指示器）
@@ -55,6 +58,8 @@ export function App(): ReactNode {
   const [editText, setEditText] = useState<string | null>(null);
   // 侧栏折叠（Claude 式）
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 搜索命中跳转目标（会话消息 seq；resume 定位后清除）
+  const [targetSeq, setTargetSeq] = useState<number | null>(null);
   // 右侧文件系统面板开合（Codex 式；Cmd+Shift+F 切换）
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   // 右侧文件变更 diff（从 Edit tool_result 收集，供「变更」页签「本轮编辑」标注）
@@ -107,7 +112,9 @@ export function App(): ReactNode {
           dispatch({ type: 'app_reset' });
           setCards([]);
         } else if (sessionChanged) {
-          void window.modou.getThread().then((thread) => {
+          // getThreadDetailed 带日志 seq（搜索命中跳转定位用；无 targetSeq 时
+          // 与 getThread 等价）
+          void window.modou.getThreadDetailed().then((thread) => {
             if (thread !== null) {
               dispatch({ type: 'seed_thread', messages: thread });
             }
@@ -153,6 +160,21 @@ export function App(): ReactNode {
 
   // 会话标题映射（重命名；gui-state 持久化）
   const [titles, setTitles] = useState<Readonly<Record<string, string>>>({});
+  // 已归档会话 ID（归档后从侧栏主列表隐藏，可移出恢复）
+  const [archived, setArchived] = useState<ReadonlySet<string>>(new Set());
+  const loadArchived = useCallback(() => {
+    void window.modou.getArchived().then((ids) => setArchived(new Set(ids)));
+  }, []);
+  useEffect(() => {
+    loadArchived();
+  }, [loadArchived]);
+  const handleToggleArchive = (sessionId: string): void => {
+    const next = archived.has(sessionId);
+    void window.modou.setArchived(sessionId, !next).then((ids) => {
+      setArchived(new Set(ids));
+      refreshSessions();
+    });
+  };
   const loadTitles = useCallback(() => {
     void window.modou.getSessionTitles().then((value) => setTitles(value));
   }, []);
@@ -183,7 +205,7 @@ export function App(): ReactNode {
         const key = event.key.toLowerCase();
         if (key === 'k') {
           event.preventDefault();
-          inputRef.current?.focus();
+          setPaletteOpen(true); // Cmd+K：统一命令面板（搜索命令/会话/文件）
           return;
         }
         if (key === 'n') {
@@ -347,8 +369,23 @@ export function App(): ReactNode {
     });
   };
 
+  /** 搜索命中跳转：记录目标消息 seq 后恢复会话，恢复后滚动定位并高亮。 */
+  const handleOpenSearchResult = (sessionId: string, seq: number): void => {
+    setTargetSeq(seq);
+    window.modou.sendCommand({
+      type: 'slash',
+      name: 'resume',
+      args: sessionId,
+    });
+  };
+
   const handleDeleteSession = (sessionId: string): void => {
     void window.modou.deleteSession(sessionId).then(() => refreshSessions());
+  };
+
+  /** 导出会话为 markdown（主进程弹保存对话框；结果静默——失败时用户已在对话框侧感知）。 */
+  const handleExportSession = (sessionId: string): void => {
+    void window.modou.exportSession(sessionId);
   };
 
   const handlePlanAction = (action: 'approve' | 'modify' | 'reject'): void => {
@@ -391,6 +428,8 @@ export function App(): ReactNode {
           sessions={sessions}
           running={state.running}
           titles={titles}
+          archived={archived}
+          onToggleArchive={handleToggleArchive}
           onNewChat={handleNewChat}
           onResume={handleResume}
           onDelete={handleDeleteSession}
@@ -401,6 +440,8 @@ export function App(): ReactNode {
           onOpenTasks={() => setModal('tasks')}
           onOpenUsage={() => setModal('usage')}
           onOpenFiles={() => setFilePanelOpen(true)}
+          onOpenSearchResult={handleOpenSearchResult}
+          onExportSession={handleExportSession}
         />
       )}
 
@@ -441,6 +482,8 @@ export function App(): ReactNode {
                 running={state.running}
                 context={state.context}
                 contextWindow={contextWindow}
+                targetSeq={targetSeq}
+                onTargetSeen={() => setTargetSeq(null)}
                 onCloseCard={closeCard}
                 onPlanAction={handlePlanAction}
                 onRegenerate={handleRegenerate}
@@ -486,6 +529,22 @@ export function App(): ReactNode {
           key={ready?.cwd ?? 'none'}
           diffs={diffs}
           onClose={() => setFilePanelOpen(false)}
+        />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          sessions={sessions}
+          titles={titles}
+          onClose={() => setPaletteOpen(false)}
+          onRunCommand={(text) => handleSubmit(text)}
+          onResume={handleResume}
+          onOpenFile={(path) => {
+            const cwd = ready?.cwd;
+            if (cwd !== undefined && cwd.length > 0) {
+              window.modou.openPath(`${cwd}/${path}`);
+            }
+          }}
         />
       )}
 

@@ -72,6 +72,27 @@ export function ApprovalDialog({
         <span className="approval-inline-hint">Esc 拒绝</span>
       </div>
       <pre className="approval-desc">{request.description}</pre>
+      {request.editPreview !== undefined && (
+        <div className="approval-diff">
+          <div className="approval-diff-path">
+            将编辑：{request.editPreview.path}
+          </div>
+          <div className="approval-diff-row">
+            <div className="approval-diff-col">
+              <div className="approval-diff-label">改前</div>
+              <pre className="approval-diff-old">
+                {request.editPreview.oldText}
+              </pre>
+            </div>
+            <div className="approval-diff-col">
+              <div className="approval-diff-label">改后</div>
+              <pre className="approval-diff-new">
+                {request.editPreview.newText}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="approval-options">
         {request.options.map((option, index) => (
           <button

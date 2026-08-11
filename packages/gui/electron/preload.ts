@@ -57,9 +57,33 @@ const api = {
   getThread(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_THREAD);
   },
-  /** 会话内容级搜索（侧栏全文检索）。 */
-  searchSessions(query: string): Promise<unknown> {
-    return ipcRenderer.invoke(IPC.SEARCH_SESSIONS, query);
+  /** 会话内容级搜索（侧栏全文检索；allProjects = 全局跨项目）。 */
+  searchSessions(query: string, allProjects?: boolean): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SEARCH_SESSIONS, query, allProjects === true);
+  },
+  /** 当前会话线程消息（带日志 seq，搜索命中跳转定位用）。 */
+  getThreadDetailed(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_THREAD_DETAILED);
+  },
+  /** 导出会话为 markdown（主进程弹保存对话框）。 */
+  exportSession(sessionId: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.EXPORT_SESSION, sessionId);
+  },
+  /** 选择技能目录（弹目录选择器，不切换项目）。 */
+  selectSkillDir(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SELECT_SKILL_DIR);
+  },
+  /** 已归档会话 ID 列表。 */
+  getArchived(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.GET_ARCHIVED);
+  },
+  /** 归档 / 移出归档一条会话；返回新列表。 */
+  setArchived(sessionId: string, archived: boolean): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SET_ARCHIVED, sessionId, archived);
+  },
+  /** 选择任意文件附件（多选，返回本地路径数组）。 */
+  selectFiles(): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SELECT_FILES);
   },
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): Promise<unknown> {

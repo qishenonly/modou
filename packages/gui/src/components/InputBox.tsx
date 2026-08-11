@@ -130,6 +130,8 @@ export function InputBox({
 }): ReactNode {
   const [value, setValue] = useState('');
   const [pendingImages, setPendingImages] = useState<readonly string[]>([]);
+  // 任意文件附件（本地路径；文本类会被读入消息，图片按图片附件处理）
+  const [pendingFiles, setPendingFiles] = useState<readonly string[]>([]);
   const [history, setHistory] = useState<readonly string[]>([]);
   const [histPos, setHistPos] = useState(-1);
   // 权限模式（当前 sandbox/policy）+ 上拉选择框开合
@@ -156,16 +158,25 @@ export function InputBox({
   }, [externalValue, ref]);
 
   const showSlash = !running && value.trim().startsWith('/');
-  const canSend = value.trim().length > 0 || pendingImages.length > 0;
+  const canSend =
+    value.trim().length > 0 ||
+    pendingImages.length > 0 ||
+    pendingFiles.length > 0;
 
   const submit = (): void => {
     const text = value.trim();
-    if (text.length === 0 && pendingImages.length === 0) return;
+    if (
+      text.length === 0 &&
+      pendingImages.length === 0 &&
+      pendingFiles.length === 0
+    )
+      return;
     if (text.length > 0) setHistory((prev) => [...prev, text].slice(-50));
     setHistPos(-1);
-    onSubmit(text, pendingImages);
+    onSubmit(text, [...pendingImages, ...pendingFiles]);
     setValue('');
     setPendingImages([]);
+    setPendingFiles([]);
     if (ref.current !== null) ref.current.style.height = 'auto';
   };
 
@@ -247,6 +258,15 @@ export function InputBox({
     void window.modou.selectImages().then((uris) => {
       if (uris.length > 0) {
         setPendingImages((prev) => [...prev, ...uris]);
+        if (ref.current !== null) ref.current.focus();
+      }
+    });
+  };
+
+  const pickFiles = (): void => {
+    void window.modou.selectFiles().then((paths) => {
+      if (paths.length > 0) {
+        setPendingFiles((prev) => [...prev, ...paths]);
         if (ref.current !== null) ref.current.focus();
       }
     });
@@ -335,6 +355,27 @@ export function InputBox({
         </div>
       )}
 
+      {pendingFiles.length > 0 && (
+        <div className="file-preview-row">
+          {pendingFiles.map((file, index) => (
+            <div key={file} className="file-preview">
+              <span className="file-preview-name" title={file}>
+                {file.split('/').pop() ?? file}
+              </span>
+              <button
+                type="button"
+                className="image-preview-remove"
+                onClick={() =>
+                  setPendingFiles((prev) => prev.filter((_, i) => i !== index))
+                }
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="input-box-shell">
         <button
           type="button"
@@ -350,6 +391,33 @@ export function InputBox({
             <path
               d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z"
               fill="currentColor"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="input-plus"
+          onClick={pickFiles}
+          title="添加文件附件（文本类会被读入消息，图片按图片附件处理）"
+        >
+          <svg
+            viewBox="0 0 16 16"
+            className="input-plus-icon"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 2.5h5l3 3v8H4V2.5Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M9 2.5v3h3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
             />
           </svg>
         </button>
@@ -412,7 +480,9 @@ export function InputBox({
         )}
       </div>
       <div className="input-foot">
-        <span>Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽/➕ 图片</span>
+        <span>
+          Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽图片、➕ 添加图片或文件附件
+        </span>
         <span>权限：{permLabel(sandbox, policy)}</span>
       </div>
     </div>

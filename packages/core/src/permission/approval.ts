@@ -52,6 +52,15 @@ export interface ApprovalRequestInput {
    * 缺省则不参与参数级裁决。
    */
   readonly args?: Readonly<Record<string, unknown>>;
+  /**
+   * Edit 工具审批的 diff 预览（0.17.x 可选）：管线对 edit 工具把
+   * old_string / new_string / path 带进审批事件，前端渲染逐编辑 review。
+   */
+  readonly editPreview?: {
+    readonly path: string;
+    readonly oldText: string;
+    readonly newText: string;
+  };
 }
 
 /** 待裁决的审批请求（decider 收到的完整信息，含可选项）。 */
@@ -61,6 +70,12 @@ export interface PendingApprovalRequest {
   readonly risk: RiskLevel;
   readonly description: string;
   readonly command?: string;
+  /** Edit 工具的 diff 预览（可选）。 */
+  readonly editPreview?: {
+    readonly path: string;
+    readonly oldText: string;
+    readonly newText: string;
+  };
   /** 本次审批的可选项（危险命令不含 allow_always）。 */
   readonly options: readonly ApprovalOption[];
 }
@@ -180,6 +195,9 @@ export class ApprovalGate {
       risk: input.risk,
       description: input.description,
       ...(input.command !== undefined ? { command: input.command } : {}),
+      ...(input.editPreview !== undefined
+        ? { editPreview: input.editPreview }
+        : {}),
       options,
     };
 
@@ -192,6 +210,9 @@ export class ApprovalGate {
           description: pending.description,
           risk: input.risk,
           options,
+          ...(pending.editPreview !== undefined
+            ? { editPreview: pending.editPreview }
+            : {}),
         },
       });
     }

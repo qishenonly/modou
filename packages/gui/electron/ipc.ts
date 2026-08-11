@@ -113,6 +113,18 @@ export const IPC = {
   GET_GIT_DIFF: 'modou:getGitDiff',
   /** renderer → main（invoke）：会话内容级搜索（侧栏全文检索）。 */
   SEARCH_SESSIONS: 'modou:searchSessions',
+  /** renderer → main（invoke）：带 seq 的线程消息（搜索命中跳转定位用）。 */
+  GET_THREAD_DETAILED: 'modou:getThreadDetailed',
+  /** renderer → main（invoke）：导出会话为 markdown（弹保存对话框）。 */
+  EXPORT_SESSION: 'modou:exportSession',
+  /** renderer → main（invoke）：选择技能目录（弹目录选择器，不切项目）。 */
+  SELECT_SKILL_DIR: 'modou:selectSkillDir',
+  /** renderer → main（invoke）：已归档会话 ID 列表。 */
+  GET_ARCHIVED: 'modou:getArchived',
+  /** renderer → main（invoke）：归档 / 移出归档一条会话。 */
+  SET_ARCHIVED: 'modou:setArchived',
+  /** renderer → main（invoke）：选择任意文件附件（多选，返回路径）。 */
+  SELECT_FILES: 'modou:selectFiles',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -137,10 +149,12 @@ export interface ReadyPayload {
   readonly totals?: TokenTotals;
 }
 
-/** 一条线程展示消息（GET_THREAD 的返回；渲染进程据此播种会话历史）。 */
+/** 一条线程展示消息（GET_THREAD / GET_THREAD_DETAILED 的返回）。 */
 export interface ThreadMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
+  /** 会话日志里的记录 seq（getThreadDetailed 才带；搜索命中跳转定位用）。 */
+  readonly seq?: number;
 }
 
 /**
@@ -155,6 +169,25 @@ export interface SessionSearchResult {
   readonly snippet: string;
   /** 会话末条记录时间戳（排序用）。 */
   readonly lastTs: number;
+  /** 首条命中消息在会话日志里的 seq（恢复后定位跳转用）。 */
+  readonly seq: number;
+  /** 所属项目（projectHash；全局搜索时用于分组标识）。 */
+  readonly projectHash: string;
+  /** 是否当前项目（渲染进程据此标注「当前」）。 */
+  readonly current: boolean;
+}
+
+/** 会话导出（EXPORT_SESSION）的结果。 */
+export interface ExportResult {
+  readonly ok: boolean;
+  readonly path?: string;
+  readonly message?: string;
+}
+
+/** 目录选择结果（SELECT_SKILL_DIR）。 */
+export interface PickDirResult {
+  readonly ok: boolean;
+  readonly path: string | null;
 }
 
 import type { PermissionMode, TokenTotals } from './status';

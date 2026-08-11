@@ -12,7 +12,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { extname } from 'node:path';
+import { basename, extname } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ProviderCapabilities } from '../provider/capabilities';
 
@@ -185,3 +185,164 @@ export type ModelMessageUserFilePart = Extract<
   ModelMessageUserPart,
   { readonly type: 'file' }
 >;
+
+// ---------------------------------------------------------------------------
+// 任意文件附件（0.17.x 扩展）：文本类读内容注入、图片走 FilePart、其余跳过
+// ---------------------------------------------------------------------------
+
+/** 文本类扩展名（读到就按 UTF-8 文本注入消息）。 */
+const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.json',
+  '.md',
+  '.mdx',
+  '.txt',
+  '.log',
+  '.py',
+  '.go',
+  '.rs',
+  '.c',
+  '.h',
+  '.cpp',
+  '.hpp',
+  '.java',
+  '.kt',
+  '.swift',
+  '.rb',
+  '.php',
+  '.css',
+  '.scss',
+  '.less',
+  '.html',
+  '.htm',
+  '.vue',
+  '.svelte',
+  '.yml',
+  '.yaml',
+  '.toml',
+  '.ini',
+  '.cfg',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.fish',
+  '.sql',
+  '.xml',
+  '.csv',
+  '.tsv',
+  '.env',
+  '.gitignore',
+  '.dockerfile',
+  '.lock',
+  '.diff',
+  '.patch',
+  '.graphql',
+  '.proto',
+]);
+
+/** 附件类型分类（按扩展名 / data URI 的 MIME）。 */
+function classifyAttachment(uri: string): 'image' | 'text' | 'unknown' {
+  if (uri.startsWith('data:')) {
+    const meta = uri.slice(
+      5,
+      uri.indexOf(',') >= 0 ? uri.indexOf(',') : undefined,
+    );
+    if (/^image\//.test(meta)) return 'image';
+    if (/^text\/|json|xml|javascript|typescript/.test(meta)) return 'text';
+    return 'unknown';
+  }
+  if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    // 远程文件不自动抓取（保持联网工具的信任边界）；视为未知
+    return 'unknown';
+  }
+  const ext = extname(uri).toLowerCase();
+  if (IMAGE_MIME_BY_EXTENSION[ext] !== undefined) return 'image';
+  return TEXT_EXTENSIONS.has(ext) ? 'text' : 'unknown';
+}
+
+/** 读取文本类附件的内容（本地文件；data:text URI 支持 base64/URL 编码）。 */
+async function readTextAttachment(uri: string): Promise<string> {
+  if (uri.startsWith('data:')) {
+    const comma = uri.indexOf(',');
+    const meta = comma >= 0 ? uri.slice(0, comma) : '';
+    const data = comma >= 0 ? uri.slice(comma + 1) : uri;
+    const raw = /;base64/i.test(meta) ? atob(data) : decodeURIComponent(data);
+    return raw;
+  }
+  return await readFile(uri, 'utf8');
+}
+
+/** attachFilesToUserMessage 的入参。 */
+export interface FileInputOptions {
+  /** 用户的文本指令（附件之外的说明 / 要求）。 */
+  readonly prompt: string;
+  /** 附件 uri：本地文件路径 / data: URI / http(s) URL。 */
+  readonly attachments: readonly string[];
+  /** 当前模型的能力描述（据此决定图片 FilePart 或降级）。 */
+  readonly capabilities: ProviderCapabilities;
+}
+
+/** attachFilesToUserMessage 的产出。 */
+export interface FileInputResult {
+  /** 构造好的 user 消息（文本 + 附件内容 + 图片 FilePart）。 */
+  readonly messages: readonly ModelMessage[];
+  /** 跳过 / 降级说明（读取失败、类型不支持、图片能力缺失时非空）。 */
+  readonly notices: readonly string[];
+}
+
+/**
+ * 任意文件附件（GUI /image 之外的多类型附件入口）：
+ * - 图片：模型支持时 FilePart（复用 toImageFileParts）；不支持时降级说明；
+ * - 文本类（常见代码 / 文档 / 配置扩展名）：读取内容作为文本注入消息
+ *   （带「附件文件」标记，模型直接可见）；
+ * - 其他（二进制 / 远程 URL）：跳过并 notice（不静默）。
+ * 保持 attachImagesToUserMessage 不动（TUI /image 语义不变）。
+ */
+export async function attachFilesToUserMessage(
+  options: FileInputOptions,
+): Promise<FileInputResult> {
+  const notices: string[] = [];
+  const fileParts: ModelMessageUserFilePart[] = [];
+  let injectedText = '';
+
+  for (const uri of options.attachments) {
+    const kind = classifyAttachment(uri);
+    if (kind === 'image') {
+      if (!detectImageSupport(options.capabilities)) {
+        notices.push(`当前模型不支持图片输入，已跳过图片附件：${uri}`);
+        continue;
+      }
+      const { parts, failed } = await toImageFileParts([uri]);
+      if (failed.length > 0) {
+        notices.push(`无法读取图片（跳过）：${uri}`);
+      } else {
+        fileParts.push(...parts);
+      }
+      continue;
+    }
+    if (kind === 'text') {
+      try {
+        const content = await readTextAttachment(uri);
+        const label = uri.startsWith('data:')
+          ? 'data:text 附件'
+          : basename(uri);
+        injectedText += `\n\n[附件文件 ${label}]\n\`\`\`\n${content}\n\`\`\``;
+      } catch {
+        notices.push(`无法读取文件（跳过）：${uri}`);
+      }
+      continue;
+    }
+    notices.push(`不支持的附件类型（已跳过）：${uri}`);
+  }
+
+  const content: ModelMessageUserPart[] = [
+    { type: 'text', text: options.prompt + injectedText },
+    ...fileParts,
+  ];
+  return { messages: [{ role: 'user', content }], notices };
+}

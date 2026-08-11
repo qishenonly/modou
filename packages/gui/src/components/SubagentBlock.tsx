@@ -35,6 +35,15 @@ export function SubagentBlock({
         )}
         <span className="subagent-chevron">{open ? '▾' : '▸'}</span>
       </button>
+      {open && entry.toolNames.length > 0 && (
+        <div className="subagent-tools-row">
+          {entry.toolNames.map((name, index) => (
+            <span key={`${name}-${index}`} className="subagent-tool-chip">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
       {open && entry.text.length > 0 && (
         <pre className="subagent-body">{entry.text}</pre>
       )}

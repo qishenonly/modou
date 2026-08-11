@@ -51,7 +51,7 @@ import type {
 import {
   aggregateByDay,
   aggregateCost,
-  attachImagesToUserMessage,
+  attachFilesToUserMessage,
   accumulateUsage,
   BudgetLedger,
   buildContextState,
@@ -526,27 +526,38 @@ export class GuiBridge {
 
   /**
    * 会话内容级搜索（侧栏全文检索；Claude Desktop 式历史搜索）。
-   * 遍历当前项目全部会话日志，对 user / assistant 消息文本做不区分大小写的
-   * 包含匹配；返回命中会话的摘要（命中条数 + 首条命中上下文片段），供侧栏
-   * 搜索视图展示，点击后恢复对应会话。数量设上限，避免大仓库卡顿。
+   * 默认只搜当前项目；`allProjects` 为 true 时遍历全部项目（跨项目找回旧结论）。
+   * 遍历会话日志对 user / assistant 消息文本做不区分大小写的包含匹配；返回命中
+   * 会话的摘要（命中条数 + 首条命中上下文片段 + 命中消息 seq + 项目归属），供
+   * 侧栏搜索视图展示，点击后恢复对应会话并可定位到命中消息。数量设上限。
    */
-  async searchSessions(query: string): Promise<SessionSearchResult[]> {
+  async searchSessions(
+    query: string,
+    allProjects = false,
+  ): Promise<SessionSearchResult[]> {
     const needle = query.trim().toLowerCase();
     if (needle.length === 0) return [];
-    const project = projectHash(this.cwd);
-    const candidates = await listSessionsForResume(this.sessionStore, project);
+    const current = projectHash(this.cwd);
+    const candidates = allProjects
+      ? await listSessionsForResume(this.sessionStore)
+      : await listSessionsForResume(this.sessionStore, current);
     const results: SessionSearchResult[] = [];
     for (const candidate of candidates) {
+      const project = candidate.projectHash;
       const read = await this.sessionStore.read(project, candidate.sessionId);
       if (read === null) continue;
       let count = 0;
       let snippet = '';
+      let hitSeq = 0;
       for (const record of read.records) {
         if (record.kind !== 'user' && record.kind !== 'assistant') continue;
         const text = record.data.text;
         if (text.toLowerCase().indexOf(needle) < 0) continue;
         count += 1;
-        if (snippet.length === 0) snippet = contextSnippet(text, needle);
+        if (snippet.length === 0) {
+          snippet = contextSnippet(text, needle);
+          hitSeq = record.seq;
+        }
         if (count >= SEARCH_MAX_MATCHES_PER_SESSION) break;
       }
       if (count === 0) continue;
@@ -555,10 +566,58 @@ export class GuiBridge {
         count,
         snippet: snippet.length > 0 ? snippet : candidate.preview,
         lastTs: candidate.lastTs,
+        seq: hitSeq,
+        projectHash: project,
+        current: project === current,
       });
       if (results.length >= SEARCH_RESULT_LIMIT) break;
     }
     return results;
+  }
+
+  /**
+   * 当前会话的线程消息（带日志 seq；GET_THREAD_DETAILED）。
+   * 与 getThread 的区别：seq 来自会话日志记录，供「搜索命中跳转」在恢复后
+   * 滚动定位到具体消息。无会话时返回空数组。
+   */
+  async getThreadDetailed(): Promise<ThreadMessage[]> {
+    const sessionId = this.sessionLog?.sessionId;
+    if (sessionId === null || sessionId === undefined) return [];
+    const project = projectHash(this.cwd);
+    const read = await this.sessionStore.read(project, sessionId);
+    if (read === null) return [];
+    const out: ThreadMessage[] = [];
+    for (const record of read.records) {
+      if (record.kind !== 'user' && record.kind !== 'assistant') continue;
+      const text = record.data.text.trim();
+      if (text.length === 0) continue;
+      out.push({ role: record.kind, text, seq: record.seq });
+    }
+    return out;
+  }
+
+  /**
+   * 把一条会话日志渲染成可分享的 markdown（会话导出用）。
+   * 只包含用户 / assistant 文本与工具结果摘要；返回 null 表示会话不存在。
+   */
+  async renderSessionMarkdown(sessionId: string): Promise<string | null> {
+    const project = projectHash(this.cwd);
+    const read = await this.sessionStore.read(project, sessionId);
+    if (read === null) return null;
+    const lines: string[] = [`# modou 会话 ${sessionId}`, ''];
+    for (const record of read.records) {
+      if (record.kind === 'user') {
+        lines.push('## 用户', '', record.data.text, '');
+      } else if (record.kind === 'assistant') {
+        lines.push('## Assistant', '', record.data.text, '');
+      } else if (record.kind === 'tool_result') {
+        const summary = record.data.summary;
+        if (summary !== undefined && summary.length > 0) {
+          lines.push(`> 工具结果：${summary}`, '');
+        }
+      }
+    }
+    return lines.join('\n');
   }
 
   /** /model 候选模型 ID（模型选择器）。 */
@@ -1161,13 +1220,14 @@ export class GuiBridge {
       const controller = new AbortController();
       this.currentController = controller;
 
-      // T-133 图片输入：附件 → 多模态消息（能力不支持时诚实降级）
-      const images = (opts?.attachments ?? []).map((ref) => ref.uri);
+      // 附件输入（图片 + 文本类文件）：多类型附件 → user 消息（文本注入 +
+      // 图片 FilePart；不支持的跳过并 notice）。
+      const attachments = (opts?.attachments ?? []).map((ref) => ref.uri);
       let userMessage: ModelMessage;
-      if (images.length > 0) {
-        const built = await attachImagesToUserMessage({
+      if (attachments.length > 0) {
+        const built = await attachFilesToUserMessage({
           prompt: text,
-          images,
+          attachments,
           capabilities: this.provider.capabilities,
         });
         userMessage = built.messages[0] ?? { role: 'user', content: text };
