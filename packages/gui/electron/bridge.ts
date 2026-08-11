@@ -101,6 +101,7 @@ import type {
   PlanPayload,
   ReadyPayload,
   SaveSettingsResult,
+  SessionSearchResult,
   ThreadMessage,
 } from './ipc';
 import {
@@ -120,6 +121,26 @@ import {
 } from './startup';
 
 export const version = '0.17.0';
+
+/** 会话内容搜索：单会话最多计入的命中消息数（片段只取首条）。 */
+const SEARCH_MAX_MATCHES_PER_SESSION = 5;
+/** 会话内容搜索：全局结果上限（防超大仓库卡顿）。 */
+const SEARCH_RESULT_LIMIT = 30;
+
+/**
+ * 取一条命中消息的上下文片段：折叠空白后围绕首个命中位置取前后文，
+ * 越界处用省略号标记。snippet 给侧栏预览用，不需精确对齐原文本。
+ */
+function contextSnippet(raw: string, needle: string): string {
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  const index = collapsed.toLowerCase().indexOf(needle);
+  if (index < 0) return collapsed.slice(0, 80);
+  const start = Math.max(0, index - 40);
+  const end = Math.min(collapsed.length, index + needle.length + 60);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < collapsed.length ? '…' : '';
+  return `${prefix}${collapsed.slice(start, end)}${suffix}`;
+}
 
 /** 从 AI SDK ModelMessage 内容里取展示文本（string 或 text part 拼接）。 */
 function messageText(content: ModelMessage['content']): string {
@@ -501,6 +522,43 @@ export class GuiBridge {
         return { ...candidate, entryCount: messages };
       }),
     );
+  }
+
+  /**
+   * 会话内容级搜索（侧栏全文检索；Claude Desktop 式历史搜索）。
+   * 遍历当前项目全部会话日志，对 user / assistant 消息文本做不区分大小写的
+   * 包含匹配；返回命中会话的摘要（命中条数 + 首条命中上下文片段），供侧栏
+   * 搜索视图展示，点击后恢复对应会话。数量设上限，避免大仓库卡顿。
+   */
+  async searchSessions(query: string): Promise<SessionSearchResult[]> {
+    const needle = query.trim().toLowerCase();
+    if (needle.length === 0) return [];
+    const project = projectHash(this.cwd);
+    const candidates = await listSessionsForResume(this.sessionStore, project);
+    const results: SessionSearchResult[] = [];
+    for (const candidate of candidates) {
+      const read = await this.sessionStore.read(project, candidate.sessionId);
+      if (read === null) continue;
+      let count = 0;
+      let snippet = '';
+      for (const record of read.records) {
+        if (record.kind !== 'user' && record.kind !== 'assistant') continue;
+        const text = record.data.text;
+        if (text.toLowerCase().indexOf(needle) < 0) continue;
+        count += 1;
+        if (snippet.length === 0) snippet = contextSnippet(text, needle);
+        if (count >= SEARCH_MAX_MATCHES_PER_SESSION) break;
+      }
+      if (count === 0) continue;
+      results.push({
+        sessionId: candidate.sessionId,
+        count,
+        snippet: snippet.length > 0 ? snippet : candidate.preview,
+        lastTs: candidate.lastTs,
+      });
+      if (results.length >= SEARCH_RESULT_LIMIT) break;
+    }
+    return results;
   }
 
   /** /model 候选模型 ID（模型选择器）。 */

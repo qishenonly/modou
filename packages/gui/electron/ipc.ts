@@ -111,6 +111,8 @@ export const IPC = {
   GET_GIT_STATUS: 'modou:getGitStatus',
   /** renderer → main（invoke）：逐文件 unified diff（相对 cwd）。 */
   GET_GIT_DIFF: 'modou:getGitDiff',
+  /** renderer → main（invoke）：会话内容级搜索（侧栏全文检索）。 */
+  SEARCH_SESSIONS: 'modou:searchSessions',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -139,6 +141,20 @@ export interface ReadyPayload {
 export interface ThreadMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
+}
+
+/**
+ * 会话内容搜索的一条命中（SEARCH_SESSIONS 的返回）。
+ * snippet 取会话内首个命中消息的上下文片段；count 为该会话内命中消息数。
+ */
+export interface SessionSearchResult {
+  readonly sessionId: string;
+  /** 命中消息数（user + assistant 里包含查询的消息条数）。 */
+  readonly count: number;
+  /** 首条命中消息的上下文片段（折叠空白、截断，供侧栏预览）。 */
+  readonly snippet: string;
+  /** 会话末条记录时间戳（排序用）。 */
+  readonly lastTs: number;
 }
 
 import type { PermissionMode, TokenTotals } from './status';

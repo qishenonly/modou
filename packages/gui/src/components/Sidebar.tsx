@@ -6,12 +6,14 @@
  * - 底部：模型选择器 + 设置。
  */
 import {
+  useEffect,
   useState,
   type ChangeEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import type { ResumeCandidate } from '@modou/core';
+import type { SessionSearchResult } from '../../electron/ipc';
 import { formatTime } from '../lib/format';
 import { LogoMark } from './LogoMark';
 
@@ -64,6 +66,10 @@ export function Sidebar({
   const [searchOpen, setSearchOpen] = useState(false);
   const [batch, setBatch] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // 会话内容级搜索命中（Claude Desktop 式全文检索；null = 无查询未搜索）
+  const [results, setResults] = useState<readonly SessionSearchResult[] | null>(
+    null,
+  );
 
   const toggleSelected = (sessionId: string): void => {
     setSelected((prev) => {
@@ -91,6 +97,29 @@ export function Sidebar({
     return haystack.includes(query.trim().toLowerCase());
   });
 
+  // 内容级全文搜索命中（Claude Desktop 式）；标题命中之外的结果去重合并
+  const needle = query.trim();
+  const contentResults = needle.length > 0 ? results : null;
+  const contentIds = new Set(
+    contentResults?.map((result) => result.sessionId) ?? [],
+  );
+  const titleOnly = visible.filter(
+    (session) => !contentIds.has(session.sessionId),
+  );
+
+  // 内容级全文搜索（防抖 200ms；只对当前项目会话日志做检索）
+  useEffect(() => {
+    const needle = query.trim();
+    if (needle.length === 0) {
+      setResults(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void window.modou.searchSessions(needle).then(setResults);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const startEdit = (session: ResumeCandidate): void => {
     setEditingId(session.sessionId);
     setEditValue(titles[session.sessionId] ?? session.preview ?? '');
@@ -111,6 +140,150 @@ export function Sidebar({
   ): void => {
     if (event.key === 'Enter') commitEdit(sessionId);
     else if (event.key === 'Escape') setEditingId(null);
+  };
+
+  /** 渲染一条会话列表项（标题/预览 + 重命名/删除/右键菜单）。 */
+  const renderSessionItem = (session: ResumeCandidate): ReactNode => {
+    const active = session.sessionId === currentSessionId;
+    const editing = editingId === session.sessionId;
+    const title = titles[session.sessionId] ?? session.preview ?? '（空会话）';
+    return (
+      <div
+        key={session.sessionId}
+        className={`session-item${active ? ' session-active' : ''}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          if (batch) toggleSelected(session.sessionId);
+          else if (!editing) onResume(session.sessionId);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          if (batch) return;
+          setCtx({
+            x: event.clientX,
+            y: event.clientY,
+            sessionId: session.sessionId,
+          });
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            if (batch) toggleSelected(session.sessionId);
+            else if (!editing) onResume(session.sessionId);
+          }
+        }}
+      >
+        {batch && (
+          <input
+            type="checkbox"
+            className="session-check"
+            checked={selected.has(session.sessionId)}
+            onChange={() => toggleSelected(session.sessionId)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        )}
+        {editing ? (
+          <input
+            className="session-rename-input"
+            value={editValue}
+            autoFocus
+            placeholder="会话标题"
+            onChange={(event) => setEditValue(event.target.value)}
+            onKeyDown={(event) => onEditKeyDown(event, session.sessionId)}
+            onBlur={() => commitEdit(session.sessionId)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : (
+          <>
+            <div className="session-preview" title={title}>
+              {title}
+            </div>
+            <div className="session-meta">
+              <span>{formatTime(session.lastTs)}</span>
+              {!active && !batch && (
+                <>
+                  <button
+                    type="button"
+                    className="session-rename"
+                    title="重命名会话"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      startEdit(session);
+                    }}
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="session-delete-icon"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="m9.9 2.8 3.3 3.3-7 7a.75.75 0 0 1-.32.19l-3.02.9a.25.25 0 0 1-.3-.3l.9-3.02a.75.75 0 0 1 .19-.32l7-7ZM10.6 2.1l1.7-1.7a.99.99 0 0 1 1.4 0l1.9 1.9a.99.99 0 0 1 0 1.4l-1.7 1.7-3.3-3.3Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="session-delete"
+                    title="删除会话"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDelete(session.sessionId);
+                    }}
+                  >
+                    <svg
+                      viewBox="0 0 16 16"
+                      aria-hidden="true"
+                      className="session-delete-icon"
+                    >
+                      <path
+                        d="M6.5 2.5h3a.75.75 0 0 1 .75.75V4h-4.5v-.75a.75.75 0 0 1 .75-.75ZM4.75 5.5h6.5v6.5a1.75 1.75 0 0 1-1.75 1.75H6.5a1.75 1.75 0 0 1-1.75-1.75V5.5Zm1.5 1.25v5.5h1.5v-5.5h-1.5Zm2 0v5.5h1.5v-5.5h-1.5Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  /** 渲染一条内容搜索命中项（Claude Desktop 式：标题 + 命中片段 + 命中数）。 */
+  const renderSearchHit = (result: SessionSearchResult): ReactNode => {
+    const session = sessions.find((s) => s.sessionId === result.sessionId);
+    const title = titles[result.sessionId] ?? session?.preview ?? '（空会话）';
+    const active = result.sessionId === currentSessionId;
+    return (
+      <div
+        key={result.sessionId}
+        className={`session-item${active ? ' session-active' : ''}`}
+        role="button"
+        tabIndex={0}
+        title={title}
+        onClick={() => onResume(result.sessionId)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onResume(result.sessionId);
+          }
+        }}
+      >
+        <div className="session-preview" title={title}>
+          {title}
+        </div>
+        <div className="session-meta">
+          <span>{formatTime(result.lastTs)}</span>
+          <span className="session-hit-count">{result.count} 条命中</span>
+        </div>
+        <div className="session-snippet" title={result.snippet}>
+          {result.snippet}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -339,126 +512,26 @@ export function Sidebar({
         )}
 
         <nav className="session-list">
-          {visible.length === 0 && (
-            <div className="session-empty">
-              {hasProject
-                ? query.trim().length > 0
-                  ? '没有匹配的会话'
-                  : '还没有历史对话'
-                : '先选择项目目录'}
-            </div>
+          {needle.length > 0 ? (
+            <>
+              {(contentResults === null || contentResults.length === 0) &&
+                titleOnly.length === 0 && (
+                  <div className="session-empty">没有匹配的会话</div>
+                )}
+              {contentResults !== null &&
+                contentResults.map((result) => renderSearchHit(result))}
+              {titleOnly.map(renderSessionItem)}
+            </>
+          ) : (
+            <>
+              {visible.length === 0 && (
+                <div className="session-empty">
+                  {hasProject ? '还没有历史对话' : '先选择项目目录'}
+                </div>
+              )}
+              {visible.map(renderSessionItem)}
+            </>
           )}
-          {visible.map((session) => {
-            const active = session.sessionId === currentSessionId;
-            const editing = editingId === session.sessionId;
-            const title =
-              titles[session.sessionId] ?? session.preview ?? '（空会话）';
-            return (
-              <div
-                key={session.sessionId}
-                className={`session-item${active ? ' session-active' : ''}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => {
-                  if (batch) toggleSelected(session.sessionId);
-                  else if (!editing) onResume(session.sessionId);
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  if (batch) return;
-                  setCtx({
-                    x: event.clientX,
-                    y: event.clientY,
-                    sessionId: session.sessionId,
-                  });
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    if (batch) toggleSelected(session.sessionId);
-                    else if (!editing) onResume(session.sessionId);
-                  }
-                }}
-              >
-                {batch && (
-                  <input
-                    type="checkbox"
-                    className="session-check"
-                    checked={selected.has(session.sessionId)}
-                    onChange={() => toggleSelected(session.sessionId)}
-                    onClick={(event) => event.stopPropagation()}
-                  />
-                )}
-                {editing ? (
-                  <input
-                    className="session-rename-input"
-                    value={editValue}
-                    autoFocus
-                    placeholder="会话标题"
-                    onChange={(event) => setEditValue(event.target.value)}
-                    onKeyDown={(event) =>
-                      onEditKeyDown(event, session.sessionId)
-                    }
-                    onBlur={() => commitEdit(session.sessionId)}
-                    onClick={(event) => event.stopPropagation()}
-                  />
-                ) : (
-                  <>
-                    <div className="session-preview" title={title}>
-                      {title}
-                    </div>
-                    <div className="session-meta">
-                      <span>{formatTime(session.lastTs)}</span>
-                      {!active && !batch && (
-                        <>
-                          <button
-                            type="button"
-                            className="session-rename"
-                            title="重命名会话"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              startEdit(session);
-                            }}
-                          >
-                            <svg
-                              viewBox="0 0 16 16"
-                              className="session-delete-icon"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="m9.9 2.8 3.3 3.3-7 7a.75.75 0 0 1-.32.19l-3.02.9a.25.25 0 0 1-.3-.3l.9-3.02a.75.75 0 0 1 .19-.32l7-7ZM10.6 2.1l1.7-1.7a.99.99 0 0 1 1.4 0l1.9 1.9a.99.99 0 0 1 0 1.4l-1.7 1.7-3.3-3.3Z"
-                                fill="currentColor"
-                              />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            className="session-delete"
-                            title="删除会话"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onDelete(session.sessionId);
-                            }}
-                          >
-                            <svg
-                              viewBox="0 0 16 16"
-                              aria-hidden="true"
-                              className="session-delete-icon"
-                            >
-                              <path
-                                d="M6.5 2.5h3a.75.75 0 0 1 .75.75V4h-4.5v-.75a.75.75 0 0 1 .75-.75ZM4.75 5.5h6.5v6.5a1.75 1.75 0 0 1-1.75 1.75H6.5a1.75 1.75 0 0 1-1.75-1.75V5.5Zm1.5 1.25v5.5h1.5v-5.5h-1.5Zm2 0v5.5h1.5v-5.5h-1.5Z"
-                                fill="currentColor"
-                              />
-                            </svg>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            );
-          })}
         </nav>
       </div>
 

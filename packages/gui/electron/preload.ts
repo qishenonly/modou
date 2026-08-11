@@ -57,6 +57,10 @@ const api = {
   getThread(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.GET_THREAD);
   },
+  /** 会话内容级搜索（侧栏全文检索）。 */
+  searchSessions(query: string): Promise<unknown> {
+    return ipcRenderer.invoke(IPC.SEARCH_SESSIONS, query);
+  },
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): Promise<unknown> {
     return ipcRenderer.invoke(IPC.LIST_MODELS);

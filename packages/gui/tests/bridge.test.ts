@@ -276,4 +276,42 @@ describe('GuiBridge（core 编排桥）', () => {
       harness.cleanup();
     }
   });
+
+  test('searchSessions：按消息文本命中会话并返回片段', async () => {
+    const harness = createBridge(
+      stubProvider(() => [
+        () => ({ type: 'text_delta' as const, delta: '回复内容' }),
+        () => ({ type: 'finish' as const, reason: 'stop' as const }),
+      ]),
+    );
+    try {
+      harness.bridge.start();
+      harness.bridge.sendCommand({ type: 'submit', text: '旧对话' });
+      await waitFor(() =>
+        harness.envelopes.some((envelope) => envelope.type === 'turn_end'),
+      );
+      // 会话落盘与 turn_end 之间可能有微小时序差：重试到命中为止
+      let results = await harness.bridge.searchSessions('旧对话');
+      for (
+        let attempt = 0;
+        attempt < 50 && results.length === 0;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        results = await harness.bridge.searchSessions('旧对话');
+      }
+      expect(results.length).toBe(1);
+      expect(results[0].sessionId).toBeDefined();
+      expect(results[0].count).toBeGreaterThanOrEqual(1);
+      expect(results[0].snippet).toContain('旧对话');
+      // 未命中的关键词返回空数组
+      const none = await harness.bridge.searchSessions('不存在的关键词');
+      expect(none.length).toBe(0);
+      // 空白查询返回空数组
+      const blank = await harness.bridge.searchSessions('   ');
+      expect(blank.length).toBe(0);
+    } finally {
+      harness.cleanup();
+    }
+  });
 });

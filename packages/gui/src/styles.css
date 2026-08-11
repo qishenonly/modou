@@ -300,6 +300,30 @@ body {
   flex-shrink: 0;
 }
 
+/* 会话内容搜索命中项：标题/元信息一行 + 命中片段另起一行（Claude 式）。 */
+.session-search-hit {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.session-search-hit .session-preview {
+  flex: none;
+}
+
+.session-hit-count {
+  color: var(--accent);
+}
+
+.session-snippet {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .session-check {
   flex-shrink: 0;
 }
@@ -603,6 +627,46 @@ body {
   max-width: 760px;
   margin: 0 auto;
   padding: 28px 24px 12px;
+}
+
+/* 上下文用量指示器（Claude Desktop 式：对话区顶部细进度条）。 */
+.context-gauge {
+  margin: 0 0 20px;
+  cursor: default;
+}
+
+.context-gauge-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.context-gauge-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.context-gauge-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.context-gauge-ok {
+  background: var(--accent);
+}
+
+.context-gauge-warn {
+  background: var(--warn);
+}
+
+.context-gauge-danger {
+  background: var(--fail);
 }
 
 .msg {

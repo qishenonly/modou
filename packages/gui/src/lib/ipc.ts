@@ -34,6 +34,7 @@ import type {
   RemoteModelsResult,
   SaveSettingsResult,
   ScheduledTask,
+  SessionSearchResult,
   ThreadMessage,
 } from '../../electron/ipc';
 
@@ -51,6 +52,8 @@ export interface ModouApi {
   listSessions(): Promise<readonly ResumeCandidate[]>;
   /** 当前线程的展示消息（resume/clear 后播种历史）。 */
   getThread(): Promise<readonly ThreadMessage[] | null>;
+  /** 会话内容级搜索（侧栏全文检索；Claude Desktop 式历史搜索）。 */
+  searchSessions(query: string): Promise<readonly SessionSearchResult[]>;
   /** /model 候选模型 ID（模型选择器）。 */
   listModels(): Promise<readonly string[]>;
   /** 已发现技能清单（设置面板）。 */

@@ -73,6 +73,42 @@ export const Markdown = memo(function Markdown({
               {children}
             </a>
           ),
+          // 块级代码（含无语言标签的 fenced block）统一走 CodeBlock：带语言标签
+          // 用对应语法，无标签自动检测；两者都保留「复制」按钮。行内代码仍由
+          // code 组件兜底渲染（无 pre 包裹的才是行内）。
+          pre({ children }) {
+            const child = Array.isArray(children) ? children[0] : children;
+            if (
+              child !== null &&
+              typeof child === 'object' &&
+              'props' in child
+            ) {
+              const props = (
+                child as {
+                  readonly props?: {
+                    readonly className?: unknown;
+                    readonly children?: unknown;
+                  };
+                }
+              ).props;
+              if (props !== undefined && typeof props === 'object') {
+                const className =
+                  typeof props.className === 'string' ? props.className : '';
+                const language = /language-(\w+)/.exec(className)?.[1] ?? '';
+                const raw = props.children;
+                const code = (
+                  Array.isArray(raw)
+                    ? raw.join('')
+                    : typeof raw === 'string'
+                      ? raw
+                      : ''
+                ).replace(/\n$/, '');
+                return <CodeBlock language={language} text={code} />;
+              }
+            }
+            // 非代码块内容（罕见）回退默认 pre
+            return <pre>{children}</pre>;
+          },
           code({ className, children }) {
             const language = /language-(\w+)/.exec(className ?? '')?.[1] ?? '';
             const code = String(children).replace(/\n$/, '');

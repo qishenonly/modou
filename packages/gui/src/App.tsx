@@ -40,6 +40,10 @@ export function App(): ReactNode {
   const [state, dispatch] = useReducer(guiReducer, undefined, initialGuiState);
   // 配置摘要（READY 通道 + 挂载时 getConfig 兜底；null = 尚无项目目录）
   const [ready, setReady] = useState<ReadyPayload | null>(null);
+  // 当前模型的上下文窗口（token；getConfig 兜底填充，供上下文指示器）
+  const [contextWindow, setContextWindow] = useState<number | undefined>(
+    undefined,
+  );
   const [sessions, setSessions] = useState<readonly ResumeCandidate[]>([]);
   const [modal, setModal] = useState<ModalKind>('none');
   // 命令结果卡片（对话内展示；/help /context /cost /mcp /init /rewind /plan）
@@ -123,6 +127,7 @@ export function App(): ReactNode {
     });
     void window.modou.getConfig().then((config) => {
       if (config !== null) {
+        setContextWindow(config.contextWindow);
         setReady((prev) => ({
           ...(prev ?? { cwd: '', homeDir: '', sessionId: null, version: '' }),
           modelName: config.modelName,
@@ -434,6 +439,8 @@ export function App(): ReactNode {
                 notices={state.notices}
                 error={state.error}
                 running={state.running}
+                context={state.context}
+                contextWindow={contextWindow}
                 onCloseCard={closeCard}
                 onPlanAction={handlePlanAction}
                 onRegenerate={handleRegenerate}

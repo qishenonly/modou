@@ -7,8 +7,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { TodoItemData } from '@modou/core';
+import type { ContextStateData, TodoItemData } from '@modou/core';
 import type { TimelineEntry } from '../lib/state';
+import { formatTokens } from '../lib/format';
 import { Markdown } from '../lib/markdown';
 import {
   ContextCard,
@@ -174,6 +175,58 @@ function ThinkingBlock({ text }: { readonly text: string }): ReactNode {
   );
 }
 
+/**
+ * 上下文用量指示器（Claude Desktop 式）：对话区顶部一条细进度条，
+ * 显示当前上下文估算占用 / 模型窗口，并给出「临近压缩」告警色。
+ * 悬停展示分项核算（与 /context 卡片同源）。
+ */
+function ContextGauge({
+  context,
+  contextWindow,
+}: {
+  readonly context: ContextStateData | null;
+  readonly contextWindow: number | undefined;
+}): ReactNode {
+  if (context === null || contextWindow === undefined || contextWindow <= 0) {
+    return null;
+  }
+  const used = context.total;
+  const pct = Math.min(100, Math.round((used / contextWindow) * 100));
+  const tone =
+    context.nearCompaction || pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+  const breakdown =
+    context.sections.length > 0
+      ? context.sections
+          .map((section) => `${section.name}: ${formatTokens(section.tokens)}`)
+          .join('\n')
+      : '';
+  const title = [
+    `上下文 ${formatTokens(used)} / ${formatTokens(contextWindow)} tokens`,
+    breakdown,
+    context.nearCompaction ? '即将压缩（靠近上下文上限）' : '',
+  ]
+    .filter((line) => line.length > 0)
+    .join('\n');
+
+  return (
+    <div className="context-gauge" title={title}>
+      <div className="context-gauge-label">
+        <span>上下文</span>
+        <span>
+          {formatTokens(used)} / {formatTokens(contextWindow)}
+          {context.nearCompaction && ' · 即将压缩'}
+        </span>
+      </div>
+      <div className="context-gauge-track">
+        <div
+          className={`context-gauge-fill context-gauge-${tone}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function ChatThread({
   timeline,
   streamingText,
@@ -183,6 +236,8 @@ export function ChatThread({
   notices,
   error,
   running,
+  context,
+  contextWindow,
   onCloseCard,
   onPlanAction,
   onRegenerate,
@@ -200,6 +255,8 @@ export function ChatThread({
   }[];
   readonly error: string | null;
   readonly running: boolean;
+  readonly context: ContextStateData | null;
+  readonly contextWindow: number | undefined;
   readonly onCloseCard: (id: number) => void;
   readonly onPlanAction: (action: 'approve' | 'modify' | 'reject') => void;
   readonly onRegenerate: () => void;
@@ -245,6 +302,7 @@ export function ChatThread({
   return (
     <main className="chat" ref={chatRef} onScroll={onScroll}>
       <div className="chat-inner">
+        <ContextGauge context={context} contextWindow={contextWindow} />
         <TodoList items={todo} />
 
         {timeline.map((entry, index) => {
