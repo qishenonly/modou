@@ -120,7 +120,7 @@ import {
   type GuiBridgeOptions,
 } from './startup';
 
-export const version = '0.17.0';
+export const version = '1.0.0';
 
 /** 会话内容搜索：单会话最多计入的命中消息数（片段只取首条）。 */
 const SEARCH_MAX_MATCHES_PER_SESSION = 5;

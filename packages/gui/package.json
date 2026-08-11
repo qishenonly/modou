@@ -1,6 +1,6 @@
 {
   "name": "@modou/gui",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "modou 桌面 GUI（Electron + React，Claude Desktop 式布局）——core 的第二个前端，事件流 Event↑/Command↓ 与 TUI 完全同构",
